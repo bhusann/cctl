@@ -1,0 +1,15 @@
+# Binaries
+cc
+legacygpu.ko
+*.o
+
+# Backups
+*.bak
+
+# Kernel version marker
+.kernel_version
+
+# Editor/OS junk
+*~
+*.swp
+.DS_Store

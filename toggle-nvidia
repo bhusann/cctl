@@ -1,0 +1,323 @@
+#!/bin/bash
+set -uo pipefail
+
+# ── Config ──────────────────────────────────────────────────────────────────
+BLACKLIST_FILE="/etc/modprobe.d/blacklist-nvidia.conf"
+NVIDIA_MODULES=("nvidia_drm" "nvidia_modeset" "nvidia_uvm" "nvidia")  # unload order matters
+
+# ── Colors ──────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+    RED=$'\e[1;31m'  GRN=$'\e[1;32m'  YLW=$'\e[1;33m'
+    BLU=$'\e[1;34m'  CYN=$'\e[1;36m'  DIM=$'\e[2m'
+    BOLD=$'\e[1m'    RST=$'\e[0m'
+else
+    RED='' GRN='' YLW='' BLU='' CYN='' DIM='' BOLD='' RST=''
+fi
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+info()  { echo "${BLU}::${RST} $*"; }
+ok()    { echo "${GRN}✓${RST} $*"; }
+warn()  { echo "${YLW}⚠${RST} $*"; }
+err()   { echo "${RED}✗${RST} $*" >&2; }
+die()   { err "$@"; exit 1; }
+hr()    { printf '%s%*s%s\n' "$DIM" 60 '' "$RST" | tr ' ' '─'; }
+
+require_root() {
+    if (( EUID != 0 )); then
+        die "This command must be run as root (try: sudo toggle-nvidia $*)"
+    fi
+}
+
+confirm() {
+    local msg="${1:-Continue?}"
+    if [[ "${FORCE:-}" == "1" ]]; then return 0; fi
+    printf "%s [y/N] " "${YLW}${msg}${RST}"
+    read -r reply
+    [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+# ── Initramfs detection ────────────────────────────────────────────────────
+rebuild_initramfs() {
+    if command -v mkinitcpio &>/dev/null; then
+        info "Rebuilding initramfs with ${BOLD}mkinitcpio${RST}..."
+        mkinitcpio -P
+    elif command -v dracut &>/dev/null; then
+        info "Rebuilding initramfs with ${BOLD}dracut${RST}..."
+        dracut --force
+    elif command -v update-initramfs &>/dev/null; then
+        info "Rebuilding initramfs with ${BOLD}update-initramfs${RST}..."
+        update-initramfs -u
+    else
+        warn "No initramfs tool found (mkinitcpio/dracut/update-initramfs)."
+        warn "You may need to rebuild initramfs manually before rebooting."
+        return 1
+    fi
+}
+
+# ── State queries ───────────────────────────────────────────────────────────
+is_blacklisted() {
+    [[ -f "$BLACKLIST_FILE" ]] && grep -q "^blacklist nvidia" "$BLACKLIST_FILE" 2>/dev/null
+}
+
+is_module_loaded() {
+    lsmod | grep -q "^nvidia " 2>/dev/null
+}
+
+gpu_in_use() {
+    # Check if any processes are using the GPU
+    if command -v nvidia-smi &>/dev/null && is_module_loaded; then
+        local count
+        count=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l)
+        (( count > 0 ))
+    else
+        return 1
+    fi
+}
+
+# ── Runtime module management ───────────────────────────────────────────────
+try_unload_modules() {
+    info "Attempting to unload NVIDIA modules at runtime..."
+
+    if gpu_in_use; then
+        warn "GPU is in use by running processes:"
+        nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | \
+            while IFS=',' read -r pid name; do
+                echo "    ${DIM}PID ${pid}:${RST} ${name}"
+            done
+        warn "Cannot unload modules while GPU is in use."
+        warn "Stop GPU processes first, or reboot after blacklisting."
+        return 1
+    fi
+
+    local failed=0
+    for mod in "${NVIDIA_MODULES[@]}"; do
+        if lsmod | grep -q "^${mod} "; then
+            if modprobe -r "$mod" 2>/dev/null; then
+                ok "Unloaded ${BOLD}${mod}${RST}"
+            else
+                warn "Failed to unload ${BOLD}${mod}${RST}"
+                failed=1
+            fi
+        fi
+    done
+
+    if (( failed )); then
+        warn "Some modules could not be unloaded. A reboot is required."
+        return 1
+    fi
+
+    if ! is_module_loaded; then
+        ok "All NVIDIA modules unloaded successfully."
+        return 0
+    fi
+    return 1
+}
+
+try_load_modules() {
+    info "Attempting to load NVIDIA modules at runtime..."
+    if modprobe nvidia 2>/dev/null; then
+        ok "NVIDIA modules loaded successfully."
+        return 0
+    else
+        warn "Could not load NVIDIA modules. A reboot may be required."
+        return 1
+    fi
+}
+
+# ── Commands ────────────────────────────────────────────────────────────────
+usage() {
+    cat <<EOF
+${BOLD}Usage:${RST} toggle-nvidia ${CYN}{on|off|status}${RST} [${DIM}--force${RST}]
+
+  ${CYN}off${RST}      Blacklist NVIDIA modules (saves power, frees RAM)
+  ${CYN}on${RST}       Unblacklist NVIDIA modules (restores GPU access)
+  ${CYN}status${RST}   Show current state, GPU info, and processes
+
+  ${DIM}--force${RST}  Skip confirmation prompts
+
+  Both ${CYN}on${RST} and ${CYN}off${RST} rebuild initramfs and may require a reboot.
+EOF
+}
+
+do_off() {
+    require_root off
+
+    if is_blacklisted; then
+        if is_module_loaded; then
+            warn "NVIDIA is blacklisted but modules are still loaded (reboot pending)."
+            confirm "Attempt to unload modules now?" && try_unload_modules
+        else
+            ok "NVIDIA is already blacklisted and modules are unloaded."
+        fi
+        return 0
+    fi
+
+    hr
+    info "This will blacklist NVIDIA kernel modules and rebuild initramfs."
+    if is_module_loaded; then
+        info "Will also attempt to unload modules from the current session."
+    fi
+    hr
+    confirm "Blacklist NVIDIA and rebuild initramfs?" || { info "Aborted."; return 0; }
+
+    info "Writing blacklist to ${BOLD}${BLACKLIST_FILE}${RST}..."
+    {
+        echo "# Disabled by toggle-nvidia on $(date '+%Y-%m-%d %H:%M:%S')"
+        for mod in "${NVIDIA_MODULES[@]}"; do
+            echo "blacklist $mod"
+            echo "alias $mod off"
+        done
+    } > "$BLACKLIST_FILE"
+
+    if ! rebuild_initramfs; then
+        err "Initramfs rebuild failed. Removing blacklist to avoid broken boot."
+        rm -f "$BLACKLIST_FILE"
+        return 1
+    fi
+
+    echo
+    # Try runtime unload (best-effort)
+    if is_module_loaded; then
+        try_unload_modules || warn "Reboot required to fully disable NVIDIA."
+    fi
+
+    hr
+    ok "NVIDIA is ${RED}blacklisted${RST}."
+    if is_module_loaded; then
+        warn "Reboot to complete. After reboot, only the iGPU will be active."
+    else
+        ok "Modules already unloaded — no reboot needed!"
+    fi
+}
+
+do_on() {
+    require_root on
+
+    if ! is_blacklisted; then
+        if is_module_loaded; then
+            ok "NVIDIA is already unblacklisted and modules are loaded."
+        else
+            warn "NVIDIA is unblacklisted but modules aren't loaded."
+            confirm "Attempt to load modules now?" && try_load_modules
+        fi
+        return 0
+    fi
+
+    hr
+    info "This will remove the NVIDIA blacklist and rebuild initramfs."
+    hr
+    confirm "Unblacklist NVIDIA and rebuild initramfs?" || { info "Aborted."; return 0; }
+
+    info "Removing ${BOLD}${BLACKLIST_FILE}${RST}..."
+    rm -f "$BLACKLIST_FILE"
+
+    if ! rebuild_initramfs; then
+        err "Initramfs rebuild failed."
+        warn "You may need to run the rebuild command manually before rebooting."
+        return 1
+    fi
+
+    echo
+    # Try runtime load (best-effort)
+    if ! is_module_loaded; then
+        try_load_modules || warn "Reboot required to load NVIDIA."
+    fi
+
+    hr
+    ok "NVIDIA is ${GRN}unblacklisted${RST}."
+    if is_module_loaded; then
+        ok "Modules loaded — no reboot needed!"
+    else
+        warn "Reboot to complete. After reboot, NVIDIA will be available."
+    fi
+}
+
+do_status() {
+    hr
+    echo "${BOLD}  NVIDIA GPU Toggle — Status${RST}"
+    hr
+
+    # Blacklist state
+    if is_blacklisted; then
+        echo "  Boot config:   ${RED}BLACKLISTED${RST} (disabled at boot)"
+    else
+        echo "  Boot config:   ${GRN}ENABLED${RST} (loads at boot)"
+    fi
+
+    # Module state
+    if is_module_loaded; then
+        echo "  Module state:  ${GRN}LOADED${RST}"
+    else
+        echo "  Module state:  ${DIM}NOT LOADED${RST}"
+    fi
+
+    # Pending reboot detection
+    if is_blacklisted && is_module_loaded; then
+        echo "  Pending:       ${YLW}Reboot needed to unload${RST}"
+    elif ! is_blacklisted && ! is_module_loaded; then
+        echo "  Pending:       ${YLW}Reboot needed to load${RST}"
+    fi
+
+    # GPU info via nvidia-smi
+    if command -v nvidia-smi &>/dev/null && is_module_loaded; then
+        echo
+        hr
+
+        # Driver + GPU name
+        local driver gpu_name gpu_mem gpu_power gpu_temp
+        driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        gpu_mem=$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+        gpu_power=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader 2>/dev/null | head -1)
+        gpu_temp=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader 2>/dev/null | head -1)
+
+        [[ -n "$gpu_name" ]]  && echo "  GPU:           ${CYN}${gpu_name}${RST}"
+        [[ -n "$driver" ]]    && echo "  Driver:        ${driver}"
+        if [[ -n "$gpu_mem" ]]; then
+            local used total
+            used=$(echo "$gpu_mem" | cut -d',' -f1 | tr -d ' ')
+            total=$(echo "$gpu_mem" | cut -d',' -f2 | tr -d ' ')
+            echo "  VRAM:          ${used} / ${total} MiB"
+        fi
+        [[ -n "$gpu_power" ]] && echo "  Power draw:    ${gpu_power}"
+        [[ -n "$gpu_temp" ]]  && echo "  Temperature:   ${gpu_temp}°C"
+
+        # Running GPU processes
+        local procs
+        procs=$(nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null)
+        if [[ -n "$procs" ]]; then
+            echo
+            echo "  ${BOLD}GPU Processes:${RST}"
+            while IFS=',' read -r pid name mem; do
+                printf "    ${DIM}PID %-8s${RST} %-30s %s\n" "$pid" "$name" "$mem"
+            done <<< "$procs"
+        else
+            echo "  Processes:     ${DIM}none${RST}"
+        fi
+    elif ! is_module_loaded; then
+        echo
+        echo "  ${DIM}(nvidia-smi unavailable — module not loaded)${RST}"
+    fi
+
+    hr
+}
+
+# ── Argument parsing ────────────────────────────────────────────────────────
+FORCE=0
+ACTION=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --force|-f) FORCE=1 ;;
+        on|off|status) ACTION="$arg" ;;
+        -h|--help) usage; exit 0 ;;
+        *) err "Unknown argument: $arg"; usage; exit 1 ;;
+    esac
+done
+
+case "${ACTION}" in
+    off)    do_off ;;
+    on)     do_on ;;
+    status) do_status ;;
+    *)      usage; exit 1 ;;
+esac
