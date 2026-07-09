@@ -19,7 +19,7 @@ git log --oneline -10       # recent commits
 
 ### Stage and commit
 ```bash
-git add cc.c                # stage one file
+git add cctl.c                # stage one file
 git add -p                  # stage interactively (pick chunks)
 git commit -m "fix: description"
 ```
@@ -34,8 +34,8 @@ git push -u origin master
 
 ### Undo changes
 ```bash
-git checkout -- cc.c        # discard unstaged changes to file
-git reset HEAD cc.c         # unstage a file
+git checkout -- cctl.c        # discard unstaged changes to file
+git reset HEAD cctl.c         # unstage a file
 git reset --soft HEAD~1     # undo last commit, keep changes staged
 git reset --hard HEAD~1     # undo last commit AND discard changes (DANGER)
 ```
@@ -67,7 +67,7 @@ git push --tags             # push tags to remote
 
 ## .gitignore
 Already set up to ignore:
-- `cc` — compiled binary
+- `cctl` — compiled binary
 - `legacygpu.ko` — compiled kernel module
 - `*.o` — object files
 - `*.bak` — backup files

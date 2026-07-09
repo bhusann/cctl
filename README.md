@@ -1,17 +1,17 @@
-# colorcontrol
+# cctl
 
 Lightweight CLI tool for Clevo P15 laptop performance management. Sets CPU power profiles (governor, turbo boost, EPP, RAPL limits), controls fan speeds via direct EC port I/O, adjusts keyboard backlight color/brightness, toggles webcam/microphone, and sets display refresh rate. No GUI, no TUI, no dependencies beyond libc.
 
 ## Build
 
 ```bash
-gcc -o cc cc.c -Os -s
+gcc -o cctl cctl.c -Os -s
 ```
 
 ## ASCII art (generated with)
 
 ```bash
-curl "https://asciified.thelicato.io/api/v2/ascii?text=colorcontrol&font=standard"
+curl "https://asciified.thelicato.io/api/v2/ascii?text=cctl&font=standard"
 ```
 
 ## Usage
@@ -25,22 +25,22 @@ curl "https://asciified.thelicato.io/api/v2/ascii?text=colorcontrol&font=standar
 ```
 
 ```bash
-sudo ./cc set <profile>       # max | cpuperf | balanced | powersave | eco
-sudo ./cc setR <profile>      # same but with RAPL power limits
-sudo ./cc fan <mode> [value]  # auto | max | silent | cpu <pct> | gpu <pct>
-sudo ./cc turbo <on|off>      # standalone turbo override
-sudo ./cc gov <governor>      # standalone governor override (powersave|performance)
-sudo ./cc epp <value>         # standalone EPP override (performance|balance_performance|balance_power|power)
-sudo ./cc kbc R G B           # keyboard RGB (0-255 per channel)
-sudo ./cc kbcp <name|hex>   # keyboard color preset (blue, red, cyan, etc.) or raw hex code (#RRGGBB)
-sudo ./cc kbb <pct>           # keyboard brightness (0-100%)
-sudo ./cc rapl <pl1> <pl2>    # set RAPL power limits in watts
-sudo ./cc mic [on|off]        # toggle/set microphone (no root needed)
-sudo ./cc rr [rate]           # list/set display refresh rate (no root needed)
-sudo ./cc webcam [on|off]     # toggle/set webcam (needs root)
-sudo ./cc nvidia <on|off|status> # Nvidia GPU module switcher & telemetry (on/off needs root)
-sudo ./cc status              # show current settings, CPU temp, fans (no root needed)
-sudo ./cc monitor             # live CPU freq, temp, power, fans, usage monitor (needs root)
+sudo ./cctl set <profile>       # max | cpuperf | balanced | powersave | eco
+sudo ./cctl setR <profile>      # same but with RAPL power limits
+sudo ./cctl fan <mode> [value]  # auto | max | silent | cpu <pct> | gpu <pct>
+sudo ./cctl turbo <on|off>      # standalone turbo override
+sudo ./cctl gov <governor>      # standalone governor override (powersave|performance)
+sudo ./cctl epp <value>         # standalone EPP override (performance|balance_performance|balance_power|power)
+sudo ./cctl kbc R G B           # keyboard RGB (0-255 per channel)
+sudo ./cctl kbcp <name|hex>   # keyboard color preset (blue, red, cyan, etc.) or raw hex code (#RRGGBB)
+sudo ./cctl kbb <pct>           # keyboard brightness (0-100%)
+sudo ./cctl rapl <pl1> <pl2>    # set RAPL power limits in watts
+sudo ./cctl mic [on|off]        # toggle/set microphone (no root needed)
+sudo ./cctl rr [rate]           # list/set display refresh rate (no root needed)
+sudo ./cctl webcam [on|off]     # toggle/set webcam (needs root)
+sudo ./cctl nvidia <on|off|status> # Nvidia GPU module switcher & telemetry (on/off needs root)
+sudo ./cctl status              # show current settings, CPU temp, fans (no root needed)
+sudo ./cctl monitor             # live CPU freq, temp, power, fans, usage monitor (needs root)
 ```
 
 Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL power limits (package-0 only — writing to psys/sub-zones causes EC conflict and 0.4GHz throttle on Clevo). Turbo and governor overrides apply immediately but get replaced by the next profile change. The tool dynamically groups hybrid P/E-cores based on CPU topology/max frequency and pins itself to E-cores to minimize game performance impact.

@@ -1,13 +1,13 @@
 /*
- * cc - Lightweight Clevo P15 performance profile & fan controller
+ * cctl - Lightweight Clevo P15 performance profile & fan controller
  *
  * Pure C, no dependencies beyond libc. Direct EC port I/O for fan control,
  * sysfs writes for CPU power management.
  *
- * Build:  gcc -o cc cc.c -Os -s
- * Usage:  sudo ./cc set <profile>
- *         sudo ./cc fan <mode> [value]
- *         sudo ./cc status
+ * Build:  gcc -o cctl cctl.c -Os -s
+ * Usage:  sudo ./cctl set <profile>
+ *         sudo ./cctl fan <mode> [value]
+ *         sudo ./cctl status
  */
 
 #define _GNU_SOURCE
@@ -1856,7 +1856,7 @@ static int nvidia_set_off(int force)
         perror("fopen blacklist-nvidia.conf");
         return -1;
     }
-    fprintf(fp, "# Disabled by cc nvidia off\n");
+    fprintf(fp, "# Disabled by cctl nvidia off\n");
     const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
     for (size_t i = 0; i < 4; i++) {
         fprintf(fp, "blacklist %s\n", modules[i]);
