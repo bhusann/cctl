@@ -23,7 +23,6 @@
 #include "tuxedo_keyboard_common.h"
 #include "clevo_keyboard.h"
 #include "uniwill_keyboard.h"
-#include "tuxedo_compatibility_check/tuxedo_compatibility_check.h"
 #include <linux/mutex.h>
 #include <asm/cpu_device_id.h>
 #include <asm/intel-family.h>
@@ -198,9 +197,6 @@ EXPORT_SYMBOL(tuxedo_keyboard_remove_driver);
 static int __init tuxedo_keyboard_init(void)
 {
 	TUXEDO_INFO("module init\n");
-
-	if (!tuxedo_is_compatible())
-		return -ENODEV;
 
 	return 0;
 }
