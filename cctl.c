@@ -444,6 +444,8 @@ static void clear_gpu_duty(void)
 
 static int fan_auto(int fan_idx)
 {
+    /* EC quirk: standalone 0x99 auto-restore uses { 0xFF, fan_idx } order.
+     * Do NOT swap to { fan_idx, 0xFF } — that only works after a mode cmd 0x98. */
     uint8_t data[2] = { FAN_DUTY_AUTO, (uint8_t)fan_idx };
     if (fan_idx == FAN_GPU) clear_gpu_duty();
     return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
@@ -462,6 +464,7 @@ static int fan_max_all(void)
     uint8_t mode = FAN_MODE_MAX;
     if (send_ec_cmd(EC_CMD_FAN_MODE, &mode, 1) < 0) return -1;
 
+    /* EC quirk: after mode cmd 0x98, follow-up 0x99 uses { fan_idx, value } order */
     uint8_t cpu[2] = { FAN_CPU, FAN_DUTY_AUTO };
     if (send_ec_cmd(EC_CMD_FAN_SPEED, cpu, 2) < 0) return -1;
 
@@ -475,6 +478,7 @@ static int fan_silent_all(void)
     uint8_t mode = FAN_MODE_SILENT;
     if (send_ec_cmd(EC_CMD_FAN_MODE, &mode, 1) < 0) return -1;
 
+    /* EC quirk: after mode cmd 0x98, follow-up 0x99 uses { fan_idx, value } order */
     uint8_t cpu[2] = { FAN_CPU, FAN_MODE_SILENT };
     if (send_ec_cmd(EC_CMD_FAN_SPEED, cpu, 2) < 0) return -1;
 
@@ -489,6 +493,7 @@ static int fan_set_duty(int fan_idx, int percent)
         return -1;
     }
     uint8_t raw = (uint8_t)((percent * 255) / 100);
+    /* EC quirk: standalone 0x99 duty uses { fan_idx, raw } — same order as after a mode cmd */
     uint8_t data[2] = { (uint8_t)fan_idx, raw };
     printf("  Fan %s duty: %d%% (0x%02X)\n",
            fan_idx == FAN_CPU ? "CPU" : "GPU", percent, raw);

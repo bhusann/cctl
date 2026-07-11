@@ -49,8 +49,8 @@ Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL po
 
 | Profile    | GPU  | Turbo | Governor  | EPP                | RAPL (setR)  |
 |------------|------|-------|-----------|--------------------|---------------|
-| max        | 3    | ON    | perf      | performance        | 45W / 90W    |
-| cpuperf    | 2    | ON    | perf      | performance        | 70W          |
+| max        | 2    | ON    | perf      | performance        | 45W / 90W    |
+| cpuperf    | 3    | ON    | perf      | performance        | 70W          |
 | balanced   | 3    | ON    | powersave | balance_performance| 35W / 40W    |
 | powersave  | 1    | OFF   | powersave | balance_power      | —            |
 | eco        | 0    | OFF   | powersave | power              | 9W / 10W     |
@@ -67,6 +67,8 @@ Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL po
 
 > [!NOTE]
 > **EC Byte-Order Quirk:** The Clevo EC interprets the byte order of the two-byte fan speed commands (`cmd 0x99`) contextually. When restoring `auto` mode, cmd `0x99` expects `{ 0xFF, fan_idx }`. When setting a specific duty cycle (`fan_set_duty`, `fan_max_all`, `fan_silent_all`), cmd `0x99` expects `{ fan_idx, duty_value }`. Do not attempt to "normalize" these argument layouts, as this contextual byte-swapping is verified correct on the Clevo P15 hardware.
+>
+> **GPU Duty Persistence:** The GPU fan duty you set with `fan gpu <pct>` is saved to `/tmp/.cctl-gpu-duty` (tmpfs / RAM). This is necessary because the Clevo EC doesn't expose a readable GPU duty register — so on the next `cctl status` invocation, the tool reads back whatever it last wrote. The file is lost on reboot, which is fine since the EC resets to its own defaults at power-on anyway.
 
 
 ## Keyboard presets
@@ -99,6 +101,41 @@ sudo rmmod legacygpu                 # must remove before changing profile
 Check dmesg for result: `dmesg | tail -3`
 
 The module does one ACPI call and stays loaded — `rmmod` cleanly unloads it. Must rmmod before insmod with a different profile value.
+
+---
+
+## Additional Scripts
+
+### `toggle-nvidia`
+
+Standalone NVIDIA GPU module switcher with colored output, confirmation prompts, and full telemetry display. An independent alternative to `cctl nvidia` — no compilation needed.
+
+```bash
+sudo ./toggle-nvidia off           # blacklist NVIDIA (rebuilds initramfs)
+sudo ./toggle-nvidia on            # unblacklist NVIDIA (rebuilds initramfs)
+sudo ./toggle-nvidia status        # show boot config, module state, GPU telemetry
+sudo ./toggle-nvidia off --force   # skip confirmation prompts
+```
+
+### `nvidia.sh`
+
+Minimal helper to load/unload NVIDIA kernel modules at runtime (no initramfs changes). Useful for quick testing:
+
+```bash
+sudo ./nvidia.sh off    # unload: nvidia_drm → nvidia_modeset → nvidia_uvm → nvidia
+sudo ./nvidia.sh on     # load:   nvidia → nvidia_uvm → nvidia_modeset → nvidia_drm
+sudo ./nvidia.sh status # show loaded state of each module
+```
+
+### `setup.sh`
+
+Auto-compiles `legacygpu.ko` when the kernel version changes. Runs silently if the module is already up to date. Called automatically — no user action needed.
+
+---
+
+## drivers/
+
+Full [tuxedo-drivers](https://github.com/tuxedocomputers/tuxedo-drivers) kernel module source tree (keyboard backlight, Clevo WMI, Tuxedo IO interface). Not required for `cctl` to work — the tool falls back to direct EC I/O and sysfs if the hardware drivers are absent. Build with `make -C drivers/`.
 
 ---
 
