@@ -123,9 +123,10 @@ static int write_sysfs(const char *path, const char *value)
     int fd = open(path, O_WRONLY);
     if (fd < 0)
         return -1;
-    ssize_t n = write(fd, value, strlen(value));
+    size_t len = strlen(value);
+    ssize_t n = write(fd, value, len);
     close(fd);
-    return (n == (ssize_t)strlen(value)) ? 0 : -1;
+    return (n == (ssize_t)len) ? 0 : -1;
 }
 
 /* Read a sysfs file into buf (stripping trailing newlines). Returns bytes read or -1. */
@@ -229,9 +230,7 @@ static int set_governor(const char *gov)
 static int set_epp(const char *val)
 {
     /* Check that intel_pstate EPP path exists at all */
-    char probe[256];
-    snprintf(probe, sizeof(probe),
-             "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference");
+    const char *probe = "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference";
     if (access(probe, F_OK) != 0) {
         fprintf(stderr, "Warning: EPP not available (no intel_pstate), skipping\n");
         return 0;
@@ -247,14 +246,8 @@ static int set_epp(const char *val)
 /* Read a RAPL sysfs file and return value in watts, or -1 on failure */
 static long read_rapl_watts(const char *path)
 {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return -1;
-    char buf[32] = {0};
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0) return -1;
-    for (char *p = buf; *p; p++) if (*p == '\n' || *p == '\r') *p = '\0';
-    return atol(buf) / 1000000;
+    long val = read_sysfs_long(path, -1000000);
+    return (val <= -1000000) ? -1 : val / 1000000;
 }
 
 /* Read current RAPL PL1/PL2 from package-0. Returns 0 on success. */
@@ -398,6 +391,15 @@ static int set_gpu_profile(int profile)
 
 /* ========================================================================
  * FAN CONTROL
+ * ========================================================================
+ *
+ * EC byte-order note:
+ * This Clevo EC uses DIFFERENT argument orders for cmd 0x99 depending on
+ * context.  After a mode command (0x98), the follow-up 0x99 takes
+ * { fan_idx, value }.  For standalone auto-restore, 0x99 takes
+ * { 0xFF, fan_idx }.  fan_set_duty() also uses { fan_idx, raw_duty }.
+ * This is quirky but confirmed working via live testing (max → 6700 RPM,
+ * silent → 950 RPM, cpu 50 → 3789 RPM).  Do not "fix" the byte order.
  * ======================================================================== */
 
 #define FAN_CPU 1
@@ -486,10 +488,7 @@ static int fan_set_duty(int fan_idx, int percent)
         fprintf(stderr, "Error: Fan duty %d%% out of range (21-100)\n", percent);
         return -1;
     }
-    int raw_calc = (percent * 255) / 100;
-    if (raw_calc < 0) raw_calc = 0;
-    if (raw_calc > 255) raw_calc = 255;
-    uint8_t raw = (uint8_t)raw_calc;
+    uint8_t raw = (uint8_t)((percent * 255) / 100);
     uint8_t data[2] = { (uint8_t)fan_idx, raw };
     printf("  Fan %s duty: %d%% (0x%02X)\n",
            fan_idx == FAN_CPU ? "CPU" : "GPU", percent, raw);
@@ -747,6 +746,10 @@ static int webcam_set(int enabled)
 static int webcam_toggle(void)
 {
     int current = is_webcam_enabled();
+    if (current < 0) {
+        fprintf(stderr, "Error: Cannot detect webcam state\n");
+        return -1;
+    }
     return webcam_set(!current);
 }
 
@@ -776,7 +779,7 @@ static int mic_set(int enabled)
 {
     const char *verb = enabled ? "cap" : "nocap";
     char cmd[128];
-    snprintf(cmd, sizeof(cmd), "amixer -c 0 sset Capture %s 2>/dev/null", verb);
+    snprintf(cmd, sizeof(cmd), "amixer -c 0 sset Capture %s >/dev/null 2>&1", verb);
     int rc = system(cmd);
     if (rc != 0) {
         fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
@@ -1559,7 +1562,7 @@ static int cpumonitor(void)
         clock_gettime(CLOCK_MONOTONIC, &t2);
 
         /* Clear screen and print */
-        printf("\033[H");
+        printf("\033[H\033[J");
         int p_threads_printed = 0;
         printf("--- [ P-CORES ] (Performance) Max: %d MHz ---\n", p_max_mhz);
         for (int i = 0; i < cpu_count; i++) {
@@ -1662,6 +1665,8 @@ static int cpumonitor(void)
 
 static void print_usage(const char *prog)
 {
+    const char *base = strrchr(prog, '/');
+    prog = base ? base + 1 : prog;
     /* Section headers: bold yellow
      * Command names: bold white
      * Arguments/placeholders: dim
@@ -1711,22 +1716,10 @@ static void print_usage(const char *prog)
     printf("  %scpu%s <%spct%s>  CPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %sgpu%s <%spct%s>  GPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
 
-    printf("\n%sStandalone overrides%s %s(applied immediately, overridden by next profile)%s:\n", C_YLW, C_RST, C_DIM, C_RST);
-    printf("  %sturbo%s %son|off%s           Enable/disable Intel turbo boost\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("  %sgov%s %spowersave|performance%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("  %sepp%s %sperformance|balance_performance|balance_power|power%s\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    printf("\n%sKeyboard:%s\n", C_MAG, C_RST);
-    printf("  %skbc%s %sR G B%s              Set RGB color %s(e.g. kbc 255 0 128)%s\n", C_MAG, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %skbb%s <%spct%s>              Set brightness %s(e.g. kbb 75)%s\n", C_MAG, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-
-    printf("\n%sPrivacy:%s\n", C_RED, C_RST);
-    printf("  %smic%s %son|off%s             Enable/disable microphone\n", C_RED, C_RST, C_DIM, C_RST);
-    printf("  %swebcam%s %son|off%s          Enable/disable webcam\n", C_RED, C_RST, C_DIM, C_RST);
-
-    printf("\n%sDisplay:%s\n", C_BLU, C_RST);
-    printf("  %srr%s                     List available refresh rates\n", C_BLU, C_RST);
-    printf("  %srr%s <%srate%s>              Set refresh rate %s(e.g. rr 165)%s\n", C_BLU, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("\n%sKeyboard color presets:%s\n", C_MAG, C_RST);
+    printf("  blue, chocolate, coral, cyan, gold, gray, green, indigo, lime,\n");
+    printf("  magenta, maroon, navy, off, olive, orange, pink, purple, red,\n");
+    printf("  salmon, silver, teal, turquoise, violet, white, yellow\n");
 }
 
 static int nvidia_is_blacklisted(void)
@@ -1801,17 +1794,17 @@ static int run_cmd_silent(const char *cmd, char *const argv[])
 
 static int rebuild_initramfs(void)
 {
-    if (system("command -v mkinitcpio >/dev/null 2>&1") == 0) {
+    if (access("/usr/bin/mkinitcpio", X_OK) == 0) {
         printf("  Rebuilding initramfs with mkinitcpio...\n");
         char *const args[] = { "mkinitcpio", "-P", NULL };
         return run_cmd_silent("mkinitcpio", args);
     }
-    if (system("command -v dracut >/dev/null 2>&1") == 0) {
+    if (access("/usr/bin/dracut", X_OK) == 0) {
         printf("  Rebuilding initramfs with dracut...\n");
         char *const args[] = { "dracut", "--force", NULL };
         return run_cmd_silent("dracut", args);
     }
-    if (system("command -v update-initramfs >/dev/null 2>&1") == 0) {
+    if (access("/usr/sbin/update-initramfs", X_OK) == 0) {
         printf("  Rebuilding initramfs with update-initramfs...\n");
         char *const args[] = { "update-initramfs", "-u", NULL };
         return run_cmd_silent("update-initramfs", args);
@@ -1993,7 +1986,7 @@ static void nvidia_show_status(void)
     }
 
     if (loaded) {
-        if (system("command -v nvidia-smi >/dev/null 2>&1") == 0) {
+        if (access("/usr/bin/nvidia-smi", X_OK) == 0) {
             printf("\n%s--- NVIDIA GPU Telemetry ---%s\n", C_YLW, C_RST);
             system("nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | "
                    "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\"}'");
@@ -2007,8 +2000,8 @@ static void nvidia_show_status(void)
                         printf("\n  GPU Processes:\n");
                         has_procs = 1;
                     }
-                    char pid[32], name[128], mem[64];
-                    if (sscanf(line, "%31s , %127s , %63s", pid, name, mem) >= 2) {
+                    char pid[32] = {0}, name[128] = {0}, mem[64] = {0};
+                    if (sscanf(line, "%31[^,], %127[^,], %63[^\n]", pid, name, mem) >= 2) {
                         printf("    PID %-8s %-30s %s\n", pid, name, mem);
                     }
                 }

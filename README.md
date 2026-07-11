@@ -65,6 +65,10 @@ Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL po
 | cpu    | CPU fan to 21-100%           |
 | gpu    | GPU fan to 21-100%           |
 
+> [!NOTE]
+> **EC Byte-Order Quirk:** The Clevo EC interprets the byte order of the two-byte fan speed commands (`cmd 0x99`) contextually. When restoring `auto` mode, cmd `0x99` expects `{ 0xFF, fan_idx }`. When setting a specific duty cycle (`fan_set_duty`, `fan_max_all`, `fan_silent_all`), cmd `0x99` expects `{ fan_idx, duty_value }`. Do not attempt to "normalize" these argument layouts, as this contextual byte-swapping is verified correct on the Clevo P15 hardware.
+
+
 ## Keyboard presets
 
 blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, navy, off, olive, orange, pink, purple, red, salmon, silver, teal, turquoise, violet, white, yellow
@@ -116,3 +120,11 @@ Following a comprehensive code audit, several critical optimizations and archite
 - **Dynamic Core Pinning**: Thread affinity routines query the core classifier and pin the program's background tasks specifically to real system E-cores, preventing performance interference on P-cores.
 - **Descriptor & IOCTL Handle Caching**: The `monitor` loops now cache sysfs and `tuxedo_io` handles once before starting, reading updates using fast `pread()` offset reads to completely eliminate repetitive open/close syscall overhead.
 - **Clean Compilation**: Re-dimensioned path buffers to resolve potential string truncation warnings, allowing compilation with `-Wall -Wextra` and zero warnings.
+- **Robustness & Cleanups (July 2026 Audit)**:
+  - Silenced `amixer` stdout output leakage when modifying microphone capture states.
+  - Hardened the `nvidia-smi` parser using specific CSV group parsing in `sscanf()` to handle process names containing spaces.
+  - Added safety checks in `webcam_toggle()` to handle driver or detection failures gracefully.
+  - Eliminated shell invocation overheads by swapping `system("command -v ...")` with direct `access()` checks for initramfs tools (`mkinitcpio`, `dracut`, `update-initramfs`) and `nvidia-smi`.
+  - Fixed terminal rendering glitches in the CPU monitor by performing explicit cursor and terminal buffer clears.
+  - Removed dead clamps from `fan_set_duty()` and simplified RAPL watts resolution using pre-existing sysfs helpers.
+
