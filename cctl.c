@@ -1226,8 +1226,28 @@ static int kbd_set_preset(const char *name)
 
 #define EC_RAM_PATH "/sys/kernel/debug/ec/ec0/io"
 
-/* Read fan duty/RPM from EC RAM. Returns 0 on success.
- * cpu_pct/gpu_pct: duty 0-100, cpu_rpm/gpu_rpm: RPM or 0 if unavailable. */
+/* Try to load ec_sys so we can read EC RAM for fan RPM.
+ * Returns 0 on success, -1 if still unavailable. */
+static int ensure_ec_sys(void)
+{
+    if (access(EC_RAM_PATH, F_OK) == 0)
+        return 0;
+    /* modprobe needs root; if we're not root, just return failure */
+    if (geteuid() != 0)
+        return -1;
+    int rc = system("modprobe ec_sys 2>/dev/null");
+    if (rc != 0)
+        return -1;
+    /* Give udev a moment to create the file */
+    usleep(200000);
+    return access(EC_RAM_PATH, F_OK) == 0 ? 0 : -1;
+}
+
+/* Read fan duty/RPM. Returns 0 on success.
+ * cpu_pct/gpu_pct: duty 0-100, cpu_rpm/gpu_rpm: RPM or 0 if unavailable.
+ *
+ * Tries tuxedo_io ioctl for duty (R_CL_FANINFO1), then EC RAM (via debugfs)
+ * for RPM. Auto-loads ec_sys if needed. */
 static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *gpu_rpm, int cached_fd)
 {
     *cpu_pct = *gpu_pct = *cpu_rpm = *gpu_rpm = 0;
@@ -1247,7 +1267,9 @@ static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *
         if (cached_fd < 0) close(fd);
     }
 
-    /* Read EC RAM for duty (fallback) + RPM (always needed) */
+    /* EC RAM via debugfs for RPM (and duty fallback). Auto-load ec_sys. */
+    ensure_ec_sys();
+
     int ec_fd = open(EC_RAM_PATH, O_RDONLY);
     if (ec_fd < 0) {
         /* No ec_sys — if we already have duty from ioctl, that's all we can do */
