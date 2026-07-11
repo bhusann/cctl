@@ -409,20 +409,53 @@ static int set_gpu_profile(int profile)
 #define FAN_DUTY_AUTO     0xFF
 #define EC_FAN_RPM_DIVISOR 2156220
 
+/* File used to persist the last user-set GPU duty across cctl invocations.
+ * ACPI FANINFO1 doesn't expose the GPU duty register on this Clevo model,
+ * and direct EC IO-port writes don't update any readable register for GPU,
+ * so we save our set value here instead. */
+#define GPU_DUTY_FILE "/tmp/.cctl-gpu-duty"
+
+static int load_gpu_duty(void)
+{
+    FILE *f = fopen(GPU_DUTY_FILE, "r");
+    if (!f) return -1;
+    int val;
+    if (fscanf(f, "%d", &val) != 1) val = -1;
+    fclose(f);
+    return val;
+}
+
+static void save_gpu_duty(int pct)
+{
+    FILE *f = fopen(GPU_DUTY_FILE, "w");
+    if (f) {
+        fprintf(f, "%d\n", pct);
+        fclose(f);
+    }
+}
+
+static void clear_gpu_duty(void)
+{
+    unlink(GPU_DUTY_FILE);
+}
+
 static int fan_auto(int fan_idx)
 {
     uint8_t data[2] = { FAN_DUTY_AUTO, (uint8_t)fan_idx };
+    if (fan_idx == FAN_GPU) clear_gpu_duty();
     return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
 }
 
 static int fan_auto_all(void)
 {
+    clear_gpu_duty();
     if (fan_auto(FAN_CPU) < 0) return -1;
     return fan_auto(FAN_GPU);
 }
 
 static int fan_max_all(void)
 {
+    clear_gpu_duty();
     uint8_t mode = FAN_MODE_MAX;
     if (send_ec_cmd(EC_CMD_FAN_MODE, &mode, 1) < 0) return -1;
 
@@ -435,6 +468,7 @@ static int fan_max_all(void)
 
 static int fan_silent_all(void)
 {
+    clear_gpu_duty();
     uint8_t mode = FAN_MODE_SILENT;
     if (send_ec_cmd(EC_CMD_FAN_MODE, &mode, 1) < 0) return -1;
 
@@ -458,7 +492,10 @@ static int fan_set_duty(int fan_idx, int percent)
     uint8_t data[2] = { (uint8_t)fan_idx, raw };
     printf("  Fan %s duty: %d%% (0x%02X)\n",
            fan_idx == FAN_CPU ? "CPU" : "GPU", percent, raw);
-    return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
+    int rc = send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
+    if (rc == 0 && fan_idx == FAN_GPU)
+        save_gpu_duty(percent);
+    return rc;
 }
 
 /* ========================================================================
@@ -1246,35 +1283,38 @@ static int ensure_ec_sys(void)
 /* Read fan duty/RPM. Returns 0 on success.
  * cpu_pct/gpu_pct: duty 0-100, cpu_rpm/gpu_rpm: RPM or 0 if unavailable.
  *
- * Tries tuxedo_io ioctl for duty (R_CL_FANINFO1), then EC RAM (via debugfs)
- * for RPM. Auto-loads ec_sys if needed. */
+ * CPU duty comes from tuxedo_io ioctl (R_CL_FANINFO1 byte 0, always correct).
+ * GPU duty resolution order:
+ *   1. Saved file  — from cctl's own fan_set_duty() (cross-invocation)
+ *   2. EC RAM[0xCF] — written by ACPI method or EC internal (Fn+1 etc.)
+ *   3. FANINFO1 byte 2  — coarse approximation, only used when RPM>0
+ *   4. 0 — fan appears stopped (no RPM, no readable duty register)
+ * RPM comes from EC RAM 0xD0-0xD3 via debugfs (auto-loads ec_sys). */
 static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *gpu_rpm, int cached_fd)
 {
     *cpu_pct = *gpu_pct = *cpu_rpm = *gpu_rpm = 0;
     int got_duty = 0;
 
-    /* Try tuxedo IOCTL first for duty (R_CL_FANINFO1) */
+    /* Try tuxedo IOCTL for CPU duty (R_CL_FANINFO1 byte 0 is reliable). */
     int fd = (cached_fd >= 0) ? cached_fd : tuxedo_open_clevo();
     if (fd >= 0) {
         int f1 = 0;
         if (ioctl(fd, R_CL_FANINFO1, &f1) >= 0) {
-            int cpu_raw = f1 & 0xFF;
-            int gpu_raw = (f1 >> 16) & 0xFF;
-            *cpu_pct = (cpu_raw * 100) / 255;
-            *gpu_pct = (gpu_raw * 100) / 255;
+            *cpu_pct = ((f1 & 0xFF) * 100) / 255;
             got_duty = 1;
+            /* Tentative GPU duty from FANINFO1 byte 2 — will be overridden
+             * below by EC RAM or saved file if better data is available. */
+            *gpu_pct = (((f1 >> 16) & 0xFF) * 100) / 255;
         }
         if (cached_fd < 0) close(fd);
     }
 
-    /* EC RAM via debugfs for RPM (and duty fallback). Auto-load ec_sys. */
+    /* EC RAM via debugfs. Read once and use for everything below. */
     ensure_ec_sys();
 
     int ec_fd = open(EC_RAM_PATH, O_RDONLY);
-    if (ec_fd < 0) {
-        /* No ec_sys — if we already have duty from ioctl, that's all we can do */
+    if (ec_fd < 0)
         return got_duty ? 0 : -1;
-    }
 
     unsigned char ram[256];
     memset(ram, 0, sizeof(ram));
@@ -1282,13 +1322,25 @@ static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *
     close(ec_fd);
     if (n < 0xD4) return got_duty ? 0 : -1;
 
-    /* Duty from EC RAM (only if ioctl didn't provide it) */
+    /* CPU duty from EC RAM (only if ioctl didn't provide it) */
     if (!got_duty) {
         int cpu_raw = ram[0xF4];
         if (cpu_raw == 0) cpu_raw = ram[0x89];
         *cpu_pct = (cpu_raw * 100) / 255;
-        int gpu_raw = ram[0x8A];
-        *gpu_pct = (gpu_raw * 100) / 255;
+    }
+
+    /* GPU duty — authoritative source chain */
+    int saved = load_gpu_duty();
+    if (saved >= 0) {
+        *gpu_pct = saved;                           /* (1) cctl set it */
+    } else if (ram[0xCF] > 0) {
+        *gpu_pct = (ram[0xCF] * 100) / 255;         /* (2) EC/ACPI set it */
+    } else {
+        /* (3) keep FANINFO1 byte 2 approximation if fan is spinning,
+         *     otherwise the fan is stopped → 0 */
+        unsigned int grpm = ((unsigned int)ram[0xD2] << 8) | ram[0xD3];
+        if (grpm == 0)
+            *gpu_pct = 0;
     }
 
     /* RPM from EC RAM: 0xD0:D1 (CPU), 0xD2:D3 (GPU), formula: EC_FAN_RPM_DIVISOR / raw16 */
