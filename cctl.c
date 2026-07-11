@@ -32,18 +32,19 @@
  * ======================================================================== */
 static int use_color;
 
-static const char *C_RST, *C_BLD, *C_DIM, *C_CYA, *C_YLW, *C_WHT, *C_RED, *C_GRN, *C_MAG, *C_CYN;
+static const char *C_RST, *C_BLD, *C_DIM, *C_CYN, *C_CYN_BLD, *C_YLW, *C_WHT, *C_RED, *C_GRN, *C_MAG, *C_BLU;
 
 static void init_colors(void)
 {
     if (use_color) {
-        C_RST = "\033[0m";   C_BLD = "\033[1m";   C_DIM = "\033[2m";
-        C_CYA = "\033[1;36m"; C_YLW = "\033[1;33m"; C_WHT = "\033[1;37m";
+        C_RST = "\033[0m";   C_BLD = "\033[1m";    C_DIM = "\033[2m";
+        C_CYN = "\033[36m";  C_CYN_BLD = "\033[1;36m";
+        C_YLW = "\033[1;33m"; C_WHT = "\033[1;37m";
         C_RED = "\033[1;31m"; C_GRN = "\033[1;32m"; C_MAG = "\033[1;35m";
-        C_CYN = "\033[36m";
+        C_BLU = "\033[1;34m";
     } else {
-        C_RST = C_BLD = C_DIM = C_CYA = C_YLW = C_WHT = "";
-        C_RED = C_GRN = C_MAG = C_CYN = "";
+        C_RST = C_BLD = C_DIM = C_CYN = C_CYN_BLD = C_YLW = C_WHT = "";
+        C_RED = C_GRN = C_MAG = C_BLU = "";
     }
 }
 
@@ -656,6 +657,7 @@ static char *find_webcam_usb_id(void)
             for (char *p = prod_buf; *p; p++) *p = tolower((unsigned char)*p);
             if (strstr(prod_buf, "camera") || strstr(prod_buf, "webcam") ||
                 strstr(prod_buf, "video") || strstr(prod_buf, "chicony")) {
+                free(result);
                 result = strdup(ent->d_name);
                 break;
             }
@@ -663,7 +665,6 @@ static char *find_webcam_usb_id(void)
 
         /* If video class but no product match, still accept */
         if (is_video && !result) {
-            free(result);
             result = strdup(ent->d_name);
         }
     }
@@ -1667,88 +1668,65 @@ static void print_usage(const char *prog)
      * Profile names: color-coded by intensity
      * Fan modes: color-coded
      * Notes: dim */
-    #define S "\033[0m"   /* reset */
-    #define H "\033[1;33m"  /* bold yellow - section headers */
-    #define C "\033[1m"     /* bold white - command names */
-    #define A "\033[2m"     /* dim - arguments/notes */
-    #define R "\033[1;31m"  /* bold red - max/performance */
-    #define Y "\033[1;33m"  /* bold yellow - cpuperf */
-    #define G "\033[1;32m"  /* bold green - balanced */
-    #define B "\033[1;36m"  /* bold cyan - powersave/auto */
-    #define M "\033[2;37m"  /* dim white - eco/secondary */
-    #define K "\033[1;35m"  /* bold magenta - keyboard */
-    #define P "\033[1;31m"  /* bold red - privacy */
-    #define D "\033[1;34m"  /* bold blue - display */
     printf(
     "\n"
-    "            " B " _                           _             _ " S "\n"
-    "   " B "___ ___ " S " | | ___  _ __ ___ ___  _ __ | |_ _ __ ___ | |\n"
-    "  " B "/ __/ _ \\" S "| |/ _ \\| '__/ __/ _ \\| '_ \\| __| '__/ _ \\| |\n"
-    " " B "| (_| (_) " S "| | (_) | | | (_| (_) | | | | |_| | | (_) | |\n"
-    "  " B "\\___\\___/" S "|_|\\___/|_|  \\___\\___/|_| |_|\\__|_|  \\___/|_|\n"
-    "\n");
-    printf(H "Usage:" S "\n");
-    printf("  " C "%s set" S " <" A "profile" S ">       Apply a performance profile " A "(no RAPL)" S "\n", prog);
-    printf("  " C "%s setR" S " <" A "profile" S ">      Apply a performance profile " A "(with RAPL limits)" S "\n", prog);
-    printf("  " C "%s fan" S " <" A "mode" S "> [" A "value" S "]  Control fans\n", prog);
-    printf("  " C "%s turbo" S " <" A "on|off" S ">      Set turbo boost " A "(standalone override)" S "\n", prog);
-    printf("  " C "%s gov" S " <" A "governor" S ">      Set CPU governor " A "(standalone override)" S "\n", prog);
-    printf("  " C "%s epp" S " <" A "value" S ">         Set EPP " A "(standalone override)" S "\n", prog);
-    printf("  " C "%s rapl" S " <" A "pl1" S "> <" A "pl2" S ">    Set RAPL power limits in watts " A "(standalone)" S "\n", prog);
-    printf("  " K "%s kbc" S " " A "R G B" S "           Set keyboard color " A "(0-255 per channel)" S "\n", prog);
-    printf("  " K "%s kbcp" S " <" A "name" S ">         Set keyboard color from preset\n", prog);
-    printf("  " K "%s kbb" S " <" A "pct" S ">           Set keyboard brightness " A "(0-100%%)" S "\n", prog);
-    printf("  " P "%s mic" S " [" A "on|off" S "]        Toggle microphone " A "(or set on/off)" S "\n", prog);
-    printf("  " D "%s rr" S " [" A "rate" S "]           Set/list refresh rates\n", prog);
-    printf("  " P "%s webcam" S " [" A "on|off" S "]     Toggle webcam " A "(or set on/off)" S "\n", prog);
-    printf("  " C "%s nvidia" S " <" A "on|off|status" S "> Nvidia GPU toggle and status " A "(needs root)" S "\n", prog);
-    printf("  " C "%s status" S "              Show current settings\n", prog);
-    printf("  " C "%s monitor" S "             Live CPU freq + power + fan monitor\n", prog);
+    "            %s _                           _             _ %s\n"
+    "   %s___ ___ %s | | ___  _ __ ___ ___  _ __ | |_ _ __ ___ | |\n"
+    "  %s/ __/ _ \\%s| |/ _ \\| '__/ __/ _ \\| '_ \\| __| '__/ _ \\| |\n"
+    " %s| (_| (_) %s| | (_) | | | (_| (_) | | | | |_| | | (_) | |\n"
+    "  %s\\___\\___/%s|_|\\___/|_|  \\___\\___/|_| |_|\\__|_|  \\___/|_|\n"
+    "\n",
+    C_CYN_BLD, C_RST, C_CYN_BLD, C_RST, C_CYN_BLD, C_RST,
+    C_CYN_BLD, C_RST, C_CYN_BLD, C_RST);
+    printf("%sUsage:%s\n", C_YLW, C_RST);
+    printf("  %s%s set%s <%sprofile%s>       Apply a performance profile %s(no RAPL)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s setR%s <%sprofile%s>      Apply a performance profile %s(with RAPL limits)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s fan%s <%smode%s> [%svalue%s]  Control fans\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s turbo%s <%son|off%s>      Set turbo boost %s(standalone override)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s gov%s <%sgovernor%s>      Set CPU governor %s(standalone override)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s epp%s <%svalue%s>         Set EPP %s(standalone override)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s rapl%s <%spl1%s> <%spl2%s>    Set RAPL power limits in watts %s(standalone)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s kbc%s %sR G B%s           Set keyboard color %s(0-255 per channel)%s\n", C_MAG, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s kbcp%s <%sname%s>         Set keyboard color from preset\n", C_MAG, prog, C_RST, C_DIM, C_RST);
+    printf("  %s%s kbb%s <%spct%s>           Set keyboard brightness %s(0-100%%)%s\n", C_MAG, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s mic%s [%son|off%s]        Toggle microphone %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s rr%s [%srate%s]           Set/list refresh rates\n", C_BLU, prog, C_RST, C_DIM, C_RST);
+    printf("  %s%s webcam%s [%son|off%s]     Toggle webcam %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s nvidia%s <%son|off|status%s> Nvidia GPU toggle and status %s(needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s status%s              Show current settings\n", C_BLD, prog, C_RST);
+    printf("  %s%s monitor%s             Live CPU freq + power + fan monitor\n", C_BLD, prog, C_RST);
 
-    printf("\n" H "Profiles:" S "\n");
-    printf("  " R "max" S "        Performance Max + GPU " A "(80W-100W)" S "\n");
-    printf("  " Y "cpuperf" S "    Performance CPU Only\n");
-    printf("  " G "balanced" S "   Balanced\n");
-    printf("  " B "powersave" S "  Powersave\n");
-    printf("  " M "eco" S "        Ultra Powersave\n");
-    printf("\n  " A "setR applies RAPL limits: max(45/90W) cpuperf(70W) balanced(35/40W) eco(9/10W)" S "\n");
+    printf("\n%sProfiles:%s\n", C_YLW, C_RST);
+    printf("  %smax%s        Performance Max + GPU %s(80W-100W)%s\n", C_RED, C_RST, C_DIM, C_RST);
+    printf("  %scpuperf%s    Performance CPU Only\n", C_YLW, C_RST);
+    printf("  %sbalanced%s   Balanced\n", C_GRN, C_RST);
+    printf("  %spowersave%s  Powersave\n", C_CYN_BLD, C_RST);
+    printf("  %seco%s        Ultra Powersave\n", C_DIM, C_RST);
+    printf("\n  %ssetR applies RAPL limits: max(45/90W) cpuperf(70W) balanced(35/40W) eco(9/10W)%s\n", C_DIM, C_RST);
 
-    printf("\n" H "Fan modes:" S "\n");
-    printf("  " B "auto" S "       Both fans to auto " A "(EC-controlled)" S "\n");
-    printf("  " R "max" S "        Both fans to maximum speed\n");
-    printf("  " M "silent" S "     Both fans to silent mode\n");
-    printf("  " Y "cpu" S " <" A "pct" S ">  CPU fan to " A "21-100%%" S "\n");
-    printf("  " Y "gpu" S " <" A "pct" S ">  GPU fan to " A "21-100%%" S "\n");
+    printf("\n%sFan modes:%s\n", C_YLW, C_RST);
+    printf("  %sauto%s       Both fans to auto %s(EC-controlled)%s\n", C_CYN_BLD, C_RST, C_DIM, C_RST);
+    printf("  %smax%s        Both fans to maximum speed\n", C_RED, C_RST);
+    printf("  %ssilent%s     Both fans to silent mode\n", C_DIM, C_RST);
+    printf("  %scpu%s <%spct%s>  CPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %sgpu%s <%spct%s>  GPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
 
-    printf("\n" H "Standalone overrides" S " " A "(applied immediately, overridden by next profile)" S ":\n");
-    printf("  " C "turbo" S " " A "on|off" S "           Enable/disable Intel turbo boost\n");
-    printf("  " C "gov" S " " A "powersave|performance" S "\n");
-    printf("  " C "epp" S " " A "performance|balance_performance|balance_power|power" S "\n");
+    printf("\n%sStandalone overrides%s %s(applied immediately, overridden by next profile)%s:\n", C_YLW, C_RST, C_DIM, C_RST);
+    printf("  %sturbo%s %son|off%s           Enable/disable Intel turbo boost\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("  %sgov%s %spowersave|performance%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("  %sepp%s %sperformance|balance_performance|balance_power|power%s\n", C_BLD, C_RST, C_DIM, C_RST);
 
-    printf("\n" K "Keyboard:" S "\n");
-    printf("  " K "kbc" S " " A "R G B" S "              Set RGB color " A "(e.g. kbc 255 0 128)" S "\n");
-    printf("  " K "kbb" S " <" A "pct" S ">              Set brightness " A "(e.g. kbb 75)" S "\n");
+    printf("\n%sKeyboard:%s\n", C_MAG, C_RST);
+    printf("  %skbc%s %sR G B%s              Set RGB color %s(e.g. kbc 255 0 128)%s\n", C_MAG, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %skbb%s <%spct%s>              Set brightness %s(e.g. kbb 75)%s\n", C_MAG, C_RST, C_DIM, C_RST, C_DIM, C_RST);
 
-    printf("\n" P "Privacy:" S "\n");
-    printf("  " P "mic" S " " A "on|off" S "             Enable/disable microphone\n");
-    printf("  " P "webcam" S " " A "on|off" S "          Enable/disable webcam\n");
+    printf("\n%sPrivacy:%s\n", C_RED, C_RST);
+    printf("  %smic%s %son|off%s             Enable/disable microphone\n", C_RED, C_RST, C_DIM, C_RST);
+    printf("  %swebcam%s %son|off%s          Enable/disable webcam\n", C_RED, C_RST, C_DIM, C_RST);
 
-    printf("\n" D "Display:" S "\n");
-    printf("  " D "rr" S "                     List available refresh rates\n");
-    printf("  " D "rr" S " <" A "rate" S ">              Set refresh rate " A "(e.g. rr 165)" S "\n");
-
-    #undef S
-    #undef H
-    #undef C
-    #undef A
-    #undef R
-    #undef Y
-    #undef G
-    #undef B
-    #undef M
-    #undef K
-    #undef P
-    #undef D
+    printf("\n%sDisplay:%s\n", C_BLU, C_RST);
+    printf("  %srr%s                     List available refresh rates\n", C_BLU, C_RST);
+    printf("  %srr%s <%srate%s>              Set refresh rate %s(e.g. rr 165)%s\n", C_BLU, C_RST, C_DIM, C_RST, C_DIM, C_RST);
 }
 
 static int nvidia_is_blacklisted(void)
