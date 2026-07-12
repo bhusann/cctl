@@ -164,4 +164,3 @@ Following a comprehensive code audit, several critical optimizations and archite
   - Eliminated shell invocation overheads by swapping `system("command -v ...")` with direct `access()` checks for initramfs tools (`mkinitcpio`, `dracut`, `update-initramfs`) and `nvidia-smi`.
   - Fixed terminal rendering glitches in the CPU monitor by performing explicit cursor and terminal buffer clears.
   - Removed dead clamps from `fan_set_duty()` and simplified RAPL watts resolution using pre-existing sysfs helpers.
-
