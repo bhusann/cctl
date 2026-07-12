@@ -9,6 +9,9 @@ legacygpu.ko
 # Kernel version marker
 .kernel_version
 
+# Legacy docs (local reference only)
+legacymethod/README.md
+
 # Editor/OS junk
 *~
 *.swp
