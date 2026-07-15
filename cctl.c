@@ -54,6 +54,8 @@ static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *
 static int is_cpu_e_core(int cpu_num);
 static int nvidia_is_blacklisted(void);
 static int nvidia_is_loaded(void);
+static int bat_read_start(void);
+static int bat_read_end(void);
 
 /* ========================================================================
  * EC PORT I/O
@@ -1068,6 +1070,43 @@ static void show_status(void)
     int mic = mic_is_enabled();
     printf("  Microphone: %s%s%s\n", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
 
+    /* Battery */
+    {
+        char bat_status[32] = {0};
+        read_sysfs_str("/sys/class/power_supply/BAT0/status", bat_status, sizeof(bat_status));
+        long cap      = read_sysfs_long("/sys/class/power_supply/BAT0/capacity", -1);
+        long full     = read_sysfs_long("/sys/class/power_supply/BAT0/charge_full", -1);
+        long full_dsn = read_sysfs_long("/sys/class/power_supply/BAT0/charge_full_design", -1);
+        long now      = read_sysfs_long("/sys/class/power_supply/BAT0/charge_now", -1);
+        long current  = read_sysfs_long("/sys/class/power_supply/BAT0/current_now", -1);
+        long cycles   = read_sysfs_long("/sys/class/power_supply/BAT0/cycle_count", -1);
+        long volt     = read_sysfs_long("/sys/class/power_supply/BAT0/voltage_now", -1);
+        int bat_start = bat_read_start();
+        int bat_end   = bat_read_end();
+
+        printf("  Battery:     %ld%% %s", cap, bat_status);
+        if (bat_start > 0 && bat_end > 0)
+            printf("  [threshold: %d%%→%d%%]", bat_start, bat_end);
+        printf("\n");
+
+        if (full > 0 && full_dsn > 0) {
+            int health = (int)((full * 100L) / full_dsn);
+            const char *hcol = health > 100 ? C_GRN : (health < 80 ? C_RED : C_YLW);
+            printf("  Health:      %s%d%%%s (%ld / %ld mAh)\n", hcol, health, C_RST,
+                   full / 1000, full_dsn / 1000);
+        }
+        if (cycles > 0)
+            printf("  Cycles:     %s%ld%s\n", C_CYN, cycles, C_RST);
+        if (now > 0)
+            printf("  Charge:     %ld mAh / %ld mAh\n", now / 1000, full / 1000);
+        if (current != 0) {
+            long ma = current / 1000; /* microamps → milliamps */
+            printf("  Rate:       %s%+ld mA%s\n", current > 0 ? C_RED : C_GRN, ma, C_RST);
+        }
+        if (volt > 0)
+            printf("  Voltage:    %ld mV\n", volt / 1000);
+    }
+
     /* Nvidia GPU */
     int nv_blacklisted = nvidia_is_blacklisted();
     int nv_loaded = nvidia_is_loaded();
@@ -1120,6 +1159,117 @@ static void show_status(void)
     }
 
     printf("\n");
+}
+
+/* ========================================================================
+ * BATTERY CHARGE THRESHOLDS
+ * ======================================================================== */
+
+#define BAT_START_PATH "/sys/class/power_supply/BAT0/charge_control_start_threshold"
+#define BAT_END_PATH   "/sys/class/power_supply/BAT0/charge_control_end_threshold"
+#define BAT_START_AVAIL_PATH "/sys/class/power_supply/BAT0/charge_control_start_available_thresholds"
+#define BAT_END_AVAIL_PATH   "/sys/class/power_supply/BAT0/charge_control_end_available_thresholds"
+
+/* Read available threshold values into an array. Returns count or -1. */
+static int read_avail_thresholds(const char *path, int *out, int max)
+{
+    char buf[128];
+    if (read_sysfs_str(path, buf, sizeof(buf)) < 0)
+        return -1;
+    int count = 0;
+    char *p = buf;
+    while (*p && count < max) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        char *end;
+        long v = strtol(p, &end, 10);
+        if (end == p) break;
+        out[count++] = (int)v;
+        p = end;
+    }
+    return count;
+}
+
+/* Check if a value is in the available threshold list. */
+static int is_valid_threshold(const int *avail, int count, int val)
+{
+    for (int i = 0; i < count; i++)
+        if (avail[i] == val) return 1;
+    return 0;
+}
+
+/* Print available threshold values to stderr. */
+static void print_avail_thresholds(const char *label, const int *avail, int count)
+{
+    fprintf(stderr, "  %s available: ", label);
+    for (int i = 0; i < count; i++)
+        fprintf(stderr, "%d%c", avail[i], i < count - 1 ? ' ' : '\n');
+}
+
+/* Read current charge control start threshold. Returns value or -1. */
+static int bat_read_start(void)
+{
+    long v = read_sysfs_long(BAT_START_PATH, -1);
+    return (v >= 0) ? (int)v : -1;
+}
+
+/* Read current charge control end threshold. Returns value or -1. */
+static int bat_read_end(void)
+{
+    long v = read_sysfs_long(BAT_END_PATH, -1);
+    return (v >= 0) ? (int)v : -1;
+}
+
+/* Set battery charge thresholds. Use widest range (40, 100) to effectively disable. */
+static int bat_set(int start, int end)
+{
+    /* "off" → widest available range: start=min, end=max */
+    if (start == 0 && end == 0) {
+        int avail[16], cnt;
+        cnt = read_avail_thresholds(BAT_START_AVAIL_PATH, avail, 16);
+        start = (cnt > 0) ? avail[0] : 40;
+        cnt = read_avail_thresholds(BAT_END_AVAIL_PATH, avail, 16);
+        end = (cnt > 0) ? avail[cnt - 1] : 100;
+    }
+
+    /* Validate start threshold */
+    int start_avail[16], start_count;
+    start_count = read_avail_thresholds(BAT_START_AVAIL_PATH, start_avail, 16);
+    if (start_count > 0 && !is_valid_threshold(start_avail, start_count, start)) {
+        fprintf(stderr, "Error: Start threshold %d%% is not valid\n", start);
+        print_avail_thresholds("Start", start_avail, start_count);
+        return -1;
+    }
+
+    /* Validate end threshold */
+    int end_avail[16], end_count;
+    end_count = read_avail_thresholds(BAT_END_AVAIL_PATH, end_avail, 16);
+    if (end_count > 0 && !is_valid_threshold(end_avail, end_count, end)) {
+        fprintf(stderr, "Error: End threshold %d%% is not valid\n", end);
+        print_avail_thresholds("End", end_avail, end_count);
+        return -1;
+    }
+
+    if (start >= end) {
+        fprintf(stderr, "Error: Start threshold (%d%%) must be less than end threshold (%d%%)\n", start, end);
+        return -1;
+    }
+
+    char val[8];
+    snprintf(val, sizeof(val), "%d", start);
+    if (write_sysfs(BAT_START_PATH, val) < 0) {
+        fprintf(stderr, "Error: Failed to set start threshold to %d%%\n", start);
+        return -1;
+    }
+
+    snprintf(val, sizeof(val), "%d", end);
+    if (write_sysfs(BAT_END_PATH, val) < 0) {
+        fprintf(stderr, "Error: Failed to set end threshold to %d%%\n", end);
+        return -1;
+    }
+
+    printf("  Charge thresholds: start %d%% → stop %d%%\n", start, end);
+    return 0;
 }
 
 /* ========================================================================
@@ -1702,6 +1852,7 @@ static void print_usage(const char *prog)
     printf("  %s%s mic%s [%son|off%s]        Toggle microphone %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s rr%s [%srate%s]           Set/list refresh rates\n", C_BLU, prog, C_RST, C_DIM, C_RST);
     printf("  %s%s webcam%s [%son|off%s]     Toggle webcam %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s bat%s [%sstart%s] [%sstop%s]   Show/set battery charge thresholds %s(sudo for set)%s\n", C_GRN, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s nvidia%s <%son|off|status%s> Nvidia GPU toggle and status %s(needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s status%s              Show current settings\n", C_BLD, prog, C_RST);
     printf("  %s%s monitor%s             Live CPU freq + power + fan monitor\n", C_BLD, prog, C_RST);
@@ -1720,6 +1871,11 @@ static void print_usage(const char *prog)
     printf("  %ssilent%s     Both fans to silent mode\n", C_DIM, C_RST);
     printf("  %scpu%s <%spct%s>  CPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %sgpu%s <%spct%s>  GPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+
+    printf("\n%sBattery thresholds:%s\n", C_GRN, C_RST);
+    printf("  %scctl bat%s           Show current thresholds with available values\n", C_BLD, C_RST);
+    printf("  %scctl bat%s %s<start> <stop>%s  Set start and stop charge %%\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("  %scctl bat off%s       Widest charge range %s(start=min, stop=max)%s\n", C_BLD, C_RST, C_DIM, C_RST);
 
     printf("\n%sKeyboard color presets:%s\n", C_MAG, C_RST);
     printf("  blue, chocolate, coral, cyan, gold, gray, green, indigo, lime,\n");
@@ -2305,6 +2461,73 @@ static int cmd_webcam(int argc, char **argv)
     return rc;
 }
 
+static int cmd_bat(int argc, char **argv)
+{
+    if (argc < 3) {
+        /* Show current thresholds */
+        int start = bat_read_start();
+        int end = bat_read_end();
+        if (start < 0 || end < 0) {
+            fprintf(stderr, "Error: Cannot read battery thresholds\n");
+            return 1;
+        }
+        printf("  Charge thresholds: ");
+        if (start == 0 && end == 0)
+            printf("disabled (full charge range)\n");
+        else
+            printf("start %d%% → stop %d%%\n", start, end);
+
+        /* Show available values */
+        int avail[16], cnt;
+        cnt = read_avail_thresholds(BAT_START_AVAIL_PATH, avail, 16);
+        if (cnt > 0) {
+            printf("  Available start values: ");
+            for (int i = 0; i < cnt; i++) {
+                printf("%s%d%s%s", avail[i] == start ? C_GRN : "", avail[i], C_RST,
+                       i < cnt - 1 ? " " : "\n");
+            }
+        }
+        cnt = read_avail_thresholds(BAT_END_AVAIL_PATH, avail, 16);
+        if (cnt > 0) {
+            printf("  Available stop values:  ");
+            for (int i = 0; i < cnt; i++) {
+                printf("%s%d%s%s", avail[i] == end ? C_GRN : "", avail[i], C_RST,
+                       i < cnt - 1 ? " " : "\n");
+            }
+        }
+        return 0;
+    }
+
+    /* "off" or "default" → widest range */
+    if (strcmp(argv[2], "off") == 0 || strcmp(argv[2], "default") == 0) {
+        if (geteuid() != 0) {
+            fprintf(stderr, "Error: Must run as root (sudo %s bat off)\n", argv[0]);
+            return 1;
+        }
+        int rc = bat_set(0, 0);
+        if (rc == 0) printf("Done.\n");
+        return rc;
+    }
+
+    /* set <start> <end> */
+    if (argc < 4) {
+        fprintf(stderr, "Error: Usage: bat <start> <end> or bat off\n");
+        return 1;
+    }
+    if (geteuid() != 0) {
+        fprintf(stderr, "Error: Must run as root (sudo %s bat %s %s)\n", argv[0], argv[2], argv[3]);
+        return 1;
+    }
+    int start, end;
+    if (safe_atoi(argv[2], &start) < 0 || safe_atoi(argv[3], &end) < 0) {
+        fprintf(stderr, "Error: Invalid threshold values\n");
+        return 1;
+    }
+    int rc = bat_set(start, end);
+    if (rc == 0) printf("Done.\n");
+    return rc;
+}
+
 struct command {
     const char *name;
     int needs_root;
@@ -2327,6 +2550,7 @@ static const struct command commands[] = {
     { "kbcp",    1, cmd_kbcp },
     { "kbb",     1, cmd_kbb },
     { "webcam",  1, cmd_webcam },
+    { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
 };
 
