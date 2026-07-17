@@ -1,4 +1,4 @@
-# cctl
+# **CCTL**
 
 Lightweight CLI tool for Clevo P15 laptop performance management. Sets CPU power profiles (governor, turbo boost, EPP, RAPL limits), controls fan speeds via direct EC port I/O, adjusts keyboard backlight color/brightness, toggles webcam/microphone, and sets display refresh rate. No GUI, no TUI, no dependencies beyond libc.
 
@@ -69,30 +69,10 @@ Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL po
 
 blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, navy, off, olive, orange, pink, purple, red, salmon, silver, teal, turquoise, violet, white, yellow
 
----
 
-> See [`legacymethod/README.md`](legacymethod/README.md) for:
-> - `legacygpu` kernel module (ACPI _DSM GPU profile setter)
-> - `toggle-nvidia` & `nvidia.sh` — NVIDIA module helpers
-> - `setup.sh` — auto-compiles legacygpu.ko
-> - `drivers/` — tuxedo-drivers kernel source tree
-> - Manual RAPL reference
+## Architecture
 
----
-
-## Architecture & Safety Improvements
-
-Following a comprehensive code audit, several critical optimizations and architectural rewrites were implemented:
-- **CLI Command Dispatch Table**: Replaced the large nested `if-else` routing sequence in `main()` with a clean, modular `struct command` dispatch table mapping command names to safe handler function pointers.
-- **Security & Input Sanitization**: Swapped direct shell spawns (`system()`) with secure child processes (`fork`/`execvp`/`waitpid`) for display actions, and introduced a validated `safe_atoi()` parser to verify arguments and prevent bounds overflows.
-- **Dynamic Hybrid core classification**: The system now dynamically detects and separates hybrid P-cores/E-cores based on core frequency topology rather than relying on hardcoded core counts (e.g. CPU 12 split).
-- **Dynamic Core Pinning**: Thread affinity routines query the core classifier and pin the program's background tasks specifically to real system E-cores, preventing performance interference on P-cores.
-- **Descriptor & IOCTL Handle Caching**: The `monitor` loops now cache sysfs and `tuxedo_io` handles once before starting, reading updates using fast `pread()` offset reads to completely eliminate repetitive open/close syscall overhead.
-- **Clean Compilation**: Re-dimensioned path buffers to resolve potential string truncation warnings, allowing compilation with `-Wall -Wextra` and zero warnings.
-- **Robustness & Cleanups (July 2026 Audit)**:
-  - Silenced `amixer` stdout output leakage when modifying microphone capture states.
-  - Hardened the `nvidia-smi` parser using specific CSV group parsing in `sscanf()` to handle process names containing spaces.
-  - Added safety checks in `webcam_toggle()` to handle driver or detection failures gracefully.
-  - Eliminated shell invocation overheads by swapping `system("command -v ...")` with direct `access()` checks for initramfs tools (`mkinitcpio`, `dracut`, `update-initramfs`) and `nvidia-smi`.
-  - Fixed terminal rendering glitches in the CPU monitor by performing explicit cursor and terminal buffer clears.
-  - Removed dead clamps from `fan_set_duty()` and simplified RAPL watts resolution using pre-existing sysfs helpers.
+- **Command dispatch table** — modular `struct command` array instead of nested if-else routing.
+- **No shell execution** — uses `fork`/`execvp`/`waitpid` for all subprocesses; no shell injection surface.
+- **Hybrid CPU aware** — dynamically detects P-cores vs E-cores by frequency topology, no hardcoded core counts.
+- **E-core pinning** — pins itself to E-cores at startup to avoid stealing P-core cycles from foreground workloads.
