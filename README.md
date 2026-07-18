@@ -94,6 +94,18 @@ blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, 
 
 > [!NOTE]
 > For display/gaming (Vulkan, PRIME offload, external monitors via nvidia), you can use `nvidia loadgame` directly to load all 4 modules. If you already ran `nvidia load`, you can still manually run `sudo modprobe nvidia_drm`.
+>
+> [!TIP]
+> **Preventing Xorg GPU Lock (Important for i3/WM users):**
+> When you run `nvidia loadgame`, the display driver modules are loaded and `/dev/dri/card1` is created. By default, Xorg might automatically detect the new GPU and lock it, which prevents `nvidia unload` from working (producing `Module is in use` errors).
+>
+> To stop Xorg from claiming the newly loaded GPU, disable `AutoAddGPU` by creating or editing `/etc/X11/xorg.conf.d/10-no-gpu-hotplug.conf`:
+> ```xorg
+> Section "ServerFlags"
+>     Option "AutoAddGPU" "false"
+> EndSection
+> ```
+> With this flag set, Xorg won't lock the GPU, enabling `nvidia unload` to work instantly and flawlessly whenever you're done gaming, without having to close your session.
 
 ## Architecture
 
