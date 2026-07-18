@@ -32,7 +32,10 @@ sudo ./cctl rapl <pl1> <pl2>    # set RAPL power limits in watts
 sudo ./cctl mic [on|off]        # toggle/set microphone (no root needed)
 sudo ./cctl rr [rate]           # list/set display refresh rate (no root needed)
 sudo ./cctl webcam [on|off]     # toggle/set webcam (needs root)
-sudo ./cctl nvidia <on|off|status> # Nvidia GPU module switcher & telemetry (on/off needs root)
+sudo ./cctl nvidia <on|off>     # Nvidia persistent toggle: blacklist + initramfs rebuild (needs root)
+sudo ./cctl nvidia <load|unload> # Nvidia session-only: instant modprobe/rmmod (blacklist mode, needs root)
+sudo ./cctl nvidia status       # Nvidia GPU status & telemetry (no root needed)
+sudo ./cctl nvidia-power [on|off] # Nvidia GPU hardware power: D0 (on) / D3cold (off) (needs root)
 sudo ./cctl status              # show current settings, CPU temp, fans (no root needed)
 sudo ./cctl monitor             # live CPU freq, temp, power, fans, usage monitor (needs root)
 ```
@@ -69,6 +72,27 @@ Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL po
 
 blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, navy, off, olive, orange, pink, purple, red, salmon, silver, teal, turquoise, violet, white, yellow
 
+
+## Nvidia GPU
+
+| Command | Action | Speed |
+|---------|--------|-------|
+| `nvidia off` | Blacklist + initramfs rebuild + rmmod | ~60s |
+| `nvidia on` | Remove blacklist + initramfs rebuild + modprobe | ~60s |
+| `nvidia load` | Session-only: wake GPU, load nvidia + nvidia_uvm | Instant |
+| `nvidia unload` | Session-only: rmmod all nvidia modules, power off GPU | Instant |
+| `nvidia status` | Show boot config, module state, GPU telemetry | — |
+| `nvidia-power off` | Set GPU hardware to D3cold (powered off) | Instant |
+| `nvidia-power on` | Set GPU hardware to D0 (powered on) | Instant |
+
+**Recommended workflow:** Run `nvidia off` once to blacklist and rebuild initramfs (sets boot default to nvidia-off). Then use `nvidia load` / `nvidia unload` for instant session-only toggling — the blacklist stays intact, so nvidia remains off on next reboot. Only run `nvidia on` when you want to permanently re-enable nvidia at boot.
+
+`load`/`unload` require blacklist mode (i.e., `nvidia off` must have been run first). `load` temporarily moves the blacklist aside for modprobe, then restores it. `unload` uses `rmmod` directly and powers off the GPU via PCI runtime PM (D3cold).
+
+`nvidia-power` controls the GPU hardware power state directly via PCI runtime PM. Useful when no nvidia driver is loaded — without it, the GPU sits in D0 drawing idle power (~5-15W). When the nvidia driver is loaded, it manages its own power state automatically.
+
+> [!NOTE]
+> For display/gaming (Vulkan, PRIME offload, external monitors via nvidia), you also need `nvidia_drm`: run `sudo modprobe nvidia_drm` after `nvidia load`.
 
 ## Architecture
 

@@ -1854,6 +1854,8 @@ static void print_usage(const char *prog)
     printf("  %s%s webcam%s [%son|off%s]     Toggle webcam %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s bat%s [%sstart%s] [%sstop%s]   Show/set battery charge thresholds %s(sudo for set)%s\n", C_GRN, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s nvidia%s <%son|off|status%s> Nvidia GPU toggle and status %s(needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s nvidia%s <%sload|unload%s>   Session-only GPU load/unload %s(blacklist mode, needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s nvidia-power%s [%son|off%s] GPU hardware power %s(D0/D3cold, needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s status%s              Show current settings\n", C_BLD, prog, C_RST);
     printf("  %s%s monitor%s             Live CPU freq + power + fan monitor\n", C_BLD, prog, C_RST);
 
@@ -1882,6 +1884,22 @@ static void print_usage(const char *prog)
     printf("  magenta, maroon, navy, off, olive, orange, pink, purple, red,\n");
     printf("  salmon, silver, teal, turquoise, violet, white, yellow\n");
 }
+
+/* ========================================================================
+ * NVIDIA GPU
+ * ========================================================================
+ * Commands:
+ *   nvidia on|off [--force]  — Persistent toggle: blacklist/unblacklist +
+ *                               initramfs rebuild + modprobe/rmmod.
+ *   nvidia load              — Session-only: wake GPU (D3cold→D0), temp-remove
+ *                               blacklist, modprobe nvidia + nvidia_uvm, restore
+ *                               blacklist. Requires blacklist mode.
+ *   nvidia unload            — Session-only: rmmod all nvidia modules, power off
+ *                               GPU (D0→D3cold). Requires blacklist mode.
+ *   nvidia status            — Show boot config, module state, GPU telemetry.
+ *   nvidia-power [on|off]    — Direct PCI runtime PM control (D0/D3cold).
+ *                               Useful when no nvidia driver is loaded.
+ * ======================================================================== */
 
 static int nvidia_is_blacklisted(void)
 {
@@ -1953,22 +1971,35 @@ static int run_cmd_silent(const char *cmd, char *const argv[])
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+static int run_cmd(const char *cmd, char *const argv[])
+{
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execvp(cmd, argv);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
 static int rebuild_initramfs(void)
 {
     if (access("/usr/bin/mkinitcpio", X_OK) == 0) {
-        printf("  Rebuilding initramfs with mkinitcpio...\n");
+        printf("  Rebuilding initramfs with mkinitcpio (this may take a minute)...\n");
         char *const args[] = { "mkinitcpio", "-P", NULL };
-        return run_cmd_silent("mkinitcpio", args);
+        return run_cmd("mkinitcpio", args);
     }
     if (access("/usr/bin/dracut", X_OK) == 0) {
-        printf("  Rebuilding initramfs with dracut...\n");
+        printf("  Rebuilding initramfs with dracut (this may take a minute)...\n");
         char *const args[] = { "dracut", "--force", NULL };
-        return run_cmd_silent("dracut", args);
+        return run_cmd("dracut", args);
     }
     if (access("/usr/sbin/update-initramfs", X_OK) == 0) {
-        printf("  Rebuilding initramfs with update-initramfs...\n");
+        printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
         char *const args[] = { "update-initramfs", "-u", NULL };
-        return run_cmd_silent("update-initramfs", args);
+        return run_cmd("update-initramfs", args);
     }
     fprintf(stderr, "Warning: No initramfs tool found (mkinitcpio/dracut/update-initramfs).\n");
     fprintf(stderr, "You may need to rebuild initramfs manually before rebooting.\n");
@@ -2175,11 +2206,238 @@ static void nvidia_show_status(void)
     }
 }
 
+/* Find the nvidia GPU PCI sysfs path (vendor 0x10de, VGA class 0x0300xx) */
+static int nvidia_find_pci_address(char *buf, size_t bufsz)
+{
+    DIR *d = opendir("/sys/bus/pci/devices");
+    if (!d) return -1;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char path[512];
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", ent->d_name);
+        FILE *fp = fopen(path, "r");
+        if (!fp) continue;
+        char vendor[16] = {0};
+        if (fgets(vendor, sizeof(vendor), fp)) {
+            vendor[strcspn(vendor, "\n")] = 0;
+        }
+        fclose(fp);
+        if (strcmp(vendor, "0x10de") != 0) continue;
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", ent->d_name);
+        fp = fopen(path, "r");
+        if (!fp) continue;
+        char class[16] = {0};
+        if (fgets(class, sizeof(class), fp)) {
+            class[strcspn(class, "\n")] = 0;
+        }
+        fclose(fp);
+        /* VGA compatible controller: class 0x030000 or 0x0300xx */
+        if (strncmp(class, "0x0300", 6) == 0) {
+            snprintf(buf, bufsz, "/sys/bus/pci/devices/%s", ent->d_name);
+            closedir(d);
+            return 0;
+        }
+    }
+    closedir(d);
+    return -1;
+}
+
+static int nvidia_load(void)
+{
+    if (!nvidia_is_blacklisted()) {
+        fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia on' instead.\n");
+        return 1;
+    }
+    if (nvidia_is_loaded()) {
+        printf("  NVIDIA module is already loaded.\n");
+        return 0;
+    }
+
+    /* Wake GPU from D3cold if needed */
+    char pci_path[512];
+    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
+        char ctrl_path[576];
+        snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
+        FILE *fp = fopen(ctrl_path, "w");
+        if (fp) {
+            fprintf(fp, "on");
+            fclose(fp);
+            printf("  GPU powered on (D0).\n");
+        }
+    }
+
+    /* Temporarily move blacklist aside so modprobe works */
+    printf("  Loading NVIDIA modules (session-only)...\n");
+    rename("/etc/modprobe.d/blacklist-nvidia.conf",
+           "/etc/modprobe.d/blacklist-nvidia.conf.bak");
+
+    char *const args_nv[] = { "modprobe", "nvidia", NULL };
+    int ret = run_cmd("modprobe", args_nv);
+    if (ret == 0) {
+        char *const args_uvm[] = { "modprobe", "nvidia_uvm", NULL };
+        run_cmd("modprobe", args_uvm);
+    }
+
+    /* Restore blacklist immediately */
+    rename("/etc/modprobe.d/blacklist-nvidia.conf.bak",
+           "/etc/modprobe.d/blacklist-nvidia.conf");
+
+    if (ret == 0) {
+        printf("  NVIDIA modules loaded (nvidia + nvidia_uvm). GPU available for this session.\n");
+        printf("  %sNote:%s For display/gaming, also run: sudo modprobe nvidia_drm\n", C_YLW, C_RST);
+        printf("  On next reboot, NVIDIA will remain off (blacklist intact).\n");
+    } else {
+        fprintf(stderr, "  Failed to load NVIDIA modules.\n");
+    }
+    return ret;
+}
+
+static int nvidia_unload(void)
+{
+    if (!nvidia_is_blacklisted()) {
+        fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia off' instead.\n");
+        return 1;
+    }
+    if (!nvidia_is_loaded()) {
+        printf("  NVIDIA modules are not loaded.\n");
+        return 0;
+    }
+
+    if (nvidia_gpu_in_use()) {
+        fprintf(stderr, "  Error: GPU is actively in use by running processes.\n");
+        return 1;
+    }
+
+    printf("  Unloading NVIDIA modules...\n");
+    const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
+    int failed = 0;
+    for (size_t i = 0; i < 4; i++) {
+        /* Check if this module is currently loaded */
+        FILE *check = fopen("/proc/modules", "r");
+        if (!check) continue;
+        char line[256];
+        int loaded = 0;
+        while (fgets(line, sizeof(line), check)) {
+            char name[64];
+            if (sscanf(line, "%63s", name) == 1 && strcmp(name, modules[i]) == 0) {
+                loaded = 1;
+                break;
+            }
+        }
+        fclose(check);
+        if (!loaded) continue;
+
+        /* Use rmmod directly instead of modprobe -r (avoids blacklist alias interference) */
+        char *const args[] = { "rmmod", (char *)modules[i], NULL };
+        if (run_cmd("rmmod", args) == 0) {
+            printf("  Unloaded %s\n", modules[i]);
+        } else {
+            fprintf(stderr, "  Failed to unload %s\n", modules[i]);
+            failed = 1;
+        }
+    }
+
+    /* Verify nvidia is actually gone */
+    if (nvidia_is_loaded()) {
+        fprintf(stderr, "  Warning: NVIDIA module is still loaded.\n");
+        return -1;
+    }
+
+    /* Power off the GPU via PCI runtime PM */
+    char pci_path[512];
+    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
+        char ctrl_path[576];
+        snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
+        FILE *fp = fopen(ctrl_path, "w");
+        if (fp) {
+            fprintf(fp, "auto");
+            fclose(fp);
+            printf("  GPU powered off (D3cold).\n");
+        }
+    }
+    return failed ? -1 : 0;
+}
+
+static int nvidia_power_set(int on)
+{
+    char pci_path[512];
+    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
+        fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
+        return 1;
+    }
+
+    char ctrl_path[576], state_path[576];
+    snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
+    snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
+
+    FILE *fp = fopen(ctrl_path, "w");
+    if (!fp) {
+        perror("  Failed to write PCI power control");
+        return 1;
+    }
+    fprintf(fp, "%s", on ? "on" : "auto");
+    fclose(fp);
+
+    /* Read back power state */
+    char state[16] = "unknown";
+    fp = fopen(state_path, "r");
+    if (fp) {
+        if (fgets(state, sizeof(state), fp))
+            state[strcspn(state, "\n")] = 0;
+        fclose(fp);
+    }
+
+    printf("  GPU power: %s%s%s\n",
+           strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
+    return 0;
+}
+
+static int cmd_nvidia_power(int argc, char **argv)
+{
+    if (argc < 3) {
+        /* Show current state */
+        char pci_path[512];
+        if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
+            fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
+            return 1;
+        }
+        char state_path[576];
+        snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
+        char state[16] = "unknown";
+        FILE *fp = fopen(state_path, "r");
+        if (fp) {
+            if (fgets(state, sizeof(state), fp))
+                state[strcspn(state, "\n")] = 0;
+            fclose(fp);
+        }
+        printf("  GPU power: %s%s%s\n",
+               strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
+        return 0;
+    }
+
+    const char *action = argv[2];
+    if (geteuid() != 0) {
+        fprintf(stderr, "Error: Must run as root (sudo %s nvidia-power %s)\n", argv[0], action);
+        return 1;
+    }
+
+    if (strcmp(action, "on") == 0) {
+        return nvidia_power_set(1);
+    } else if (strcmp(action, "off") == 0) {
+        return nvidia_power_set(0);
+    } else {
+        fprintf(stderr, "Error: Unknown action '%s'\n", action);
+        fprintf(stderr, "Usage: nvidia-power [on|off]\n");
+        return 1;
+    }
+}
+
 static int cmd_nvidia(int argc, char **argv)
 {
     if (argc < 3) {
         fprintf(stderr, "Error: Missing action for nvidia command\n");
-        fprintf(stderr, "Usage: nvidia {on|off|status} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|unload|status} [--force]\n");
         return 1;
     }
     const char *action = argv[2];
@@ -2190,7 +2448,7 @@ static int cmd_nvidia(int argc, char **argv)
         return 0;
     }
 
-    /* on/off actions need root */
+    /* All other actions need root */
     if (geteuid() != 0) {
         fprintf(stderr, "Error: Must run as root (sudo %s nvidia %s)\n", argv[0], action);
         return 1;
@@ -2200,9 +2458,13 @@ static int cmd_nvidia(int argc, char **argv)
         return nvidia_set_off(force);
     } else if (strcmp(action, "on") == 0) {
         return nvidia_set_on(force);
+    } else if (strcmp(action, "load") == 0) {
+        return nvidia_load();
+    } else if (strcmp(action, "unload") == 0) {
+        return nvidia_unload();
     } else {
         fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: nvidia {on|off|status} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|unload|status} [--force]\n");
         return 1;
     }
 }
@@ -2552,6 +2814,7 @@ static const struct command commands[] = {
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
+    { "nvidia-power", 0, cmd_nvidia_power },
 };
 
 int main(int argc, char **argv)
