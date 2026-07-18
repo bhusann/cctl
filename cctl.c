@@ -1854,7 +1854,7 @@ static void print_usage(const char *prog)
     printf("  %s%s webcam%s [%son|off%s]     Toggle webcam %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s bat%s [%sstart%s] [%sstop%s]   Show/set battery charge thresholds %s(sudo for set)%s\n", C_GRN, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s nvidia%s <%son|off|status%s> Nvidia GPU toggle and status %s(needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s nvidia%s <%sload|unload%s>   Session-only GPU load/unload %s(blacklist mode, needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    printf("  %s%s nvidia%s <%sload|loadgame|unload%s> Session-only GPU load/unload %s(blacklist mode, needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s nvidia-power%s [%son|off%s] GPU hardware power %s(D0/D3cold, needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
     printf("  %s%s status%s              Show current settings\n", C_BLD, prog, C_RST);
     printf("  %s%s monitor%s             Live CPU freq + power + fan monitor\n", C_BLD, prog, C_RST);
@@ -1893,6 +1893,9 @@ static void print_usage(const char *prog)
  *                               initramfs rebuild + modprobe/rmmod.
  *   nvidia load              — Session-only: wake GPU (D3cold→D0), temp-remove
  *                               blacklist, modprobe nvidia + nvidia_uvm, restore
+ *                               blacklist. Requires blacklist mode.
+ *   nvidia loadgame          — Session-only: wake GPU (D3cold→D0), temp-remove
+ *                               blacklist, modprobe all 4 nvidia modules, restore
  *                               blacklist. Requires blacklist mode.
  *   nvidia unload            — Session-only: rmmod all nvidia modules, power off
  *                               GPU (D0→D3cold). Requires blacklist mode.
@@ -2243,7 +2246,7 @@ static int nvidia_find_pci_address(char *buf, size_t bufsz)
     return -1;
 }
 
-static int nvidia_load(void)
+static int nvidia_load(int load_game)
 {
     if (!nvidia_is_blacklisted()) {
         fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia on' instead.\n");
@@ -2277,6 +2280,12 @@ static int nvidia_load(void)
     if (ret == 0) {
         char *const args_uvm[] = { "modprobe", "nvidia_uvm", NULL };
         run_cmd("modprobe", args_uvm);
+        if (load_game) {
+            char *const args_modeset[] = { "modprobe", "nvidia_modeset", NULL };
+            run_cmd("modprobe", args_modeset);
+            char *const args_drm[] = { "modprobe", "nvidia_drm", NULL };
+            run_cmd("modprobe", args_drm);
+        }
     }
 
     /* Restore blacklist immediately */
@@ -2284,8 +2293,12 @@ static int nvidia_load(void)
            "/etc/modprobe.d/blacklist-nvidia.conf");
 
     if (ret == 0) {
-        printf("  NVIDIA modules loaded (nvidia + nvidia_uvm). GPU available for this session.\n");
-        printf("  %sNote:%s For display/gaming, also run: sudo modprobe nvidia_drm\n", C_YLW, C_RST);
+        if (load_game) {
+            printf("  NVIDIA modules loaded (nvidia + nvidia_uvm + nvidia_modeset + nvidia_drm). GPU available for this session.\n");
+        } else {
+            printf("  NVIDIA modules loaded (nvidia + nvidia_uvm). GPU available for this session.\n");
+            printf("  %sNote:%s For display/gaming, also run: sudo modprobe nvidia_drm (or use loadgame)\n", C_YLW, C_RST);
+        }
         printf("  On next reboot, NVIDIA will remain off (blacklist intact).\n");
     } else {
         fprintf(stderr, "  Failed to load NVIDIA modules.\n");
@@ -2437,7 +2450,7 @@ static int cmd_nvidia(int argc, char **argv)
 {
     if (argc < 3) {
         fprintf(stderr, "Error: Missing action for nvidia command\n");
-        fprintf(stderr, "Usage: nvidia {on|off|load|unload|status} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status} [--force]\n");
         return 1;
     }
     const char *action = argv[2];
@@ -2459,12 +2472,14 @@ static int cmd_nvidia(int argc, char **argv)
     } else if (strcmp(action, "on") == 0) {
         return nvidia_set_on(force);
     } else if (strcmp(action, "load") == 0) {
-        return nvidia_load();
+        return nvidia_load(0);
+    } else if (strcmp(action, "loadgame") == 0) {
+        return nvidia_load(1);
     } else if (strcmp(action, "unload") == 0) {
         return nvidia_unload();
     } else {
         fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: nvidia {on|off|load|unload|status} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status} [--force]\n");
         return 1;
     }
 }
