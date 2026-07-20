@@ -9,10 +9,9 @@ legacygpu.ko
 # Kernel version marker
 .kernel_version
 
-# Legacy method (whole folder — kept for local reference)
-legacymethod/
-
 # Kernel module build artifacts (drivers/)
+drivers/**/*.ko
+drivers/**/*.ko.cmd
 drivers/**/*.ko
 drivers/**/*.ko.cmd
 drivers/**/*.mod
