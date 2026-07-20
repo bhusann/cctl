@@ -1,6 +1,6 @@
 # **CCTL**
 
-Lightweight CLI tool for Clevo P15 laptop performance management. Sets CPU power profiles (governor, turbo boost, EPP, RAPL limits), controls fan speeds via direct EC port I/O, adjusts keyboard backlight color/brightness, toggles webcam/microphone, and sets display refresh rate. No GUI, no TUI, no dependencies beyond libc.
+Lightweight CLI tool for Clevo P15 laptop performance management. Sets CPU power profiles (governor, turbo boost, EPP, RAPL limits), controls fan speeds via direct EC port I/O, adjusts keyboard backlight color/brightness, toggles webcam/microphone, sets display refresh rate, and GPU-side display scaling. No GUI, no TUI, no dependencies beyond libc.
 
 ## Build
 
@@ -58,27 +58,71 @@ The keyboard backlight module uses `force_backlight_type=6` option — set autom
   \___\___/|_|\___/|_|  \___\___/|_| |_|\__|_|  \___/|_|
 ```
 
-```bash
-sudo ./cctl set <profile>       # max | cpuperf | balanced | powersave | eco
-sudo ./cctl setR <profile>      # same but with RAPL power limits
-sudo ./cctl fan <mode> [value]  # auto | max | silent | cpu <pct> | gpu <pct>
-sudo ./cctl turbo <on|off>      # standalone turbo override
-sudo ./cctl gov <governor>      # standalone governor override (powersave|performance)
-sudo ./cctl epp <value>         # standalone EPP override (performance|balance_performance|balance_power|power)
-sudo ./cctl kbc R G B           # keyboard RGB (0-255 per channel)
-sudo ./cctl kbcp <name|hex>   # keyboard color preset (blue, red, cyan, etc.) or raw hex code (#RRGGBB)
-sudo ./cctl kbb <pct>           # keyboard brightness (0-100%)
-sudo ./cctl rapl <pl1> <pl2>    # set RAPL power limits in watts
-sudo ./cctl mic [on|off]        # toggle/set microphone (no root needed)
-sudo ./cctl rr [rate]           # list/set display refresh rate (no root needed)
-sudo ./cctl webcam [on|off]     # toggle/set webcam (needs root)
-sudo ./cctl nvidia <on|off>     # Nvidia persistent toggle: blacklist + initramfs rebuild (needs root)
-sudo ./cctl nvidia <load|loadgame|unload> # Nvidia session-only: instant modprobe/rmmod (blacklist mode, needs root)
-sudo ./cctl nvidia status       # Nvidia GPU status & telemetry (no root needed)
-sudo ./cctl nvidia-power [on|off] # Nvidia GPU hardware power: D0 (on) / D3cold (off) (needs root)
-sudo ./cctl status              # show current settings, CPU temp, fans (no root needed)
-sudo ./cctl monitor             # live CPU freq, temp, power, fans, usage monitor (needs root)
-```
+**Usage:** `cctl <command> [options]`  *(most commands need sudo)*
+
+**PROFILES**
+| Command | Description |
+|---|---|
+| `set <profile>` | Apply profile (no RAPL) |
+| `setR <profile>` | Apply profile (with RAPL) |
+
+Profiles: `max`, `cpuperf`, `balanced`, `powersave`, `eco`
+setR limits: max(45/90W) · cpuperf(70W) · balanced(35/40W) · eco(9/10W)
+
+**FAN**
+| Command | Description |
+|---|---|
+| `fan auto\|max\|silent` | Set both fans (EC-controlled / full / quiet) |
+| `fan cpu\|gpu <pct>` | Set individual fan duty (21-100%) |
+
+**DISPLAY** *(no root needed)*
+| Command | Description |
+|---|---|
+| `rr [rate]` | List/set refresh rate (1=high, 2=low) |
+| `scale <value>` | GPU-side scaling: factor 0.01-1.0 (e.g. `0.5`=half, `0.75`=1080p), resolution `WxH` (e.g. `1920x1080`), or `off`/`reset` for native |
+
+**KEYBOARD**
+| Command | Description |
+|---|---|
+| `kbc R G B` | Set color via RGB (0-255 per channel, e.g. `kbc 255 0 128`) |
+| `kbc #hex` | Set color via hex (e.g. `kbc #ff0080` or `kbc ff0080`) |
+| `kbc <name>` | Set color from preset (e.g. `kbc cyan`) |
+| `kbb <pct>` | Set brightness (0-100%) |
+
+> `kbcp` still works as an alias for `kbc`.
+
+**SYSTEM**
+| Command | Description |
+|---|---|
+| `turbo <on\|off>` | Turbo boost override |
+| `gov <governor>` | CPU governor (`powersave`, `performance`) |
+| `epp <value>` | EPP (`performance`, `balance_performance`, `balance_power`, `power`) |
+| `rapl <pl1> <pl2>` | RAPL power limits (watts) |
+| `mic [on\|off]` | Toggle/set microphone |
+| `webcam [on\|off]` | Toggle/set webcam |
+
+**BATTERY**
+| Command | Description |
+|---|---|
+| `bat` | Show current charge thresholds |
+| `bat <start> <stop>` | Set start/stop charge % (sudo) |
+| `bat off` | Widest range (start=min, stop=max) |
+
+**NVIDIA** *(needs root)*
+| Command | Description |
+|---|---|
+| `nvidia <on\|off>` | Persistent toggle + initramfs rebuild (`--force` to skip checks) |
+| `nvidia load` | Session load (compute modules) |
+| `nvidia loadgame` | Session load (all modules incl. drm) |
+| `nvidia unload` | Session unload + power off |
+| `nvidia status` | Show GPU status & telemetry |
+| `nvidia-power [on\|off]` | Hardware D0/D3cold control |
+
+**INFO** *(no root needed)*
+| Command | Description |
+|---|---|
+| `status` | Show all current settings |
+| `monitor` | Live CPU/power/fan monitor |
 
 Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL power limits (package-0 only — writing to psys/sub-zones causes EC conflict and 0.4GHz throttle on Clevo). Turbo and governor overrides apply immediately but get replaced by the next profile change. The tool dynamically groups hybrid P/E-cores based on CPU topology/max frequency and pins itself to E-cores to minimize game performance impact.
 

@@ -1822,12 +1822,7 @@ static void print_usage(const char *prog)
 {
     const char *base = strrchr(prog, '/');
     prog = base ? base + 1 : prog;
-    /* Section headers: bold yellow
-     * Command names: bold white
-     * Arguments/placeholders: dim
-     * Profile names: color-coded by intensity
-     * Fan modes: color-coded
-     * Notes: dim */
+
     printf(
     "\n"
     "            %s _                           _             _ %s\n"
@@ -1838,51 +1833,68 @@ static void print_usage(const char *prog)
     "\n",
     C_CYN_BLD, C_RST, C_CYN_BLD, C_RST, C_CYN_BLD, C_RST,
     C_CYN_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("%sUsage:%s\n", C_YLW, C_RST);
-    printf("  %s%s set%s <%sprofile%s>       Apply a performance profile %s(no RAPL)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s setR%s <%sprofile%s>      Apply a performance profile %s(with RAPL limits)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s fan%s <%smode%s> [%svalue%s]  Control fans\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s turbo%s <%son|off%s>      Set turbo boost %s(standalone override)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s gov%s <%sgovernor%s>      Set CPU governor %s(standalone override)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s epp%s <%svalue%s>         Set EPP %s(standalone override)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s rapl%s <%spl1%s> <%spl2%s>    Set RAPL power limits in watts %s(standalone)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s kbc%s %sR G B%s           Set keyboard color %s(0-255 per channel)%s\n", C_MAG, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s kbcp%s <%sname%s>         Set keyboard color from preset\n", C_MAG, prog, C_RST, C_DIM, C_RST);
-    printf("  %s%s kbb%s <%spct%s>           Set keyboard brightness %s(0-100%%)%s\n", C_MAG, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s mic%s [%son|off%s]        Toggle microphone %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s rr%s [%srate%s]           Set/list refresh rates\n", C_BLU, prog, C_RST, C_DIM, C_RST);
-    printf("  %s%s webcam%s [%son|off%s]     Toggle webcam %s(or set on/off)%s\n", C_RED, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s bat%s [%sstart%s] [%sstop%s]   Show/set battery charge thresholds %s(sudo for set)%s\n", C_GRN, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s nvidia%s <%son|off|status%s> Nvidia GPU toggle and status %s(needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s nvidia%s <%sload|loadgame|unload%s> Session-only GPU load/unload %s(blacklist mode, needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s nvidia-power%s [%son|off%s] GPU hardware power %s(D0/D3cold, needs root)%s\n", C_BLD, prog, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %s%s status%s              Show current settings\n", C_BLD, prog, C_RST);
-    printf("  %s%s monitor%s             Live CPU freq + power + fan monitor\n", C_BLD, prog, C_RST);
 
-    printf("\n%sProfiles:%s\n", C_YLW, C_RST);
-    printf("  %smax%s        Performance Max + GPU %s(80W-100W)%s\n", C_RED, C_RST, C_DIM, C_RST);
-    printf("  %scpuperf%s    Performance CPU Only\n", C_YLW, C_RST);
-    printf("  %sbalanced%s   Balanced\n", C_GRN, C_RST);
-    printf("  %spowersave%s  Powersave\n", C_CYN_BLD, C_RST);
-    printf("  %seco%s        Ultra Powersave\n", C_DIM, C_RST);
-    printf("\n  %ssetR applies RAPL limits: max(45/90W) cpuperf(70W) balanced(35/40W) eco(9/10W)%s\n", C_DIM, C_RST);
+    printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
 
-    printf("\n%sFan modes:%s\n", C_YLW, C_RST);
-    printf("  %sauto%s       Both fans to auto %s(EC-controlled)%s\n", C_CYN_BLD, C_RST, C_DIM, C_RST);
-    printf("  %smax%s        Both fans to maximum speed\n", C_RED, C_RST);
-    printf("  %ssilent%s     Both fans to silent mode\n", C_DIM, C_RST);
-    printf("  %scpu%s <%spct%s>  CPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
-    printf("  %sgpu%s <%spct%s>  GPU fan to %s21-100%%%s\n", C_YLW, C_RST, C_DIM, C_RST, C_DIM, C_RST);
+    /* ── Profiles ──────────────────────────────────────────────────────── */
+    printf("  %sPROFILES%s\n", C_YLW, C_RST);
+    printf("    %sset%s   <profile>          Apply profile %s(no RAPL)%s\n",  C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %ssetR%s  <profile>          Apply profile %s(with RAPL)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("      %smax%s  %scpuperf%s  %sbalanced%s  %spowersave%s  %seco%s\n",
+           C_RED, C_RST, C_YLW, C_RST, C_GRN, C_RST, C_CYN_BLD, C_RST, C_DIM, C_RST);
+    printf("      %ssetR RAPL: max 45/90W · cpuperf 70W · balanced 35/40W · eco 9/10W%s\n\n", C_DIM, C_RST);
 
-    printf("\n%sBattery thresholds:%s\n", C_GRN, C_RST);
-    printf("  %scctl bat%s           Show current thresholds with available values\n", C_BLD, C_RST);
-    printf("  %scctl bat%s %s<start> <stop>%s  Set start and stop charge %%\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("  %scctl bat off%s       Widest charge range %s(start=min, stop=max)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    /* ── Fan ────────────────────────────────────────────────────────────── */
+    printf("  %sFAN%s\n", C_YLW, C_RST);
+    printf("    %sfan%s   auto|max|silent    Set both fans %s(EC-controlled / full / quiet)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   cpu|gpu <pct>      Set individual fan duty %s(21-100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
-    printf("\n%sKeyboard color presets:%s\n", C_MAG, C_RST);
-    printf("  blue, chocolate, coral, cyan, gold, gray, green, indigo, lime,\n");
-    printf("  magenta, maroon, navy, off, olive, orange, pink, purple, red,\n");
-    printf("  salmon, silver, teal, turquoise, violet, white, yellow\n");
+    /* ── Display ────────────────────────────────────────────────────────── */
+    printf("  %sDISPLAY%s\n", C_BLU, C_RST);
+    printf("    %srr%s    [rate]             List/set refresh rate %s(1=high, 2=low)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sscale%s <value>            GPU-side scaling\n", C_BLD, C_RST);
+    printf("      %sfactor: 0.01-1.0 (e.g. 0.5=half, 0.75=1080p on 1440p)%s\n", C_DIM, C_RST);
+    printf("      %sresolution: WxH (e.g. 1920x1080)  |  off/reset: back to native%s\n\n", C_DIM, C_RST);
+
+    /* ── Keyboard ───────────────────────────────────────────────────────── */
+    printf("  %sKEYBOARD%s\n", C_MAG, C_RST);
+    printf("    %skbc%s   <color>            Set keyboard color\n", C_BLD, C_RST);
+    printf("      %sR G B: three values 0-255 (e.g. kbc 255 0 128)%s\n", C_DIM, C_RST);
+    printf("      %s#hex:  hex code (e.g. kbc #ff0080 or kbc ff0080)%s\n", C_DIM, C_RST);
+    printf("      %sname:  preset name (e.g. kbc cyan)%s\n", C_DIM, C_RST);
+    printf("    %skbb%s   <pct>              Set brightness %s(0-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("      %spresets: blue chocolate coral cyan gold gray green indigo lime\n"
+           "      magenta maroon navy off olive orange pink purple red salmon\n"
+           "      silver teal turquoise violet white yellow%s\n\n", C_DIM, C_RST);
+
+    /* ── System ─────────────────────────────────────────────────────────── */
+    printf("  %sSYSTEM%s\n", C_YLW, C_RST);
+    printf("    %sturbo%s  <on|off>          Turbo boost override\n",  C_BLD, C_RST);
+    printf("    %sgov%s    <governor>        CPU governor %s(powersave, performance)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %smic%s    [on|off]          Toggle/set microphone\n", C_BLD, C_RST);
+    printf("    %swebcam%s [on|off]          Toggle/set webcam\n\n",   C_BLD, C_RST);
+
+    /* ── Battery ────────────────────────────────────────────────────────── */
+    printf("  %sBATTERY%s\n", C_GRN, C_RST);
+    printf("    %sbat%s                      Show current thresholds\n",       C_BLD, C_RST);
+    printf("    %sbat%s    <start> <stop>    Set charge thresholds %s(sudo)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sbat off%s                  Widest range %s(start=min, stop=max)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+
+    /* ── NVIDIA ─────────────────────────────────────────────────────────── */
+    printf("  %sNVIDIA%s %s(needs root)%s\n", C_RED, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  <on|off>         Persistent toggle %s(+initramfs rebuild, --force to skip checks)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  load             Session load %s(compute modules)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  loadgame         Session load %s(all modules incl. drm)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  unload           Session unload + power off\n", C_BLD, C_RST);
+    printf("    %snvidia%s  status           Show GPU status & telemetry\n", C_BLD, C_RST);
+    printf("    %snvidia-power%s [on|off]    Hardware D0/D3cold control\n\n", C_BLD, C_RST);
+
+    /* ── Info ───────────────────────────────────────────────────────────── */
+    printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
+    printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
+    printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
 }
 
 /* ========================================================================
@@ -2495,7 +2507,142 @@ static int cmd_rr(int argc, char **argv)
 {
     if (argc < 3)
         return rr_list();
-    int rc = rr_set(argv[2]);
+
+    /* Shortcuts: 1 → highest rate, 2 → lowest rate (e.g. 165Hz / 40Hz) */
+    const char *rate = argv[2];
+    if (strcmp(rate, "1") == 0 || strcmp(rate, "2") == 0) {
+        struct display_info info;
+        if (query_display_info(&info) < 0 || info.rate_count < 2) {
+            fprintf(stderr, "Error: cannot detect available rates\n");
+            return -1;
+        }
+        int idx = (rate[0] == '1') ? 0 : (info.rate_count - 1);
+        rate = info.available_rates[idx];
+    }
+
+    int rc = rr_set(rate);
+    if (rc == 0) printf("Done.\n");
+    return rc;
+}
+
+/* ========================================================================
+ * DISPLAY SCALING (xrandr --scale-from)
+ * ======================================================================== */
+
+static int scale_set(const char *resolution)
+{
+    struct display_info info;
+    if (query_display_info(&info) < 0) {
+        fprintf(stderr, "Error: failed to query display info\n");
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return -1; }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+        execlp("xrandr", "xrandr", "--output", info.output, "--mode", info.resolution,
+               "--scale-from", resolution, (char *)NULL);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "Error: Failed to set scale to %s\n", resolution);
+        return -1;
+    }
+    printf("  Scale: %s → %s (GPU upscaled)\n", resolution, info.resolution);
+    return 0;
+}
+
+static int scale_reset(void)
+{
+    struct display_info info;
+    if (query_display_info(&info) < 0) {
+        fprintf(stderr, "Error: failed to query display info\n");
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return -1; }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+        execlp("xrandr", "xrandr", "--output", info.output, "--mode", info.resolution,
+               "--scale", "1x1", (char *)NULL);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "Error: Failed to reset scale\n");
+        return -1;
+    }
+    printf("  Scale: native (1x1)\n");
+    return 0;
+}
+
+static int cmd_scale(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "Usage: scale <factor|resolution>\n");
+        fprintf(stderr, "       scale off\n");
+        fprintf(stderr, "\n  GPU-side scaling: render at lower resolution and stretch to native.\n");
+        fprintf(stderr, "  Examples:\n");
+        fprintf(stderr, "    cctl scale 0.75         75%% — same as 1920x1080\n");
+        fprintf(stderr, "    cctl scale 1920x1080    explicit resolution\n");
+        fprintf(stderr, "    cctl scale 0.5          50%% — big UI\n");
+        fprintf(stderr, "    cctl scale off          back to native\n");
+        return 1;
+    }
+
+    const char *arg = argv[2];
+    if (strcmp(arg, "off") == 0 || strcmp(arg, "1") == 0 || strcmp(arg, "reset") == 0)
+        return scale_reset();
+
+    /* Check if argument is a number (factor) or a resolution string */
+    int is_factor = 1;
+    int has_x = 0;
+    int dot_count = 0;
+    for (const char *p = arg; *p; p++) {
+        if (*p == 'x') { has_x = 1; is_factor = 0; break; }
+        if (*p == '.') dot_count++;
+        if (!isdigit((unsigned char)*p) && *p != '.' && *p != '-') { is_factor = 0; break; }
+    }
+    /* If purely numeric (possibly with one dot), treat as factor */
+    if (is_factor && *arg) {
+        double factor = atof(arg);
+        if (factor <= 0.0 || factor > 1.0) {
+            fprintf(stderr, "Error: Scale factor must be between 0.01 and 1.0\n");
+            return 1;
+        }
+        struct display_info info;
+        if (query_display_info(&info) < 0) {
+            fprintf(stderr, "Error: failed to query display info\n");
+            return -1;
+        }
+        /* Parse native resolution */
+        int w, h;
+        if (sscanf(info.resolution, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
+            fprintf(stderr, "Error: cannot parse native resolution '%s'\n", info.resolution);
+            return -1;
+        }
+        int sw = (int)(w * factor);
+        int sh = (int)(h * factor);
+        /* Keep even numbers to avoid xrandr issues */
+        if (sw % 2) sw--;
+        if (sh % 2) sh--;
+        char res[32];
+        snprintf(res, sizeof(res), "%dx%d", sw, sh);
+        printf("  Factor: %.2f → %s (from %s)\n", factor, res, info.resolution);
+        int rc = scale_set(res);
+        if (rc == 0) printf("Done.\n");
+        return rc;
+    }
+
+    /* Resolution string (contains 'x') */
+    int rc = scale_set(arg);
     if (rc == 0) printf("Done.\n");
     return rc;
 }
@@ -2680,30 +2827,23 @@ static int cmd_rapl(int argc, char **argv)
 
 static int cmd_kbc(int argc, char **argv)
 {
-    if (argc < 5) {
-        fprintf(stderr, "Error: Usage: kbc <R> <G> <B> (0-255 each)\n");
-        return 1;
-    }
-    int r, g, b;
-    if (safe_atoi(argv[2], &r) < 0 || safe_atoi(argv[3], &g) < 0 || safe_atoi(argv[4], &b) < 0) {
-        fprintf(stderr, "Error: Invalid RGB color values\n");
-        return 1;
-    }
-    int rc = kbd_set_color(r, g, b);
-    if (rc == 0) printf("Done.\n");
-    return rc;
-}
-
-static int cmd_kbcp(int argc, char **argv)
-{
     if (argc < 3) {
-        fprintf(stderr, "Error: Usage: kbcp <preset name>\n");
-        fprintf(stderr, "Available presets: blue, chocolate, coral, cyan, gold, gray,\n");
-        fprintf(stderr, "  green, indigo, lime, magenta, maroon, navy, off, olive,\n");
-        fprintf(stderr, "  orange, pink, purple, red, salmon, silver, teal,\n");
-        fprintf(stderr, "  turquoise, violet, white, yellow\n");
+        fprintf(stderr, "Usage: kbc <R G B | #hex | preset>\n");
+        fprintf(stderr, "  kbc 255 0 128      RGB values (0-255)\n");
+        fprintf(stderr, "  kbc #ff0080        hex color\n");
+        fprintf(stderr, "  kbc cyan           preset name\n");
         return 1;
     }
+    /* If 3 numeric args → RGB mode */
+    if (argc >= 5) {
+        int r, g, b;
+        if (safe_atoi(argv[2], &r) == 0 && safe_atoi(argv[3], &g) == 0 && safe_atoi(argv[4], &b) == 0) {
+            int rc = kbd_set_color(r, g, b);
+            if (rc == 0) printf("Done.\n");
+            return rc;
+        }
+    }
+    /* Single arg → hex or preset */
     int rc = kbd_set_preset(argv[2]);
     if (rc == 0) printf("Done.\n");
     return rc;
@@ -2814,6 +2954,7 @@ struct command {
 static const struct command commands[] = {
     { "status",  0, cmd_status },
     { "rr",      0, cmd_rr },
+    { "scale",   0, cmd_scale },
     { "mic",     0, cmd_mic },
     { "monitor", 1, cmd_monitor },
     { "set",     1, cmd_set },
@@ -2824,7 +2965,7 @@ static const struct command commands[] = {
     { "epp",     1, cmd_epp },
     { "rapl",    1, cmd_rapl },
     { "kbc",     1, cmd_kbc },
-    { "kbcp",    1, cmd_kbcp },
+    { "kbcp",    1, cmd_kbc },     /* backward compat alias */
     { "kbb",     1, cmd_kbb },
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
