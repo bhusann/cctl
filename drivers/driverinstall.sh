@@ -1,0 +1,271 @@
+#!/bin/bash
+set -euo pipefail
+
+# ─── Configuration ──────────────────────────────────────────────────────────
+PACKAGE="tuxedo-drivers"
+VERSION="1.0"
+MODULES=("clevo_acpi" "tuxedo_keyboard" "tuxedo_io")
+MODPROBE_FILE="/etc/modprobe.d/tuxedo_keyboard.conf"
+MODPROBE_OPTIONS="options tuxedo_keyboard force_backlight_type=6"
+SOURCE_TARGET="/usr/src/${PACKAGE}-${VERSION}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+KERNEL="$(uname -r)"
+KERNEL_BUILD="/lib/modules/${KERNEL}/build"
+
+# ─── Colors ─────────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
+warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
+fail() { echo -e "  ${RED}✗${NC} $1"; }
+info() { echo -e "  ${CYAN}→${NC} $1"; }
+header() { echo -e "\n${CYAN}══ $1 ══${NC}"; }
+
+# ─── Prerequisites Check ────────────────────────────────────────────────────
+check_prereqs() {
+    local missing=0
+    command -v dkms &>/dev/null || { fail "dkms not found"; missing=1; }
+    if [ ! -d "$KERNEL_BUILD" ]; then
+        fail "Kernel headers not found at $KERNEL_BUILD"
+        missing=1
+    fi
+    if [ $missing -ne 0 ]; then
+        echo -e "\n${RED}Fix missing prerequisites and re-run.${NC}" >&2
+        exit 1
+    fi
+}
+
+# ─── Fix missing autoconf.h (cachyos-headers bug workaround) ────────────────
+fix_autoconf() {
+    local autoconf="${KERNEL_BUILD}/include/generated/autoconf.h"
+    local autoconf_src="${KERNEL_BUILD}/include/config/auto.conf"
+    if [ -f "$autoconf" ] && [ -s "$autoconf" ]; then
+        return 0  # already fine
+    fi
+    if [ ! -f "$autoconf_src" ]; then
+        fail "Cannot generate autoconf.h: ${autoconf_src} not found"
+        return 1
+    fi
+    warn "autoconf.h missing — generating from auto.conf"
+    awk -F= '/^CONFIG_/ {
+        if ($2 == "y") print "#define " $1 " 1"
+        else if ($2 == "m") print "#define " $1 "_MODULE 1"
+        else if ($2 == "")  print "#define " $1 ""
+        else                print "#define " $1 " " $2
+    }' "$autoconf_src" > "$autoconf"
+    ok "autoconf.h generated (${KERNEL})"
+}
+
+# ─── Detection ──────────────────────────────────────────────────────────────
+detect_state() {
+    local state="absent"
+
+    # Check DKMS
+    local dkms_out
+    dkms_out="$(dkms status "${PACKAGE}/${VERSION}" 2>/dev/null || true)"
+    if echo "$dkms_out" | grep -q "installed"; then
+        state="installed"
+    elif echo "$dkms_out" | grep -q "added\|built"; then
+        state="partial"
+    fi
+
+    # Check modprobe config
+    local modprobe_ok=0
+    [ -f "$MODPROBE_FILE" ] && modprobe_ok=1
+
+    # Check loaded modules
+    local loaded=0
+    for m in "${MODULES[@]}"; do
+        lsmod | grep -q "^${m}[[:space:]]" && loaded=$((loaded + 1))
+    done
+
+    echo "$state|$modprobe_ok|$loaded"
+}
+
+print_status() {
+    header "Status"
+    IFS='|' read -r state modprobe loaded < <(detect_state)
+
+    case "$state" in
+        installed) ok "DKMS: installed" ;;
+        partial)   warn "DKMS: partially registered (not installed)" ;;
+        *)         fail "DKMS: not registered" ;;
+    esac
+
+    if [ "$modprobe" -eq 1 ]; then
+        ok "modprobe config: present ($MODPROBE_FILE)"
+    else
+        fail "modprobe config: missing"
+    fi
+
+    info "Modules loaded: ${loaded}/${#MODULES[@]}"
+    echo
+}
+
+# ─── Install ────────────────────────────────────────────────────────────────
+do_install() {
+    header "Install"
+
+    # 1. Source → /usr/src
+    if [ -d "$SOURCE_TARGET" ]; then
+        warn "Replacing existing source at ${SOURCE_TARGET}"
+        rm -rf "$SOURCE_TARGET"
+    fi
+    cp -r "$SCRIPT_DIR" "$SOURCE_TARGET"
+    ok "Source copied to ${SOURCE_TARGET}"
+
+    # 2. DKMS add
+    if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -q "added\|installed"; then
+        warn "DKMS already registered, skipping add"
+    else
+        dkms add "${PACKAGE}/${VERSION}"
+        ok "DKMS registered"
+    fi
+
+    # 3. Fix autoconf.h if needed
+    fix_autoconf || true
+
+    # 4. DKMS build
+    info "Building modules..."
+    if ! dkms build "${PACKAGE}/${VERSION}" 2>/dev/null; then
+        # Retry with autoconf fix if it failed
+        fix_autoconf
+        dkms build "${PACKAGE}/${VERSION}"
+    fi
+    ok "Build successful"
+
+    # 5. DKMS install — force to overwrite any stale .ko files
+    dkms install --force "${PACKAGE}/${VERSION}"
+    ok "Install successful"
+
+    # 6. Modprobe config
+    echo "$MODPROBE_OPTIONS" > "$MODPROBE_FILE"
+    ok "modprobe config written"
+
+    # 7. Clean stale updates/src/ if it lingered
+    local updates_src="/lib/modules/${KERNEL}/updates/src"
+    if [ -d "$updates_src" ]; then
+        rm -rf "$updates_src"
+        ok "Cleaned stale updates/src/"
+    fi
+
+    # 8. depmod
+    depmod -a
+    ok "Module dependencies updated"
+
+    # 9. Summary
+    echo
+    echo -e "  ${GREEN}── Installed ──${NC}"
+    for m in "${MODULES[@]}"; do
+        local f
+        f="$(modinfo -F filename "$m" 2>/dev/null || echo "not found")"
+        echo "    $m → $f"
+    done
+    echo
+    ok "Done. Reboot or modprobe -a ${MODULES[*]} to load."
+}
+
+# ─── Uninstall ──────────────────────────────────────────────────────────────
+do_uninstall() {
+    header "Uninstall"
+
+    # 1. DKMS remove
+    if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -q "added\|built\|installed"; then
+        dkms remove "${PACKAGE}/${VERSION}" --all
+        ok "DKMS module removed"
+    else
+        warn "DKMS not registered, skipping"
+    fi
+
+    # 2. Remove built .ko files from updates/
+    local updates_dir="/lib/modules/${KERNEL}/updates"
+    if [ -d "$updates_dir" ]; then
+        for m in "${MODULES[@]}"; do
+            find "$updates_dir" -name "${m}.ko*" -delete 2>/dev/null || true
+        done
+        # Remove empty directories
+        find "$updates_dir" -type d -empty -delete 2>/dev/null || true
+        ok "Removed built modules from ${updates_dir}"
+    fi
+
+    # 3. Remove modprobe config
+    if [ -f "$MODPROBE_FILE" ]; then
+        rm -f "$MODPROBE_FILE"
+        ok "Removed ${MODPROBE_FILE}"
+    else
+        warn "modprobe config not found, skipping"
+    fi
+
+    # 4. Remove source from /usr/src
+    if [ -d "$SOURCE_TARGET" ]; then
+        rm -rf "$SOURCE_TARGET"
+        ok "Removed ${SOURCE_TARGET}"
+    fi
+
+    # 5. Also clean original_module backups
+    local backup="/var/lib/dkms/${PACKAGE}/original_module"
+    if [ -d "$backup" ]; then
+        rm -rf "$backup"
+        ok "Cleaned DKMS original module backups"
+    fi
+
+    # 6. depmod
+    depmod -a
+    ok "Module dependencies updated"
+
+    echo
+    ok "Uninstall complete."
+}
+
+# ─── Main ───────────────────────────────────────────────────────────────────
+main() {
+    # Ensure root
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Run with sudo.${NC}" >&2
+        exit 1
+    fi
+
+    check_prereqs
+
+    # Handle flags
+    case "${1:-}" in
+        --install|-i)
+            do_install
+            exit 0
+            ;;
+        --uninstall|-u)
+            do_uninstall
+            exit 0
+            ;;
+        --status|-s)
+            print_status
+            exit 0
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--install|--uninstall|--status|--help]"
+            echo "  (no args)  Interactive mode — prompts install/uninstall"
+            exit 0
+            ;;
+    esac
+
+    # Interactive mode
+    IFS='|' read -r state modprobe loaded < <(detect_state)
+    print_status
+
+    if [ "$state" = "installed" ] && [ "$modprobe" -eq 1 ]; then
+        echo -n "tuxedo-drivers are installed. Uninstall? [y/N] "
+        read -r ans
+        case "$ans" in
+            [yY]|[yY][eE][sS]) do_uninstall ;;
+            *) echo "Aborted." ;;
+        esac
+    else
+        echo -n "tuxedo-drivers are not installed. Install? [Y/n] "
+        read -r ans
+        case "$ans" in
+            [nN]|[nN][oO]) echo "Aborted." ;;
+            *) do_install ;;
+        esac
+    fi
+}
+
+main "$@"

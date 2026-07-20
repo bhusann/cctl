@@ -12,6 +12,17 @@ legacygpu.ko
 # Legacy method (whole folder — kept for local reference)
 legacymethod/
 
+# Kernel module build artifacts (drivers/)
+drivers/**/*.ko
+drivers/**/*.ko.cmd
+drivers/**/*.mod
+drivers/**/*.mod.c
+drivers/**/*.mod.o
+drivers/**/*.mod.o.cmd
+drivers/**/modules.order
+drivers/**/.*.cmd
+drivers/**/.module-common*
+
 # Editor/OS junk
 *~
 *.swp
