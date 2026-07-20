@@ -5,8 +5,48 @@ Lightweight CLI tool for Clevo P15 laptop performance management. Sets CPU power
 ## Build
 
 ```bash
-gcc -o cctl cctl.c -Os -s
+# cctl binary
+make cctl
+
+# everything (cctl + kernel modules)
+make
 ```
+
+## Drivers
+
+This repo includes kernel drivers for TUXEDO/Clevo laptop hardware:
+
+| Module | Description |
+|---|---|
+| `tuxedo_keyboard` | Keyboard backlight control |
+| `clevo_acpi` | Clevo ACPI interface |
+| `tuxedo_io` | Hardware I/O (fan/PWM/EC access) |
+| `legacygpu` | Legacy GPU power control (optional) |
+
+### Install drivers via DKMS (recommended)
+
+```bash
+sudo ./drivers/driverinstall.sh --install
+```
+
+Or interactively:
+
+```bash
+sudo ./drivers/driverinstall.sh
+```
+
+The script auto-detects current state and prompts install or uninstall. Drivers auto-rebuild on kernel updates.
+
+### Make targets
+
+```bash
+make drivers           # build drivers in-tree (no DKMS)
+make drivers-install   # run driverinstall.sh --install
+make drivers-uninstall # run driverinstall.sh --uninstall
+make drivers-status    # check driver state
+```
+
+The keyboard backlight module uses `force_backlight_type=6` option — set automatically on install.
 
 ## Usage
 
