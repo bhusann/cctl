@@ -51,11 +51,11 @@ The keyboard backlight module uses `force_backlight_type=6` option — set autom
 ## Usage
 
 ```
-            _                           _             _ 
-   ___ ___ | | ___  _ __ ___ ___  _ __ | |_ _ __ ___ | |
-  / __/ _ \| |/ _ \| '__/ __/ _ \| '_ \| __| '__/ _ \| |
- | (_| (_) | | (_) | | | (_| (_) | | | | |_| | | (_) | |
-  \___\___/|_|\___/|_|  \___\___/|_| |_|\__|_|  \___/|_|
+   ____ ___  _     ___  ____   ____ ___  _   _ _____ ____   ___  _     
+  / ___/ _ \| |   / _ \|  _ \ / ___/ _ \| \ | |_   _|  _ \ / _ \| |    
+ | |  | | | | |  | | | | |_) | |  | | | |  \| | | | | |_) | | | | |    
+ | |__| |_| | |__| |_| |  _ <| |__| |_| | |\  | | | |  _ <| |_| | |___ 
+  \____\___/|_____\___/|_| \_\\____\___/|_| \_| |_| |_| \_\\___/|_____|
 ```
 
 **Usage:** `cctl <command> [options]`  *(most commands need sudo)*
@@ -184,7 +184,7 @@ blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, 
 > When you run `nvidia loadgame`, the display driver modules are loaded and `/dev/dri/card1` is created. By default, Xorg might automatically detect the new GPU and lock it, which prevents `nvidia unload` from working (producing `Module is in use` errors).
 >
 > To stop Xorg from claiming the newly loaded GPU, disable `AutoAddGPU` by creating or editing `/etc/X11/xorg.conf.d/10-no-gpu-hotplug.conf`:
-> ```xorg
+> ```
 > Section "ServerFlags"
 >     Option "AutoAddGPU" "false"
 > EndSection

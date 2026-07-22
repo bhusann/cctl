@@ -1823,16 +1823,21 @@ static void print_usage(const char *prog)
     const char *base = strrchr(prog, '/');
     prog = base ? base + 1 : prog;
 
+    /* ASCII art generated via:
+     * curl "https://asciified.thelicato.io/api/v2/ascii?text=COLORCONTROL&font=slant" */
     printf(
     "\n"
-    "            %s _                           _             _ %s\n"
-    "   %s___ ___ %s | | ___  _ __ ___ ___  _ __ | |_ _ __ ___ | |\n"
-    "  %s/ __/ _ \\%s| |/ _ \\| '__/ __/ _ \\| '_ \\| __| '__/ _ \\| |\n"
-    " %s| (_| (_) %s| | (_) | | | (_| (_) | | | | |_| | | (_) | |\n"
-    "  %s\\___\\___/%s|_|\\___/|_|  \\___\\___/|_| |_|\\__|_|  \\___/|_|\n"
+    "   %s____ ___  _     ___  ____  %s %s____ ___  _   _ _____ ____   ___  _     %s\n"
+    "  %s/ ___/ _ \\| |   / _ \\|  _ \\ %s%s/ ___/ _ \\| \\ | |_   _|  _ \\ / _ \\| |    %s\n"
+    " %s| |  | | | | |  | | | | |_) |%s%s |  | | | |  \\| | | | | |_) | | | | |    %s\n"
+    " %s| |__| |_| | |__| |_| |  _ <%s%s| |__| |_| | |\\  | | | |  _ <| |_| | |___ %s\n"
+    "  %s\\____\\___/|_____\\___/|_| \\_\\%s%s\\____\\___/|_| \\_| |_| |_| \\_\\___/|_____|%s\n"
     "\n",
-    C_CYN_BLD, C_RST, C_CYN_BLD, C_RST, C_CYN_BLD, C_RST,
-    C_CYN_BLD, C_RST, C_CYN_BLD, C_RST);
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST);
 
     printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
 
