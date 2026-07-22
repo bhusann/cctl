@@ -1828,6 +1828,7 @@ static void print_usage(const char *prog)
     /* ── Fan ────────────────────────────────────────────────────────────── */
     printf("  %sFAN%s\n", C_YLW, C_RST);
     printf("    %sfan%s   auto|max|silent    Set both fans %s(EC-controlled / full / quiet)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   <pct>              Set both fans to duty %s(21-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfan%s   cpu|gpu <pct>      Set individual fan duty %s(21-100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Display ────────────────────────────────────────────────────────── */
@@ -1877,7 +1878,7 @@ static void print_usage(const char *prog)
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
     printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
     printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
-    printf("\n  %sv1.1.1%s\n", C_DIM, C_RST);
+    printf("\n  %sv1.1.2%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
@@ -2726,9 +2727,17 @@ static int cmd_fan(int argc, char **argv)
         }
         rc = fan_set_duty(FAN_GPU, pct);
     } else {
-        fprintf(stderr, "Error: Unknown fan mode '%s'\n", mode);
-        fprintf(stderr, "Valid modes: auto, max, silent, cpu <pct>, gpu <pct>\n");
-        return 1;
+        /* Try as a plain number — apply to both fans */
+        int pct;
+        if (safe_atoi(mode, &pct) >= 0 && pct >= 21 && pct <= 100) {
+            printf("Setting both fans to %d%%...\n", pct);
+            if (fan_set_duty(FAN_CPU, pct) < 0) rc = -1;
+            if (fan_set_duty(FAN_GPU, pct) < 0) rc = -1;
+        } else {
+            fprintf(stderr, "Error: Unknown fan mode '%s'\n", mode);
+            fprintf(stderr, "Valid modes: auto, max, silent, cpu <pct>, gpu <pct>, or just <pct> for both\n");
+            return 1;
+        }
     }
 
     ec_release_ports();

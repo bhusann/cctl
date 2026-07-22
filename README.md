@@ -73,6 +73,7 @@ setR limits: max(45/90W) · cpuperf(70W) · balanced(35/40W) · eco(9/10W)
 | Command | Description |
 |---|---|
 | `fan auto\|max\|silent` | Set both fans (EC-controlled / full / quiet) |
+| `fan <pct>` | Set both fans to duty (21-100%) |
 | `fan cpu\|gpu <pct>` | Set individual fan duty (21-100%) |
 
 **DISPLAY** *(no root needed)*
@@ -144,6 +145,7 @@ Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL po
 | auto   | Both fans to EC-controlled   |
 | max    | Both fans to max speed       |
 | silent | Both fans to silent mode     |
+| <pct>  | Both fans to 21-100%         |
 | cpu    | CPU fan to 21-100%           |
 | gpu    | GPU fan to 21-100%           |
 
