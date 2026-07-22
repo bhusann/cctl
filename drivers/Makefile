@@ -23,7 +23,7 @@
 KDIR := /lib/modules/$(shell uname -r)/build
 
 all:
-	make -C $(KDIR) M=$(PWD) $(MAKEFLAGS) modules
+	make -C $(KDIR) M=$(PWD) $(MAKEFLAGS) CC=$(CC) LD=$(LD) modules
 
 install: all
 	make -C $(KDIR) M=$(PWD) $(MAKEFLAGS) modules_install

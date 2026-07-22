@@ -5,11 +5,11 @@ Lightweight CLI tool for Clevo P15 laptop performance management. Sets CPU power
 ## Build
 
 ```bash
-# cctl binary
-make cctl
+# cctl binary only (default)
+make
 
 # everything (cctl + kernel modules)
-make
+make all
 ```
 
 ## Drivers
@@ -99,6 +99,7 @@ setR limits: max(45/90W) · cpuperf(70W) · balanced(35/40W) · eco(9/10W)
 | `epp <value>` | EPP (`performance`, `balance_performance`, `balance_power`, `power`) |
 | `rapl <pl1> <pl2>` | RAPL power limits (watts) |
 | `mic [on\|off]` | Toggle/set microphone |
+| `fnlock <on\|off>` | Fn Lock toggle (Fn key behavior) |
 | `webcam [on\|off]` | Toggle/set webcam |
 
 **BATTERY**

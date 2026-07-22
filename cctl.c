@@ -194,6 +194,27 @@ static int write_to_all_cpus(const char *suffix, const char *value)
 }
 
 /* ========================================================================
+ * FN LOCK
+ * ======================================================================== */
+
+#define FNLOCK_PATH "/sys/devices/platform/tuxedo_keyboard/fn_lock"
+
+static int set_fnlock(int enabled)
+{
+    if (access(FNLOCK_PATH, F_OK) != 0) {
+        fprintf(stderr, "Error: Fn Lock not available (tuxedo_keyboard not loaded?)\n");
+        return -1;
+    }
+    const char *val = enabled ? "1" : "0";
+    if (write_sysfs(FNLOCK_PATH, val) < 0) {
+        fprintf(stderr, "Error: Failed to set Fn Lock to %s\n", enabled ? "ON" : "OFF");
+        return -1;
+    }
+    printf("  Fn Lock: %s\n", enabled ? "ON" : "OFF");
+    return 0;
+}
+
+/* ========================================================================
  * CPU TURBO
  * ======================================================================== */
 
@@ -1070,6 +1091,14 @@ static void show_status(void)
     int mic = mic_is_enabled();
     printf("  Microphone: %s%s%s\n", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
 
+    /* Fn Lock */
+    if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
+        int val = atoi(buf);
+        printf("  Fn Lock:   %s%s%s\n", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
+    } else {
+        printf("  Fn Lock:   %sN/A (tuxedo_keyboard not loaded)%s\n", C_DIM, C_RST);
+    }
+
     /* Battery */
     {
         char bat_status[32] = {0};
@@ -1879,6 +1908,7 @@ static void print_usage(const char *prog)
     printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %smic%s    [on|off]          Toggle/set microphone\n", C_BLD, C_RST);
+    printf("    %sfnlock%s <on|off>          Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %swebcam%s [on|off]          Toggle/set webcam\n\n",   C_BLD, C_RST);
 
     /* ── Battery ────────────────────────────────────────────────────────── */
@@ -1900,6 +1930,7 @@ static void print_usage(const char *prog)
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
     printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
     printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
+    printf("\n  %sv1.1.1%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
@@ -2409,6 +2440,9 @@ static int nvidia_power_set(int on)
     fprintf(fp, "%s", on ? "on" : "auto");
     fclose(fp);
 
+    /* Wait for PCI runtime PM to transition power state */
+    usleep(200000); /* 200ms */
+
     /* Read back power state */
     char state[16] = "unknown";
     fp = fopen(state_path, "r");
@@ -2775,6 +2809,26 @@ static int cmd_turbo(int argc, char **argv)
     return rc;
 }
 
+static int cmd_fnlock(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "Error: Missing fnlock action (on/off)\n");
+        return 1;
+    }
+    int enabled;
+    if (strcmp(argv[2], "on") == 0)
+        enabled = 1;
+    else if (strcmp(argv[2], "off") == 0)
+        enabled = 0;
+    else {
+        fprintf(stderr, "Error: Invalid fnlock action '%s' (use on or off)\n", argv[2]);
+        return 1;
+    }
+    int rc = set_fnlock(enabled);
+    if (rc == 0) printf("Done.\n");
+    return rc;
+}
+
 static int cmd_gov(int argc, char **argv)
 {
     if (argc < 3) {
@@ -2966,6 +3020,7 @@ static const struct command commands[] = {
     { "setR",    1, cmd_set },
     { "fan",     1, cmd_fan },
     { "turbo",   1, cmd_turbo },
+    { "fnlock",  1, cmd_fnlock },
     { "gov",     1, cmd_gov },
     { "epp",     1, cmd_epp },
     { "rapl",    1, cmd_rapl },

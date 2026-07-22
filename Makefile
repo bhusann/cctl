@@ -1,10 +1,11 @@
 obj-m += legacymethod/
 
-all: cctl drivers
-
-# ── cctl binary ─────────────────────────────────────────────────────────────
+# ── Default: only cctl binary ───────────────────────────────────────────────
 cctl: cctl.c
 	gcc -o $@ $< -Os -s
+
+# ── Everything: cctl + kernel modules ───────────────────────────────────────
+all: cctl drivers
 
 # ── Kernel modules (legacygpu) ──────────────────────────────────────────────
 legacygpu:
@@ -12,7 +13,7 @@ legacygpu:
 
 # ── tuxedo-drivers (clevo_acpi, tuxedo_keyboard, tuxedo_io) ─────────────────
 drivers:
-	$(MAKE) -C drivers
+	$(MAKE) -C drivers CC=clang LD=ld.lld
 
 drivers-install:
 	sudo ./drivers/driverinstall.sh --install
