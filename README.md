@@ -150,7 +150,8 @@ Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL po
 > [!NOTE]
 > **EC Byte-Order Quirk:** The Clevo EC interprets the byte order of the two-byte fan speed commands (`cmd 0x99`) contextually. When restoring `auto` mode, cmd `0x99` expects `{ 0xFF, fan_idx }`. When setting a specific duty cycle (`fan_set_duty`, `fan_max_all`, `fan_silent_all`), cmd `0x99` expects `{ fan_idx, duty_value }`. Do not attempt to "normalize" these argument layouts, as this contextual byte-swapping is verified correct on the Clevo P15 hardware.
 >
-> **GPU Duty Persistence:** The GPU fan duty you set with `fan gpu <pct>` is saved to `/tmp/.cctl-gpu-duty` (tmpfs / RAM). This is necessary because the Clevo EC doesn't expose a readable GPU duty register — so on the next `cctl status` invocation, the tool reads back whatever it last wrote. The file is lost on reboot, which is fine since the EC resets to its own defaults at power-on anyway.
+> **GPU Fan Telemetry — Broken ACPI Register:**
+> The ACPI FANINFO1 register (`0x63` byte 2) does **not** report GPU fan duty correctly on this Clevo model. It is essentially stuck in a narrow range (~13-19%) regardless of actual GPU fan speed. cctl reads GPU duty from FANINFO2 (`0x64` byte 0) instead, which is accurate. The CPU fan works fine through FANINFO1.
 
 
 ## Keyboard presets
