@@ -305,7 +305,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w)
     }
 
     struct dirent *ent;
-    char path[512];
+    char path[576];
 
     while ((ent = readdir(d)) != NULL) {
         if (strncmp(ent->d_name, "intel-rapl:", 11) != 0) continue;
@@ -315,24 +315,22 @@ static int set_rapl_limits(int pl1_w, int pl2_w)
            Writing to psys or sub-zones causes EC conflict → 0.4GHz throttle. */
         if (strcmp(ent->d_name, "intel-rapl:0") != 0) continue;
 
-        /* Build base path once for this zone */
-        char base[512];
-        snprintf(base, sizeof(base), "/sys/class/powercap/%s", ent->d_name);
-
         /* Only adjust zones whose constraint_0 is "long_term" */
         char buf[64] = {0};
-        snprintf(path, sizeof(path), "%s/constraint_0_name", base);
+        snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_0_name", ent->d_name);
         if (read_sysfs_str(path, buf, sizeof(buf)) < 0) continue;
         if (strcmp(buf, "long_term") != 0) continue;
 
         /* Write PL1 if requested */
         if (pl1_w > 0) {
-            snprintf(path, sizeof(path), "%s/constraint_0_power_limit_uw", base);
+            snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_0_power_limit_uw",
+                     ent->d_name);
             write_sysfs(path, pl1_str);
         }
 
         /* Write PL2 */
-        snprintf(path, sizeof(path), "%s/constraint_1_power_limit_uw", base);
+        snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_1_power_limit_uw",
+                 ent->d_name);
         if (access(path, W_OK) == 0)
             write_sysfs(path, pl2_str);
     }
@@ -1250,7 +1248,7 @@ static int bat_set(int start, int end)
         return -1;
     }
 
-    char val[8];
+    char val[12];
     snprintf(val, sizeof(val), "%d", start);
     if (write_sysfs(BAT_START_PATH, val) < 0) {
         fprintf(stderr, "Error: Failed to set start threshold to %d%%\n", start);
@@ -1881,7 +1879,7 @@ static void print_usage(const char *prog)
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
     printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
     printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
-    printf("\n  %sv1.1.2%s\n", C_DIM, C_RST);
+    printf("\n  %sv1.1.3%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
@@ -2607,11 +2605,8 @@ static int cmd_scale(int argc, char **argv)
 
     /* Check if argument is a number (factor) or a resolution string */
     int is_factor = 1;
-    int has_x = 0;
-    int dot_count = 0;
     for (const char *p = arg; *p; p++) {
-        if (*p == 'x') { has_x = 1; is_factor = 0; break; }
-        if (*p == '.') dot_count++;
+        if (*p == 'x') { is_factor = 0; break; }
         if (!isdigit((unsigned char)*p) && *p != '.' && *p != '-') { is_factor = 0; break; }
     }
     /* If purely numeric (possibly with one dot), treat as factor */
