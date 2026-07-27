@@ -186,7 +186,7 @@ static int write_to_all_cpus(const char *suffix, const char *value)
         snprintf(path, sizeof(path),
                  "/sys/devices/system/cpu/%s/%s", ent->d_name, suffix);
 
-        if (access(path, F_OK) == 0 && write_sysfs(path, value) == 0)
+        if (write_sysfs(path, value) == 0)
             touched++;
     }
     closedir(d);
@@ -315,22 +315,24 @@ static int set_rapl_limits(int pl1_w, int pl2_w)
            Writing to psys or sub-zones causes EC conflict → 0.4GHz throttle. */
         if (strcmp(ent->d_name, "intel-rapl:0") != 0) continue;
 
+        /* Build base path once for this zone */
+        char base[512];
+        snprintf(base, sizeof(base), "/sys/class/powercap/%s", ent->d_name);
+
         /* Only adjust zones whose constraint_0 is "long_term" */
         char buf[64] = {0};
-        snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_0_name", ent->d_name);
+        snprintf(path, sizeof(path), "%s/constraint_0_name", base);
         if (read_sysfs_str(path, buf, sizeof(buf)) < 0) continue;
         if (strcmp(buf, "long_term") != 0) continue;
 
         /* Write PL1 if requested */
         if (pl1_w > 0) {
-            snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_0_power_limit_uw",
-                     ent->d_name);
+            snprintf(path, sizeof(path), "%s/constraint_0_power_limit_uw", base);
             write_sysfs(path, pl1_str);
         }
 
         /* Write PL2 */
-        snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_1_power_limit_uw",
-                 ent->d_name);
+        snprintf(path, sizeof(path), "%s/constraint_1_power_limit_uw", base);
         if (access(path, W_OK) == 0)
             write_sysfs(path, pl2_str);
     }
@@ -1612,6 +1614,7 @@ static int cpumonitor(void)
 
     /* Read max frequencies once (don't change during monitor) */
     int p_max_mhz = 0, e_max_mhz = 0;
+    int is_e_core[64] = {0}; /* pre-computed: 1 = E-core, 0 = P-core */
     {
         DIR *d = opendir("/sys/devices/system/cpu");
         if (d) {
@@ -1620,6 +1623,7 @@ static int cpumonitor(void)
                 if (strncmp(ent->d_name, "cpu", 3) != 0) continue;
                 if (ent->d_name[3] < '0' || ent->d_name[3] > '9') continue;
                 int cpu_num = atoi(ent->d_name + 3);
+                if (cpu_num >= max_cpus) continue;
                 char path[512];
                 snprintf(path, sizeof(path),
                          "/sys/devices/system/cpu/%s/cpufreq/cpuinfo_max_freq", ent->d_name);
@@ -1630,11 +1634,12 @@ static int cpumonitor(void)
                 close(ffd);
                 if (n <= 0) continue;
                 int mhz = atoi(fbuf) / 1000;
-                 if (!is_cpu_e_core(cpu_num)) {
-                     if (mhz > p_max_mhz) p_max_mhz = mhz;
-                 } else {
-                     if (mhz > e_max_mhz) e_max_mhz = mhz;
-                 }
+                is_e_core[cpu_num] = is_cpu_e_core(cpu_num);
+                if (!is_e_core[cpu_num]) {
+                    if (mhz > p_max_mhz) p_max_mhz = mhz;
+                } else {
+                    if (mhz > e_max_mhz) e_max_mhz = mhz;
+                }
             }
             closedir(d);
         }
@@ -1697,7 +1702,7 @@ static int cpumonitor(void)
         int p_threads_printed = 0;
         printf("--- [ P-CORES ] (Performance) Max: %d MHz ---\n", p_max_mhz);
         for (int i = 0; i < cpu_count; i++) {
-            if (!is_cpu_e_core(i)) {
+            if (!is_e_core[i]) {
                 printf("Thread %2d: %7.2f MHz%s", i, freqs[i],
                        (p_threads_printed % 2 == 1 || i == cpu_count - 1) ? "\n" : "  |  ");
                 p_threads_printed++;
@@ -1707,7 +1712,7 @@ static int cpumonitor(void)
 
         int e_cores_printed = 0;
         for (int i = 0; i < cpu_count; i++) {
-            if (is_cpu_e_core(i)) {
+            if (is_e_core[i]) {
                 if (e_cores_printed == 0) {
                     printf("\n--- [ E-CORES ] (Efficiency) Max: %d MHz ---\n", e_max_mhz);
                 }
@@ -1740,14 +1745,12 @@ static int cpumonitor(void)
             char b[32];
             ssize_t nn;
             if (pl1_fd >= 0) {
-                memset(b, 0, sizeof(b));
                 nn = pread(pl1_fd, b, sizeof(b) - 1, 0);
-                if (nn > 0) pl1 = atol(b) / 1000000;
+                if (nn > 0) { b[nn] = '\0'; pl1 = atol(b) / 1000000; }
             }
             if (pl2_fd >= 0) {
-                memset(b, 0, sizeof(b));
                 nn = pread(pl2_fd, b, sizeof(b) - 1, 0);
-                if (nn > 0) pl2 = atol(b) / 1000000;
+                if (nn > 0) { b[nn] = '\0'; pl2 = atol(b) / 1000000; }
             }
             printf("PL1:          %ldW\n", pl1);
             printf("PL2:          %ldW\n", pl2);
@@ -2016,22 +2019,29 @@ static int try_unload_nvidia(void)
     }
 
     const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
-    int failed = 0;
-    for (size_t i = 0; i < 4; i++) {
-        FILE *check = fopen("/proc/modules", "r");
-        if (!check) continue;
+    int loaded[4] = {0};
+
+    /* Single scan of /proc/modules for all nvidia modules */
+    FILE *check = fopen("/proc/modules", "r");
+    if (check) {
         char line[256];
-        int loaded = 0;
         while (fgets(line, sizeof(line), check)) {
             char name[64];
-            if (sscanf(line, "%63s", name) == 1 && strcmp(name, modules[i]) == 0) {
-                loaded = 1;
-                break;
+            if (sscanf(line, "%63s", name) == 1) {
+                for (size_t i = 0; i < 4; i++) {
+                    if (strcmp(name, modules[i]) == 0) {
+                        loaded[i] = 1;
+                        break;
+                    }
+                }
             }
         }
         fclose(check);
+    }
 
-        if (loaded) {
+    int failed = 0;
+    for (size_t i = 0; i < 4; i++) {
+        if (loaded[i]) {
             char *const args[] = { "modprobe", "-r", (char *)modules[i], NULL };
             if (run_cmd_silent("modprobe", args) == 0) {
                 printf("  Unloaded %s\n", modules[i]);
@@ -2320,22 +2330,29 @@ static int nvidia_unload(void)
 
     printf("  Unloading NVIDIA modules...\n");
     const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
-    int failed = 0;
-    for (size_t i = 0; i < 4; i++) {
-        /* Check if this module is currently loaded */
-        FILE *check = fopen("/proc/modules", "r");
-        if (!check) continue;
+    int loaded[4] = {0};
+
+    /* Single scan of /proc/modules for all nvidia modules */
+    FILE *check = fopen("/proc/modules", "r");
+    if (check) {
         char line[256];
-        int loaded = 0;
         while (fgets(line, sizeof(line), check)) {
             char name[64];
-            if (sscanf(line, "%63s", name) == 1 && strcmp(name, modules[i]) == 0) {
-                loaded = 1;
-                break;
+            if (sscanf(line, "%63s", name) == 1) {
+                for (size_t i = 0; i < 4; i++) {
+                    if (strcmp(name, modules[i]) == 0) {
+                        loaded[i] = 1;
+                        break;
+                    }
+                }
             }
         }
         fclose(check);
-        if (!loaded) continue;
+    }
+
+    int failed = 0;
+    for (size_t i = 0; i < 4; i++) {
+        if (!loaded[i]) continue;
 
         /* Use rmmod directly instead of modprobe -r (avoids blacklist alias interference) */
         char *const args[] = { "rmmod", (char *)modules[i], NULL };
