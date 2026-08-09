@@ -1473,7 +1473,8 @@ static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *
 
     /* CPU duty from EC RAM (only if ioctl didn't provide it) */
     if (!got_duty) {
-        int cpu_raw = ram[0xF4];
+        /* ram[0xF4] sits past the 0xD4 RPM area — only use it if actually read */
+        int cpu_raw = (n >= 0xF5) ? ram[0xF4] : 0;
         if (cpu_raw == 0) cpu_raw = ram[0x89];
         *cpu_pct = (cpu_raw * 100) / 255;
     }
@@ -1612,7 +1613,15 @@ static int cpumonitor(void)
 
     /* Read max frequencies once (don't change during monitor) */
     int p_max_mhz = 0, e_max_mhz = 0;
-    int is_e_core[64] = {0}; /* pre-computed: 1 = E-core, 0 = P-core */
+    /* Pre-computed core classification, sized to the actual CPU count */
+    int *is_e_core = calloc((size_t)max_cpus, sizeof(int)); /* 1 = E-core, 0 = P-core */
+    float *freqs = malloc((size_t)max_cpus * sizeof(float));
+    if (!is_e_core || !freqs) {
+        free(is_e_core);
+        free(freqs);
+        fprintf(stderr, "Error: out of memory allocating CPU arrays\n");
+        return -1;
+    }
     {
         DIR *d = opendir("/sys/devices/system/cpu");
         if (d) {
@@ -1662,7 +1671,6 @@ static int cpumonitor(void)
         clock_gettime(CLOCK_MONOTONIC, &t1);
 
         /* Read CPU frequencies from /proc/cpuinfo */
-        float freqs[64];
         int cpu_count = 0;
         FILE *fp = fopen("/proc/cpuinfo", "r");
         if (fp) {
@@ -1787,6 +1795,9 @@ static int cpumonitor(void)
     if (pl2_fd >= 0) close(pl2_fd);
     if (tuxedo_fd >= 0) close(tuxedo_fd);
 
+    free(is_e_core);
+    free(freqs);
+
     printf("\n");
     return 0;
 }
@@ -1873,13 +1884,17 @@ static void print_usage(const char *prog)
     printf("    %snvidia%s  loadgame         Session load %s(all modules incl. drm)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  unload           Session unload + power off\n", C_BLD, C_RST);
     printf("    %snvidia%s  status           Show GPU status & telemetry\n", C_BLD, C_RST);
+    printf("    %snvidia%s  clock <min,max>  Lock GPU clocks %s(reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  memclock <min,max> Lock GPU memory clocks %s(reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  pm <on|off>      Toggle persistence mode\n", C_BLD, C_RST);
+    printf("    %snvidia%s  pmclock <min,max> Persistence on + lock GPU clocks\n", C_BLD, C_RST);
     printf("    %snvidia-power%s [on|off]    Hardware D0/D3cold control\n\n", C_BLD, C_RST);
 
     /* ── Info ───────────────────────────────────────────────────────────── */
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
     printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
     printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
-    printf("\n  %sv1.1.3%s\n", C_DIM, C_RST);
+    printf("\n  %sv1.1.5%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
@@ -1897,6 +1912,12 @@ static void print_usage(const char *prog)
  *   nvidia unload            — Session-only: rmmod all nvidia modules, power off
  *                               GPU (D0→D3cold). Requires blacklist mode.
  *   nvidia status            — Show boot config, module state, GPU telemetry.
+ *   nvidia clock <min,max>   — Lock GPU clocks to [min,max] (nvidia-smi -lgc).
+ *   nvidia clock reset       — Unlock GPU clocks (nvidia-smi -rgc).
+ *   nvidia memclock <min,max>— Lock GPU memory clocks (nvidia-smi -lmc).
+ *   nvidia memclock reset    — Unlock GPU memory clocks (nvidia-smi -rmc).
+ *   nvidia pm <on|off>       — Toggle persistence mode (nvidia-smi -pm).
+ *   nvidia pmclock <min,max> — Persistence on + lock GPU clocks in one step.
  *   nvidia-power [on|off]    — Direct PCI runtime PM control (D0/D3cold).
  *                               Useful when no nvidia driver is loaded.
  * ======================================================================== */
@@ -2179,8 +2200,13 @@ static void nvidia_show_status(void)
            loaded ? "LOADED" : "NOT LOADED", C_RST);
 
     if (blacklisted && loaded) {
-        printf("  Pending:       %sReboot needed to unload%s\n", C_YLW, C_RST);
-    } else if (!blacklisted && !loaded) {
+        printf("  GPU state:     %sON%s (session-only) — stays OFF after reboot\n", C_GRN, C_RST);
+    } else if (blacklisted && !loaded) {
+        printf("  GPU state:     %sOFF%s (persistent)\n", C_DIM, C_RST);
+    } else if (!blacklisted && loaded) {
+        printf("  GPU state:     %sON%s (persistent)\n", C_GRN, C_RST);
+    } else {
+        printf("  GPU state:     %sOFF%s\n", C_DIM, C_RST);
         printf("  Pending:       %sReboot needed to load%s\n", C_YLW, C_RST);
     }
 
@@ -2460,11 +2486,61 @@ static int cmd_nvidia_power(int argc, char **argv)
     }
 }
 
+/* Run nvidia-smi -lgc <min,max> (lock GPU clocks to a range) */
+static int nvidia_clock_set(int min, int max)
+{
+    char range[32];
+    snprintf(range, sizeof(range), "%d,%d", min, max);
+    char *const args[] = { "nvidia-smi", "-lgc", range, NULL };
+    return run_cmd("nvidia-smi", args);
+}
+
+/* Run nvidia-smi -rgc (reset/unlock GPU clocks) */
+static int nvidia_clock_reset(void)
+{
+    char *const args[] = { "nvidia-smi", "-rgc", NULL };
+    return run_cmd("nvidia-smi", args);
+}
+
+/* Run nvidia-smi -lmc <min,max> (lock GPU memory clocks to a range) */
+static int nvidia_memclock_set(int min, int max)
+{
+    char range[32];
+    snprintf(range, sizeof(range), "%d,%d", min, max);
+    char *const args[] = { "nvidia-smi", "-lmc", range, NULL };
+    return run_cmd("nvidia-smi", args);
+}
+
+/* Run nvidia-smi -rmc (reset/unlock GPU memory clocks) */
+static int nvidia_memclock_reset(void)
+{
+    char *const args[] = { "nvidia-smi", "-rmc", NULL };
+    return run_cmd("nvidia-smi", args);
+}
+
+/* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
+static int nvidia_pm_set(int on)
+{
+    char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
+    return run_cmd("nvidia-smi", args);
+}
+
+/* Parse "<min>,<max>" into two valid clock values. Returns 0 on success. */
+static int nvidia_parse_clock_range(const char *str, int *min, int *max)
+{
+    int a = 0, b = 0;
+    if (sscanf(str, "%d,%d", &a, &b) != 2) return -1;
+    if (a <= 0 || b <= 0 || a > b) return -1;
+    *min = a;
+    *max = b;
+    return 0;
+}
+
 static int cmd_nvidia(int argc, char **argv)
 {
     if (argc < 3) {
         fprintf(stderr, "Error: Missing action for nvidia command\n");
-        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|pmclock} [--force]\n");
         return 1;
     }
     const char *action = argv[2];
@@ -2491,9 +2567,67 @@ static int cmd_nvidia(int argc, char **argv)
         return nvidia_load(1);
     } else if (strcmp(action, "unload") == 0) {
         return nvidia_unload();
+    } else if (strcmp(action, "clock") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Error: Missing argument for nvidia clock\n");
+            fprintf(stderr, "Usage: nvidia clock <min>,<max> | reset\n");
+            return 1;
+        }
+        if (strcmp(argv[3], "reset") == 0)
+            return nvidia_clock_reset();
+        int min, max;
+        if (nvidia_parse_clock_range(argv[3], &min, &max) != 0) {
+            fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max> with min <= max)\n", argv[3]);
+            fprintf(stderr, "Usage: nvidia clock <min>,<max> | reset\n");
+            return 1;
+        }
+        return nvidia_clock_set(min, max);
+    } else if (strcmp(action, "memclock") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Error: Missing argument for nvidia memclock\n");
+            fprintf(stderr, "Usage: nvidia memclock <min>,<max> | reset\n");
+            return 1;
+        }
+        if (strcmp(argv[3], "reset") == 0)
+            return nvidia_memclock_reset();
+        int min, max;
+        if (nvidia_parse_clock_range(argv[3], &min, &max) != 0) {
+            fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max> with min <= max)\n", argv[3]);
+            fprintf(stderr, "Usage: nvidia memclock <min>,<max> | reset\n");
+            return 1;
+        }
+        return nvidia_memclock_set(min, max);
+    } else if (strcmp(action, "pm") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Error: Missing argument for nvidia pm\n");
+            fprintf(stderr, "Usage: nvidia pm <on|off>\n");
+            return 1;
+        }
+        if (strcmp(argv[3], "on") == 0)
+            return nvidia_pm_set(1);
+        if (strcmp(argv[3], "off") == 0)
+            return nvidia_pm_set(0);
+        fprintf(stderr, "Error: Unknown nvidia pm argument '%s'\n", argv[3]);
+        fprintf(stderr, "Usage: nvidia pm <on|off>\n");
+        return 1;
+    } else if (strcmp(action, "pmclock") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Error: Missing argument for nvidia pmclock\n");
+            fprintf(stderr, "Usage: nvidia pmclock <min>,<max>\n");
+            return 1;
+        }
+        int min, max;
+        if (nvidia_parse_clock_range(argv[3], &min, &max) != 0) {
+            fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max> with min <= max)\n", argv[3]);
+            fprintf(stderr, "Usage: nvidia pmclock <min>,<max>\n");
+            return 1;
+        }
+        if (nvidia_pm_set(1) != 0)
+            fprintf(stderr, "  Warning: failed to enable persistence mode\n");
+        return nvidia_clock_set(min, max);
     } else {
         fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|pmclock} [--force]\n");
         return 1;
     }
 }
@@ -3015,6 +3149,7 @@ int main(int argc, char **argv)
         if (max_cpus <= 0) max_cpus = 64;
 
         for (int i = 0; i < max_cpus; i++) {
+            if (i >= CPU_SETSIZE) continue; /* cannot represent in cpu_set_t */
             if (is_cpu_e_core(i)) {
                 CPU_SET(i, &cpuset);
                 pinned_count++;

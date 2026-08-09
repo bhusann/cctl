@@ -118,6 +118,10 @@ setR limits: max(45/90W) · cpuperf(70W) · balanced(35/40W) · eco(9/10W)
 | `nvidia loadgame` | Session load (all modules incl. drm) |
 | `nvidia unload` | Session unload + power off |
 | `nvidia status` | Show GPU status & telemetry |
+| `nvidia clock <min,max>` | Lock GPU clocks to a range (`reset` to unlock) |
+| `nvidia memclock <min,max>` | Lock GPU memory clocks to a range (`reset` to unlock) |
+| `nvidia pm <on\|off>` | Toggle persistence mode |
+| `nvidia pmclock <min,max>` | Persistence on + lock GPU clocks in one step |
 | `nvidia-power [on\|off]` | Hardware D0/D3cold control |
 
 **INFO** *(no root needed)*
@@ -171,6 +175,10 @@ blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, 
 | `nvidia loadgame` | Session-only: wake GPU, load nvidia + uvm + modeset + drm (4 modules) | Instant |
 | `nvidia unload` | Session-only: rmmod all nvidia modules (detects/removes 2 or 4 modules), power off GPU | Instant |
 | `nvidia status` | Show boot config, module state, GPU telemetry | — |
+| `nvidia clock <min,max>` | Lock GPU clocks to [min,max] via `nvidia-smi -lgc` (`clock reset` unlocks via `-rgc`) | Instant |
+| `nvidia memclock <min,max>` | Lock GPU memory clocks via `nvidia-smi -lmc` (`memclock reset` unlocks via `-rmc`) | Instant |
+| `nvidia pm <on\|off>` | Toggle persistence mode via `nvidia-smi -pm` | Instant |
+| `nvidia pmclock <min,max>` | Enable persistence + lock GPU clocks in one step | Instant |
 | `nvidia-power off` | Set GPU hardware to D3cold (powered off) | Instant |
 | `nvidia-power on` | Set GPU hardware to D0 (powered on) | Instant |
 
@@ -179,6 +187,8 @@ blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, 
 `load`/`loadgame`/`unload` require blacklist mode (i.e., `nvidia off` must have been run first). `load` and `loadgame` temporarily move the blacklist aside for modprobe, then restore it. `unload` uses `rmmod` directly to clean up any loaded modules and powers off the GPU via PCI runtime PM (D3cold).
 
 `nvidia-power` controls the GPU hardware power state directly via PCI runtime PM. Useful when no nvidia driver is loaded — without it, the GPU sits in D0 drawing idle power (~5-15W). When the nvidia driver is loaded, it manages its own power state automatically.
+
+`nvidia clock <min,max>` locks the GPU clock range via `nvidia-smi -lgc` (e.g. `cctl nvidia clock 210,1600`), and `nvidia clock reset` unlocks it (`-rgc`). `nvidia memclock <min,max>` does the same for memory clocks (`-lmc`/`-rmc`). On laptops where power limit (`-pl`) and target temperature (`-gtt`) are unsupported, clock capping is the practical way to cut GPU power draw and temperature. `nvidia pm on|off` toggles persistence mode (`-pm`), and `nvidia pmclock <min,max>` combines both (persistence on + clock lock) in one command. Clock ranges are validated (`min <= max`, both > 0); the driver reports unsupported values.
 
 > [!NOTE]
 > For display/gaming (Vulkan, PRIME offload, external monitors via nvidia), you can use `nvidia loadgame` directly to load all 4 modules. If you already ran `nvidia load`, you can still manually run `sudo modprobe nvidia_drm`.
