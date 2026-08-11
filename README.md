@@ -98,7 +98,10 @@ setR limits: max(45/90W) · cpuperf(70W) · balanced(35/40W) · eco(9/10W)
 | `turbo <on\|off>` | Turbo boost override |
 | `gov <governor>` | CPU governor (`powersave`, `performance`) |
 | `epp <value>` | EPP (`performance`, `balance_performance`, `balance_power`, `power`) |
-| `rapl <pl1> <pl2>` | RAPL power limits (watts) |
+| `rapl <pl1> <pl2>` | RAPL power limits (watts). Use `skip` to omit one limit |
+| `rapl skip <pl2>` | Set PL2 only (skip PL1) |
+| `rapl <pl1> skip` | Set PL1 only (skip PL2) |
+| `rapl <pl2>` | Single arg = PL2 only (shorthand) |
 | `mic [on\|off]` | Toggle/set microphone |
 | `fnlock <on\|off>` | Fn Lock toggle (Fn key behavior) |
 | `webcam [on\|off]` | Toggle/set webcam |
@@ -131,6 +134,17 @@ setR limits: max(45/90W) · cpuperf(70W) · balanced(35/40W) · eco(9/10W)
 | `monitor` | Live CPU/power/fan monitor |
 
 Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL power limits (package-0 only — writing to psys/sub-zones causes EC conflict and 0.4GHz throttle on Clevo). Turbo and governor overrides apply immediately but get replaced by the next profile change. The tool dynamically groups hybrid P/E-cores based on CPU topology/max frequency and pins itself to E-cores to minimize game performance impact.
+
+### RAPL examples
+
+```bash
+sudo cctl rapl 45 90       # set both PL1=45W, PL2=90W
+sudo cctl rapl skip 50     # PL2 only (50W)
+sudo cctl rapl 40 skip     # PL1 only (40W)
+sudo cctl rapl 50          # one arg = PL2 only (shorthand)
+sudo cctl rapl - 50        # skip via dash
+sudo cctl rapl none 50     # skip via "none"
+```
 
 ## Profiles
 

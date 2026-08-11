@@ -1866,7 +1866,7 @@ static void print_usage(const char *prog)
     printf("    %sturbo%s  <on|off>          Turbo boost override\n",  C_BLD, C_RST);
     printf("    %sgov%s    <governor>        CPU governor %s(powersave, performance)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %smic%s    [on|off]          Toggle/set microphone\n", C_BLD, C_RST);
     printf("    %sfnlock%s <on|off>          Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %swebcam%s [on|off]          Toggle/set webcam\n\n",   C_BLD, C_RST);
@@ -2968,20 +2968,55 @@ static int cmd_epp(int argc, char **argv)
 
 static int cmd_rapl(int argc, char **argv)
 {
-    if (argc < 4) {
+    if (argc < 3) {
         fprintf(stderr, "Error: Usage: rapl <pl1_watts> <pl2_watts>\n");
+        fprintf(stderr, "       rapl skip <pl2>      (set PL2 only)\n");
+        fprintf(stderr, "       rapl <pl1> skip      (set PL1 only)\n");
         return 1;
     }
-    int pl1, pl2;
-    if (safe_atoi(argv[2], &pl1) < 0 || safe_atoi(argv[3], &pl2) < 0) {
-        fprintf(stderr, "Error: Invalid PL1 or PL2 limit value\n");
+
+    int pl1 = 0, pl2 = 0;
+    int skip_pl1 = 0, skip_pl2 = 0;
+
+    /* Parse PL1 */
+    if (strcmp(argv[2], "skip") == 0 || strcmp(argv[2], "none") == 0 || strcmp(argv[2], "-") == 0) {
+        skip_pl1 = 1;
+    } else {
+        if (safe_atoi(argv[2], &pl1) < 0 || pl1 < 1) {
+            fprintf(stderr, "Error: Invalid PL1 value '%s' (use a wattage ≥ 1 or 'skip')\n", argv[2]);
+            return 1;
+        }
+    }
+
+    /* Parse PL2 */
+    if (argc >= 4) {
+        if (strcmp(argv[3], "skip") == 0 || strcmp(argv[3], "none") == 0 || strcmp(argv[3], "-") == 0) {
+            skip_pl2 = 1;
+        } else {
+            if (safe_atoi(argv[3], &pl2) < 0 || pl2 < 1) {
+                fprintf(stderr, "Error: Invalid PL2 value '%s' (use a wattage ≥ 1 or 'skip')\n", argv[3]);
+                return 1;
+            }
+        }
+    } else {
+        /* Only one arg given: interpret as PL2, skip PL1 */
+        skip_pl1 = 1;
+        pl2 = pl1;
+        pl1 = 0;
+        if (pl2 < 1) {
+            fprintf(stderr, "Error: Power limit must be >= 1 watt\n");
+            return 1;
+        }
+    }
+
+    /* Must set at least one limit */
+    if (skip_pl1 && skip_pl2) {
+        fprintf(stderr, "Error: Nothing to set — both PL1 and PL2 are skipped\n");
         return 1;
     }
-    if (pl1 < 1 || pl2 < 1) {
-        fprintf(stderr, "Error: Power limits must be >= 1 watt\n");
-        return 1;
-    }
-    int rc = set_rapl_limits(pl1, pl2);
+
+    /* Pass ≤ 0 to skip (set_rapl_limits treats pl1_w ≤ 0 as skip) */
+    int rc = set_rapl_limits(skip_pl1 ? -1 : pl1, skip_pl2 ? -1 : pl2);
     if (rc == 0) printf("Done.\n");
     return rc;
 }
