@@ -3437,7 +3437,7 @@ static int cmd_drivers_install(int argc, char **argv)
     /* Clean up the temp dir */
     char rm_cmd[PATH_MAX + 64];
     snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
-    system(rm_cmd);
+    (void)system(rm_cmd);
 
     if (rc != 0) {
         fprintf(stderr, "Driver installer exited with an error.\n");
