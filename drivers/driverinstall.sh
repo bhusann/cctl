@@ -72,18 +72,12 @@ detect_state() {
     local modprobe_ok=0
     [ -f "$MODPROBE_FILE" ] && modprobe_ok=1
 
-    # Check loaded modules
-    local loaded=0
-    for m in "${MODULES[@]}"; do
-        lsmod | grep -q "^${m}[[:space:]]" && loaded=$((loaded + 1))
-    done
-
-    echo "$state|$modprobe_ok|$loaded"
+    echo "$state|$modprobe_ok"
 }
 
 print_status() {
     header "Status"
-    IFS='|' read -r state modprobe loaded < <(detect_state)
+    IFS='|' read -r state modprobe < <(detect_state)
 
     case "$state" in
         installed) ok "DKMS: installed" ;;
@@ -97,7 +91,32 @@ print_status() {
         fail "modprobe config: missing"
     fi
 
+    # Per-module load state — this is exactly what "Modules loaded" counts
+    local lsmod_out loaded=0 line
+    lsmod_out="$(lsmod)"
+    echo
+    info "Module load state:"
+    for m in "${MODULES[@]}"; do
+        if echo "$lsmod_out" | grep -q "^${m}[[:space:]]"; then
+            ok "$m: loaded"
+            loaded=$((loaded + 1))
+        else
+            fail "$m: NOT loaded"
+        fi
+    done
     info "Modules loaded: ${loaded}/${#MODULES[@]}"
+
+    # Show the raw lsmod lines the script greps for each module
+    echo
+    info "Raw lsmod input the script checks (runs: lsmod | grep '^<module> '):"
+    for m in "${MODULES[@]}"; do
+        line="$(echo "$lsmod_out" | grep "^${m}[[:space:]]")"
+        if [ -n "$line" ]; then
+            echo "    $line"
+        else
+            echo "    (no lsmod line for $m)"
+        fi
+    done
     echo
 }
 
@@ -217,13 +236,29 @@ do_uninstall() {
 }
 
 # ─── Main ───────────────────────────────────────────────────────────────────
-main() {
-    # Ensure root
+require_root() {
     if [ "$EUID" -ne 0 ]; then
         echo -e "${RED}Run with sudo.${NC}" >&2
         exit 1
     fi
+}
 
+main() {
+    # Read-only commands: no root, no prereqs needed
+    case "${1:-}" in
+        --status|-s)
+            print_status
+            exit 0
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--install|--uninstall|--status|--help]"
+            echo "  (no args)  Interactive mode — prompts install/uninstall"
+            exit 0
+            ;;
+    esac
+
+    # Everything below modifies the system — require root + prerequisites
+    require_root
     check_prereqs
 
     # Handle flags
@@ -236,19 +271,10 @@ main() {
             do_uninstall
             exit 0
             ;;
-        --status|-s)
-            print_status
-            exit 0
-            ;;
-        --help|-h)
-            echo "Usage: $0 [--install|--uninstall|--status|--help]"
-            echo "  (no args)  Interactive mode — prompts install/uninstall"
-            exit 0
-            ;;
     esac
 
     # Interactive mode
-    IFS='|' read -r state modprobe loaded < <(detect_state)
+    IFS='|' read -r state modprobe < <(detect_state)
     print_status
 
     if [ "$state" = "installed" ] && [ "$modprobe" -eq 1 ]; then
