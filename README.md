@@ -9,6 +9,38 @@ make            # build just the cctl binary
 make all        # build cctl + kernel drivers
 ```
 
+## Installation
+
+Pre-built binaries and the drivers tarball (`cctl` and `cctl-drivers.tar.gz`) are attached to each GitHub **Releases** page — download those to skip building from source, then use the commands below. The `cctl` binary there is already built and ready to copy into place; `cctl-drivers.tar.gz` is what `drivers-install` looks for.
+
+**`install` — install the `cctl` binary**
+
+From a built `cctl`, run:
+
+```bash
+sudo ./cctl install
+```
+
+It copies the running binary to `/usr/local/bin/cctl` (mode 0755), writes
+`/etc/sudoers.d/cctl` granting the installing user passwordless `sudo cctl`,
+detects your shell (bash/zsh/fish) and adds `alias cctl='sudo cctl'` to the
+matching rc file, then reminds you to restart your terminal. The `cctl` help
+only shows the install hint when it is not already installed at
+`/usr/local/bin/cctl`.
+
+**`drivers-install` — install the kernel drivers**
+
+With the bundled `cctl-drivers.tar.gz` (from a GitHub release or the repo root), run:
+
+```bash
+./cctl drivers-install
+```
+
+It searches your home directory for `cctl-drivers.tar.gz`, extracts it to a
+temporary directory, and launches the interactive `driverinstall.sh` to
+install/check the TUXEDO/Clevo drivers via DKMS. If the tarball isn't found
+automatically you're prompted for its full path.
+
 ## Drivers
 
 This repo ships kernel drivers for TUXEDO/Clevo hardware:
