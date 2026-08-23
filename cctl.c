@@ -26,6 +26,7 @@
 #include <sched.h>
 #include <sys/wait.h>
 #include <limits.h>
+#include <pwd.h>
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -1810,6 +1811,17 @@ static int cpumonitor(void)
  * CLI
  * ======================================================================== */
 
+/* Returns 1 if this process is running from /usr/local/bin/cctl (installed),
+ * 0 otherwise. Used to decide whether to show the install hint in help. */
+static int is_installed_systemwide(void)
+{
+    char path[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (n <= 0) return 0;
+    path[n] = '\0';
+    return (strcmp(path, "/usr/local/bin/cctl") == 0);
+}
+
 static void print_usage(const char *prog)
 {
     const char *base = strrchr(prog, '/');
@@ -1873,7 +1885,9 @@ static void print_usage(const char *prog)
     printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %smic%s    [on|off]          Toggle/set microphone\n", C_BLD, C_RST);
     printf("    %sfn%s <lock|unlock>         Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %swebcam%s [on|off]          Toggle/set webcam\n\n",   C_BLD, C_RST);
+    printf("    %swebcam%s [on|off]          Toggle/set webcam\n",      C_BLD, C_RST);
+    printf("    %sinstall%s                Install: copy to /usr/local/bin + passwordless sudo\n", C_BLD, C_RST);
+    printf("    %sdrivers-install%s       Find cctl-drivers.tar.gz in ~ and run the driver installer\n\n", C_BLD, C_RST);
 
     /* ── Battery ────────────────────────────────────────────────────────── */
     printf("  %sBATTERY%s\n", C_GRN, C_RST);
@@ -1898,7 +1912,16 @@ static void print_usage(const char *prog)
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
     printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
     printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
-    printf("\n  %sv1.1.6%s\n", C_DIM, C_RST);
+    /* Install hint — only shown when not installed system-wide */
+    if (!is_installed_systemwide()) {
+        printf("  %sNOT INSTALLED%s — run %ssudo %s install%s to set up:\n",
+               C_YLW, C_RST, C_BLD, prog, C_RST);
+        printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
+        printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
+        printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
+    }
+
+    printf("\n  %sv1.1.7%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
@@ -3196,6 +3219,233 @@ static int cmd_bat(int argc, char **argv)
     return rc;
 }
 
+/* Append a 'cctl' -> 'sudo cctl' alias to the user's shell rc file.
+ * Shell is taken from the user's passwd entry (not $SHELL, which would be
+ * root's under sudo). Skips if the alias is already present. */
+static void add_shell_alias(const char *user)
+{
+    struct passwd *pw = getpwnam(user);
+    if (!pw) {
+        fprintf(stderr, "Warning: cannot lookup user '%s' — skipping shell alias\n", user);
+        return;
+    }
+    const char *home  = pw->pw_dir  ? pw->pw_dir  : getenv("HOME");
+    const char *shell = pw->pw_shell ? pw->pw_shell : getenv("SHELL");
+    if (!home || !shell) return;
+
+    const char *sh = strrchr(shell, '/');
+    sh = sh ? sh + 1 : shell;
+
+    char rc[PATH_MAX];
+    const char *alias_line = "alias cctl='sudo cctl'\n";
+
+    if (strcmp(sh, "fish") == 0) {
+        snprintf(rc, sizeof(rc), "%s/.config/fish/config.fish", home);
+        char d[PATH_MAX];
+        snprintf(d, sizeof(d), "%s/.config/fish", home);
+        if (access(d, F_OK) != 0) {
+            mkdir(d, 0700);
+            chown(d, pw->pw_uid, pw->pw_gid);
+        }
+    } else if (strcmp(sh, "zsh") == 0) {
+        snprintf(rc, sizeof(rc), "%s/.zshrc", home);
+    } else if (strcmp(sh, "bash") == 0) {
+        snprintf(rc, sizeof(rc), "%s/.bashrc", home);
+    } else {
+        /* sh/dash/unknown — fall back to .bashrc */
+        snprintf(rc, sizeof(rc), "%s/.bashrc", home);
+    }
+
+    /* Skip if alias already present */
+    FILE *fp = fopen(rc, "r");
+    int found = 0;
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            if (strstr(line, "alias cctl=")) { found = 1; break; }
+        }
+        fclose(fp);
+    }
+    if (found) {
+        printf("Alias:    already present in %s\n", rc);
+        return;
+    }
+
+    fp = fopen(rc, "a");
+    if (!fp) {
+        perror("Warning: cannot write shell rc file");
+        return;
+    }
+    fputs(alias_line, fp);
+    fclose(fp);
+
+    /* If we created a new fish config, give it back to the user */
+    if (strcmp(sh, "fish") == 0)
+        chown(rc, pw->pw_uid, pw->pw_gid);
+
+    printf("Alias:    added 'cctl' → 'sudo cctl' to %s (%s)\n", rc, sh);
+}
+
+static int cmd_install(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    /* main() already verified EUID==0 (needs_root). */
+    char src[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", src, sizeof(src) - 1);
+    if (n <= 0) {
+        perror("Error: cannot determine running binary path");
+        return 1;
+    }
+    src[n] = '\0';
+
+    printf("Installing cctl...\n");
+
+    /* 1. Copy binary to /usr/local/bin/cctl with mode 0755 */
+    char *const args[] = { "install", "-m", "755", src, "/usr/local/bin/cctl", NULL };
+    if (run_cmd("install", args) != 0) {
+        fprintf(stderr, "Error: failed to install binary to /usr/local/bin/cctl\n");
+        return 1;
+    }
+    printf("Installed: /usr/local/bin/cctl (from %s)\n", src);
+
+    /* 2. Determine the human user (prefer the sudo invoker) */
+    const char *user = getenv("SUDO_USER");
+    if (!user || !*user) user = getenv("USER");
+    if (!user || !*user) {
+        struct passwd *pw = getpwuid(getuid());
+        user = (pw && pw->pw_name) ? pw->pw_name : "root";
+    }
+
+    /* 3. Write sudoers.d/cctl granting passwordless sudo */
+    const char *sudoers = "/etc/sudoers.d/cctl";
+    FILE *fp = fopen(sudoers, "w");
+    if (!fp) {
+        perror("Error: cannot open sudoers file for writing");
+        return 1;
+    }
+    fprintf(fp, "%s ALL=(ALL) NOPASSWD: /usr/local/bin/cctl\n", user);
+    fclose(fp);
+    chmod(sudoers, 0440);
+    printf("Sudoers:  %s (passwordless sudo for %s)\n", sudoers, user);
+
+    /* Add a 'cctl' -> 'sudo cctl' alias in the user's shell rc */
+    add_shell_alias(user);
+
+    printf("\nDone. cctl is now on your PATH and 'sudo cctl <cmd>' won't ask for a password.\n");
+    printf("Restart your terminal (or open a new shell) for the PATH and alias to take effect.\n");
+    return 0;
+}
+
+static int cmd_drivers_install(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    /* Resolve the user's home (honor SUDO_USER when run via sudo) */
+    const char *home = getenv("HOME");
+    const char *sudo_user = getenv("SUDO_USER");
+    if (sudo_user && *sudo_user) {
+        struct passwd *pw = getpwnam(sudo_user);
+        if (pw && pw->pw_dir) home = pw->pw_dir;
+    }
+    if (!home || !*home) home = ".";
+
+    /* Find cctl-drivers.tar.gz somewhere under the user's home */
+    char find_cmd[PATH_MAX + 64];
+    snprintf(find_cmd, sizeof(find_cmd),
+             "find '%s' -name cctl-drivers.tar.gz 2>/dev/null", home);
+
+    FILE *fp = popen(find_cmd, "r");
+    if (!fp) {
+        fprintf(stderr, "Error: failed to search for drivers archive\n");
+        return 1;
+    }
+    char archive[PATH_MAX] = {0};
+    if (fgets(archive, sizeof(archive), fp))
+        archive[strcspn(archive, "\n")] = '\0';
+    pclose(fp);
+
+    if (archive[0] == '\0') {
+        fprintf(stderr, "cctl-drivers.tar.gz not found under %s.\n", home);
+        for (;;) {
+            char path[PATH_MAX];
+            printf("Enter the full path to cctl-drivers.tar.gz (or press Enter to abort): ");
+            if (!fgets(path, sizeof(path), stdin) || path[0] == '\0') {
+                archive[0] = '\0';
+                break;
+            }
+            path[strcspn(path, "\n")] = '\0';
+            if (access(path, F_OK) == 0) {
+                snprintf(archive, sizeof(archive), "%s", path);
+                break;
+            }
+            fprintf(stderr, "  No such file: %s\n", path);
+        }
+        if (archive[0] == '\0') {
+            printf("Aborted.\n");
+            return 0;
+        }
+    }
+
+    printf("Drivers archive found: %s\n", archive);
+
+    char ans[16];
+    printf("Shall I install it? [y/N] ");
+    if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
+        printf("Aborted.\n");
+        return 0;
+    }
+
+    /* Extract to a temp dir */
+    char tmpl[] = "/tmp/cctl-drivers.XXXXXX";
+    char *tmpdir = mkdtemp(tmpl);
+    if (!tmpdir) {
+        perror("Error: cannot create temp directory");
+        return 1;
+    }
+
+    char tar_cmd[PATH_MAX + 64];
+    snprintf(tar_cmd, sizeof(tar_cmd), "tar -xzf '%s' -C '%s'", archive, tmpdir);
+    if (system(tar_cmd) != 0) {
+        fprintf(stderr, "Error: failed to extract archive\n");
+        char rm_cmd[PATH_MAX + 64];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
+        system(rm_cmd);
+        return 1;
+    }
+
+    /* Locate the extracted installer script */
+    char script[PATH_MAX];
+    snprintf(script, sizeof(script), "%s/drivers/driverinstall.sh", tmpdir);
+    if (access(script, F_OK) != 0) {
+        fprintf(stderr, "Error: driverinstall.sh not found in extracted archive\n");
+        char rm_cmd[PATH_MAX + 64];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
+        system(rm_cmd);
+        return 1;
+    }
+
+    printf("Launching interactive driver installer...\n");
+    char launch[PATH_MAX + 64];
+    if (geteuid() == 0)
+        snprintf(launch, sizeof(launch), "bash '%s'", script);
+    else
+        snprintf(launch, sizeof(launch), "sudo bash '%s'", script);
+
+    int rc = system(launch);
+
+    /* Clean up the temp dir */
+    char rm_cmd[PATH_MAX + 64];
+    snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
+    system(rm_cmd);
+
+    if (rc != 0) {
+        fprintf(stderr, "Driver installer exited with an error.\n");
+        return 1;
+    }
+    return 0;
+}
+
 struct command {
     const char *name;
     int needs_root;
@@ -3222,6 +3472,8 @@ static const struct command commands[] = {
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
+    { "install", 1, cmd_install },
+    { "drivers-install", 0, cmd_drivers_install },
 
 };
 
