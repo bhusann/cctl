@@ -26,3 +26,6 @@ drivers/**/.module-common*
 *~
 *.swp
 .DS_Store
+
+# Distributable archive
+cctl-drivers.tar.gz
