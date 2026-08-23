@@ -1,43 +1,34 @@
-# **CCTL**
+# CCTL
 
-Lightweight CLI tool for Clevo P15 laptop performance management. Sets CPU power profiles (governor, turbo boost, EPP, RAPL limits), controls fan speeds via direct EC port I/O, adjusts keyboard backlight color/brightness, toggles webcam/microphone, sets display refresh rate, and GPU-side display scaling. No GUI, no TUI, no dependencies beyond libc.
+CCTL is a small command-line tool for managing performance on Clevo P15 laptops. It sets CPU power profiles (governor, turbo, EPP, RAPL limits), controls fans through direct EC I/O, adjusts the keyboard backlight, toggles webcam/microphone, sets the display refresh rate and GPU scaling — all with no GUI and only libc as a dependency.
 
 ## Build
 
 ```bash
-# cctl binary only (default)
-make
-
-# everything (cctl + kernel modules)
-make all
+make            # build just the cctl binary
+make all        # build cctl + kernel drivers
 ```
 
 ## Drivers
 
-This repo includes kernel drivers for TUXEDO/Clevo laptop hardware:
+This repo ships kernel drivers for TUXEDO/Clevo hardware:
 
 | Module | Description |
 |---|---|
-| `tuxedo_keyboard` | Keyboard backlight control |
+| `tuxedo_keyboard` | Keyboard backlight |
 | `clevo_acpi` | Clevo ACPI interface |
-| `tuxedo_io` | Hardware I/O (fan/PWM/EC access) |
+| `tuxedo_io` | Hardware I/O (fan/PWM/EC) |
 | `legacygpu` | Legacy GPU power control (optional) |
 
-### Install drivers via DKMS (recommended)
+Install via DKMS (recommended):
 
 ```bash
 sudo ./drivers/driverinstall.sh --install
 ```
 
-Or interactively:
+The script auto-detects state and prompts to install or uninstall, and drivers rebuild automatically on kernel updates.
 
-```bash
-sudo ./drivers/driverinstall.sh
-```
-
-The script auto-detects current state and prompts install or uninstall. Drivers auto-rebuild on kernel updates.
-
-### Make targets
+Make targets:
 
 ```bash
 make drivers           # build drivers in-tree (no DKMS)
@@ -46,9 +37,11 @@ make drivers-uninstall # run driverinstall.sh --uninstall
 make drivers-status    # check driver state
 ```
 
-The keyboard backlight module uses `force_backlight_type=6` option — set automatically on install.
+The keyboard module is installed with `force_backlight_type=6`.
 
 ## Usage
+
+Most commands need `sudo`.
 
 ```
    ____ ___  _     ___  ____   ____ ___  _   _ _____ ____   ___  _     
@@ -58,170 +51,139 @@ The keyboard backlight module uses `force_backlight_type=6` option — set autom
   \____\___/|_____\___/|_| \_\\____\___/|_| \_| |_| |_| \_\\___/|_____|
 ```
 
-**Usage:** `cctl <command> [options]`  *(most commands need sudo)*
-
-**PROFILES**
+**Profiles**
 | Command | Description |
 |---|---|
-| `set <profile>` | Apply profile (no RAPL) |
-| `setR <profile>` | Apply profile (with RAPL) |
+| `set <profile>` | Apply a profile (no RAPL) |
+| `setR <profile>` | Apply a profile and also set RAPL limits |
 
 Profiles: `max`, `cpuperf`, `balanced`, `powersave`, `eco`
-setR limits: max(45/90W) · cpuperf(70W) · balanced(35/40W) · eco(9/10W)
+`setR` limits: max 45/90W · cpuperf 70W · balanced 35/40W · eco 9/10W
 
-**FAN**
+**Fan**
 | Command | Description |
 |---|---|
-| `fan auto\|max\|silent` | Set both fans (EC-controlled / full / quiet) |
-| `fan <pct>` | Set both fans to duty (21-100%) |
-| `fan cpu\|gpu <pct>` | Set individual fan duty (21-100%) |
+| `fan auto\|max\|silent` | Both fans: EC-controlled / full / quiet |
+| `fan <pct>` | Both fans to a duty cycle (21–100%) |
+| `fan cpu\|gpu <pct>` | One fan to a duty cycle (21–100%) |
 
-**DISPLAY** *(no root needed)*
+**Display** (no root)
 | Command | Description |
 |---|---|
-| `rr [rate]` | List/set refresh rate (1=high, 2=low) |
-| `scale <value>` | GPU-side scaling: factor 0.01-1.0 (e.g. `0.5`=half, `0.75`=1080p), resolution `WxH` (e.g. `1920x1080`), or `off`/`reset` for native |
+| `rr [rate]` | List or set refresh rate (1 = high, 2 = low) |
+| `scale <value>` | GPU scaling: factor 0.01–1.0 (e.g. `0.5`), resolution `WxH` (e.g. `1920x1080`), or `off`/`reset` for native |
 
-**KEYBOARD**
+**Keyboard**
 | Command | Description |
 |---|---|
-| `kbc R G B` | Set color via RGB (0-255 per channel, e.g. `kbc 255 0 128`) |
-| `kbc #hex` | Set color via hex (e.g. `kbc #ff0080` or `kbc ff0080`) |
-| `kbc <name>` | Set color from preset (e.g. `kbc cyan`) |
-| `kbb <pct>` | Set brightness (0-100%) |
+| `kbc R G B` | Color by RGB (0–255 each, e.g. `kbc 255 0 128`) |
+| `kbc #hex` | Color by hex (`kbc #ff0080`) |
+| `kbc <name>` | Color by preset name (`kbc cyan`) |
+| `kbb <pct>` | Brightness (0–100%) |
 
-> `kbcp` still works as an alias for `kbc`.
+`kbcp` is still accepted as an alias for `kbc`.
 
-**SYSTEM**
+**System**
 | Command | Description |
 |---|---|
 | `turbo <on\|off>` | Turbo boost override |
 | `gov <governor>` | CPU governor (`powersave`, `performance`) |
 | `epp <value>` | EPP (`performance`, `balance_performance`, `balance_power`, `power`) |
-| `rapl <pl1> <pl2>` | RAPL power limits (watts). Use `skip` to omit one limit |
-| `rapl skip <pl2>` | Set PL2 only (skip PL1) |
-| `rapl <pl1> skip` | Set PL1 only (skip PL2) |
-| `rapl <pl2>` | Single arg = PL2 only (shorthand) |
-| `mic [on\|off]` | Toggle/set microphone |
-| `fnlock <on\|off>` | Fn Lock toggle (Fn key behavior) |
-| `webcam [on\|off]` | Toggle/set webcam |
+| `rapl <pl1> <pl2>` | RAPL limits in watts; use `skip` to omit one |
+| `rapl skip <pl2>` | PL2 only |
+| `rapl <pl1> skip` | PL1 only |
+| `rapl <pl2>` | One arg = PL2 only (shorthand) |
+| `mic [on\|off]` | Toggle or set microphone |
+| `fn <lock\|unlock>` | Fn Lock toggle |
+| `webcam [on\|off]` | Toggle or set webcam |
 
-**BATTERY**
+**Battery**
 | Command | Description |
 |---|---|
-| `bat` | Show current charge thresholds |
+| `bat` | Show charge thresholds |
 | `bat <start> <stop>` | Set start/stop charge % (sudo) |
-| `bat off` | Widest range (start=min, stop=max) |
+| `bat off` | Widest range (min/max) |
 
-**NVIDIA** *(needs root)*
+**NVIDIA** (needs root)
 | Command | Description |
 |---|---|
-| `nvidia <on\|off>` | Persistent toggle + initramfs rebuild (`--force` to skip checks) |
-| `nvidia load` | Session load (compute modules) |
-| `nvidia loadgame` | Session load (all modules incl. drm) |
-| `nvidia unload` | Session unload + power off |
-| `nvidia status` | Show GPU status & telemetry |
-| `nvidia clock <min,max>` | Lock GPU clocks to a range (`reset` to unlock) |
-| `nvidia memclock <min,max>` | Lock GPU memory clocks to a range (`reset` to unlock) |
+| `nvidia <on\|off>` | Persistent toggle + initramfs rebuild |
+| `nvidia load` | Load compute modules for this session |
+| `nvidia loadgame` | Load all modules (incl. drm) for this session |
+| `nvidia unload` | Unload modules + power off GPU for this session |
+| `nvidia status` | Show boot config, module state, telemetry |
+| `nvidia clock <min,max>` | Lock GPU clocks (`reset` to unlock) |
+| `nvidia memclock <min,max>` | Lock GPU memory clocks (`reset` to unlock) |
 | `nvidia pm <on\|off>` | Toggle persistence mode |
-| `nvidia pmclock <min,max>` | Persistence on + lock GPU clocks in one step |
-| `nvidia-power [on\|off]` | Hardware D0/D3cold control |
+| `nvidia pmclock <min,max>` | Persistence on + clock lock, one step |
+| `nvidia power [on\|off]` | Direct PCI power (D0/D3cold); no arg shows state |
 
-**INFO** *(no root needed)*
+> [!WARNING]
+> **`nvidia off` is experimental — use it only as a last resort.** It permanently disables the discrete GPU at boot (blacklist + initramfs rebuild) and can break games and other dGPU software. Try **`nvidia unload`** first to switch the GPU off for the current session only (reverts after reboot). Confirming `nvidia off` requires typing `yes` twice.
+
+**Info** (no root)
 | Command | Description |
 |---|---|
 | `status` | Show all current settings |
 | `monitor` | Live CPU/power/fan monitor |
 
-Profiles set all CPU/GPU parameters at once. `setR` variant also applies RAPL power limits (package-0 only — writing to psys/sub-zones causes EC conflict and 0.4GHz throttle on Clevo). Turbo and governor overrides apply immediately but get replaced by the next profile change. The tool dynamically groups hybrid P/E-cores based on CPU topology/max frequency and pins itself to E-cores to minimize game performance impact.
+Profiles apply every CPU/GPU parameter at once. The `setR` variant also sets RAPL (package-0 only — writing to `psys` or sub-zones causes an EC conflict that throttles the CPU to 0.4 GHz on Clevo). Turbo and governor overrides take effect immediately but are overwritten by the next profile change. CCTL detects the P/E-core layout from CPU topology and pins itself to E-cores so it doesn't disturb games.
 
 ### RAPL examples
 
 ```bash
-sudo cctl rapl 45 90       # set both PL1=45W, PL2=90W
-sudo cctl rapl skip 50     # PL2 only (50W)
-sudo cctl rapl 40 skip     # PL1 only (40W)
-sudo cctl rapl 50          # one arg = PL2 only (shorthand)
-sudo cctl rapl - 50        # skip via dash
-sudo cctl rapl none 50     # skip via "none"
+sudo cctl rapl 45 90     # PL1=45W, PL2=90W
+sudo cctl rapl skip 50   # PL2 only (50W)
+sudo cctl rapl 40 skip   # PL1 only (40W)
+sudo cctl rapl 50        # one arg = PL2 only
 ```
+
+> [!NOTE]
+> `skip` cleanly omits a limit — no placeholder value is ever written to the omitted power limit.
 
 ## Profiles
 
-| Profile    | GPU  | Turbo | Governor  | EPP                | RAPL (setR)  |
-|------------|------|-------|-----------|--------------------|---------------|
-| max        | 2    | ON    | perf      | performance        | 45W / 90W    |
-| cpuperf    | 3    | ON    | perf      | performance        | 70W          |
-| balanced   | 3    | ON    | powersave | balance_performance| 35W / 40W    |
-| powersave  | 1    | OFF   | powersave | balance_power      | —            |
-| eco        | 0    | OFF   | powersave | power              | 9W / 10W     |
+| Profile | GPU | Turbo | Governor | EPP | RAPL (setR) |
+|---------|-----|-------|----------|-----|-------------|
+| max | 2 | ON | perf | performance | 45W / 90W |
+| cpuperf | 3 | ON | perf | performance | 70W |
+| balanced | 3 | ON | powersave | balance_performance | 35W / 40W |
+| powersave | 1 | OFF | powersave | balance_power | — |
+| eco | 0 | OFF | powersave | power | 9W / 10W |
 
-## Fan modes
-
-| Mode   | Description                  |
-|--------|------------------------------|
-| auto   | Both fans to EC-controlled   |
-| max    | Both fans to max speed       |
-| silent | Both fans to silent mode     |
-| <pct>  | Both fans to 21-100%         |
-| cpu    | CPU fan to 21-100%           |
-| gpu    | GPU fan to 21-100%           |
+## Fan notes
 
 > [!NOTE]
-> **EC Byte-Order Quirk:** The Clevo EC interprets the byte order of the two-byte fan speed commands (`cmd 0x99`) contextually. When restoring `auto` mode, cmd `0x99` expects `{ 0xFF, fan_idx }`. When setting a specific duty cycle (`fan_set_duty`, `fan_max_all`, `fan_silent_all`), cmd `0x99` expects `{ fan_idx, duty_value }`. Do not attempt to "normalize" these argument layouts, as this contextual byte-swapping is verified correct on the Clevo P15 hardware.
->
-> **GPU Fan Telemetry — Broken ACPI Register:**
-> The ACPI FANINFO1 register (`0x63` byte 2) does **not** report GPU fan duty correctly on this Clevo model. It is essentially stuck in a narrow range (~13-19%) regardless of actual GPU fan speed. cctl reads GPU duty from FANINFO2 (`0x64` byte 0) instead, which is accurate. The CPU fan works fine through FANINFO1.
+> **EC byte-order quirk.** The Clevo EC reads the two-byte fan commands (`cmd 0x99`) in different orders depending on context: when restoring `auto` it expects `{ 0xFF, fan_idx }`, but when setting a duty (`fan_set_duty`, `fan_max_all`, `fan_silent_all`) it expects `{ fan_idx, duty }`. Don't "normalize" these — the swapping is verified correct on the P15.
 
+> [!NOTE]
+> **GPU fan telemetry uses a different register.** The ACPI `FANINFO1` register (`0x63`, byte 2) does not report GPU fan duty correctly on this model (it's stuck around 13–19%). CCTL reads GPU duty from `FANINFO2` (`0x64`, byte 0) instead, which is accurate. The CPU fan reads fine from `FANINFO1`.
 
 ## Keyboard presets
 
 blue, chocolate, coral, cyan, gold, gray, green, indigo, lime, magenta, maroon, navy, off, olive, orange, pink, purple, red, salmon, silver, teal, turquoise, violet, white, yellow
 
+## NVIDIA GPU
 
-## Nvidia GPU
+**Recommended workflow:** run `nvidia off` once to blacklist the GPU and rebuild initramfs — that makes nvidia-off the boot default — then use `nvidia load`, `nvidia loadgame`, or `nvidia unload` for instant session-only toggling. The blacklist stays in place, so the GPU remains off after reboot. Only run `nvidia on` when you want nvidia back at boot.
 
-| Command | Action | Speed |
-|---------|--------|-------|
-| `nvidia off` | Blacklist + initramfs rebuild + rmmod | ~60s |
-| `nvidia on` | Remove blacklist + initramfs rebuild + modprobe | ~60s |
-| `nvidia load` | Session-only: wake GPU, load nvidia + nvidia_uvm (2 modules) | Instant |
-| `nvidia loadgame` | Session-only: wake GPU, load nvidia + uvm + modeset + drm (4 modules) | Instant |
-| `nvidia unload` | Session-only: rmmod all nvidia modules (detects/removes 2 or 4 modules), power off GPU | Instant |
-| `nvidia status` | Show boot config, module state, GPU telemetry | — |
-| `nvidia clock <min,max>` | Lock GPU clocks to [min,max] via `nvidia-smi -lgc` (`clock reset` unlocks via `-rgc`) | Instant |
-| `nvidia memclock <min,max>` | Lock GPU memory clocks via `nvidia-smi -lmc` (`memclock reset` unlocks via `-rmc`) | Instant |
-| `nvidia pm <on\|off>` | Toggle persistence mode via `nvidia-smi -pm` | Instant |
-| `nvidia pmclock <min,max>` | Enable persistence + lock GPU clocks in one step | Instant |
-| `nvidia-power off` | Set GPU hardware to D3cold (powered off) | Instant |
-| `nvidia-power on` | Set GPU hardware to D0 (powered on) | Instant |
+`load`/`loadgame`/`unload` require blacklist mode (i.e. you must have run `nvidia off` first). `load` and `loadgame` temporarily move the blacklist aside for `modprobe`, then restore it. `unload` uses `rmmod` to remove the loaded modules and powers the GPU off via PCI runtime PM (D3cold); it warns first if the GPU is still driving a display.
 
-**Recommended workflow:** Run `nvidia off` once to blacklist and rebuild initramfs (sets boot default to nvidia-off). Then use `nvidia load`, `nvidia loadgame` or `nvidia unload` for instant session-only toggling — the blacklist stays intact, so nvidia remains off on next reboot. Only run `nvidia on` when you want to permanently re-enable nvidia at boot.
+`nvidia power` talks to the GPU hardware directly through PCI runtime PM. That's useful when no nvidia driver is loaded — otherwise the GPU sits in D0 drawing ~5–15 W of idle power. With the driver loaded it manages its own power state.
 
-`load`/`loadgame`/`unload` require blacklist mode (i.e., `nvidia off` must have been run first). `load` and `loadgame` temporarily move the blacklist aside for modprobe, then restore it. `unload` uses `rmmod` directly to clean up any loaded modules and powers off the GPU via PCI runtime PM (D3cold).
-
-`nvidia-power` controls the GPU hardware power state directly via PCI runtime PM. Useful when no nvidia driver is loaded — without it, the GPU sits in D0 drawing idle power (~5-15W). When the nvidia driver is loaded, it manages its own power state automatically.
-
-`nvidia clock <min,max>` locks the GPU clock range via `nvidia-smi -lgc` (e.g. `cctl nvidia clock 210,1600`), and `nvidia clock reset` unlocks it (`-rgc`). `nvidia memclock <min,max>` does the same for memory clocks (`-lmc`/`-rmc`). On laptops where power limit (`-pl`) and target temperature (`-gtt`) are unsupported, clock capping is the practical way to cut GPU power draw and temperature. `nvidia pm on|off` toggles persistence mode (`-pm`), and `nvidia pmclock <min,max>` combines both (persistence on + clock lock) in one command. Clock ranges are validated (`min <= max`, both > 0); the driver reports unsupported values.
+`nvidia clock <min,max>` locks the clock range via `nvidia-smi -lgc` (e.g. `cctl nvidia clock 210,1600`); `nvidia clock reset` unlocks with `-rgc`. `nvidia memclock` does the same for memory clocks (`-lmc`/`-rmc`). On laptops where power-limit (`-pl`) and temperature-target (`-gtt`) controls are unsupported, clock capping is the practical way to cut GPU power and heat. `nvidia pm on|off` toggles persistence mode (`-pm`), and `nvidia pmclock <min,max>` turns on persistence and locks clocks in one step. Clock ranges are validated (`min <= max`, both > 0).
 
 > [!NOTE]
-> For display/gaming (Vulkan, PRIME offload, external monitors via nvidia), you can use `nvidia loadgame` directly to load all 4 modules. If you already ran `nvidia load`, you can still manually run `sudo modprobe nvidia_drm`.
->
+> For display or gaming (Vulkan, PRIME offload, external monitors), use `nvidia loadgame` to load all four modules at once. If you already ran `nvidia load`, you can still load the DRM module manually with `sudo modprobe nvidia_drm`.
+
 > [!TIP]
-> **Preventing Xorg GPU Lock (Important for i3/WM users):**
-> When you run `nvidia loadgame`, the display driver modules are loaded and `/dev/dri/card1` is created. By default, Xorg might automatically detect the new GPU and lock it, which prevents `nvidia unload` from working (producing `Module is in use` errors).
+> **Stop Xorg from locking the GPU (i3 / tiling WM users).** After `nvidia loadgame`, the display modules load and `/dev/dri/card1` appears. Xorg may auto-detect the new GPU and grab it, which then blocks `nvidia unload` with `Module is in use` errors.
 >
-> To stop Xorg from claiming the newly loaded GPU, disable `AutoAddGPU` by creating or editing `/etc/X11/xorg.conf.d/10-no-gpu-hotplug.conf`:
+> Disable `AutoAddGPU` so Xorg leaves the hotplugged GPU alone:
 > ```
+> # /etc/X11/xorg.conf.d/10-no-gpu-hotplug.conf
 > Section "ServerFlags"
 >     Option "AutoAddGPU" "false"
 > EndSection
 > ```
-> With this flag set, Xorg won't lock the GPU, enabling `nvidia unload` to work instantly and flawlessly whenever you're done gaming, without having to close your session.
-
-## Architecture
-
-- **Command dispatch table** — modular `struct command` array instead of nested if-else routing.
-- **No shell execution** — uses `fork`/`execvp`/`waitpid` for all subprocesses; no shell injection surface.
-- **Hybrid CPU aware** — dynamically detects P-cores vs E-cores by frequency topology, no hardcoded core counts.
-- **E-core pinning** — pins itself to E-cores at startup to avoid stealing P-core cycles from foreground workloads.
+> With that set, `nvidia unload` works immediately whenever you're done, without ending your session.

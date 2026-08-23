@@ -296,7 +296,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w)
 
     char pl1_str[32], pl2_str[32];
     if (pl1_w > 0) snprintf(pl1_str, sizeof(pl1_str), "%d000000", pl1_w);
-    snprintf(pl2_str, sizeof(pl2_str), "%d000000", pl2_w);
+    if (pl2_w > 0) snprintf(pl2_str, sizeof(pl2_str), "%d000000", pl2_w);
 
     DIR *d = opendir("/sys/class/powercap");
     if (!d) {
@@ -328,20 +328,25 @@ static int set_rapl_limits(int pl1_w, int pl2_w)
             write_sysfs(path, pl1_str);
         }
 
-        /* Write PL2 */
+        /* Write PL2 (only when requested — never write a skipped/negative limit) */
         snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_1_power_limit_uw",
                  ent->d_name);
-        if (access(path, W_OK) == 0)
+        if (pl2_w > 0 && access(path, W_OK) == 0)
             write_sysfs(path, pl2_str);
     }
     closedir(d);
 
-    if (pl1_w > 0) {
+    if (pl1_w > 0 && pl2_w > 0) {
         if (old_pl1 >= 0 && old_pl2 >= 0)
             printf("  RAPL: PL1 %dW -> %dW, PL2 %dW -> %dW\n", old_pl1, pl1_w, old_pl2, pl2_w);
         else
             printf("  RAPL: PL1=%dW PL2=%dW\n", pl1_w, pl2_w);
-    } else {
+    } else if (pl1_w > 0) {
+        if (old_pl1 >= 0)
+            printf("  RAPL: PL1 %dW -> %dW\n", old_pl1, pl1_w);
+        else
+            printf("  RAPL: PL1=%dW\n", pl1_w);
+    } else if (pl2_w > 0) {
         if (old_pl2 >= 0)
             printf("  RAPL: PL2 %dW -> %dW\n", old_pl2, pl2_w);
         else
@@ -1738,7 +1743,6 @@ static int cpumonitor(void)
             double dt = (t2.tv_sec - t1.tv_sec) + (t2.tv_nsec - t1.tv_nsec) / 1e9;
             if (dt > 0) {
                 long duj = e2 - e1;
-                if (duj < 0) duj += 1000000000000LL; /* energy counter wraparound */
                 printf("Package Power: %.2f Watts\n", (duj / dt) / 1000000.0);
             }
         } else {
@@ -1868,7 +1872,7 @@ static void print_usage(const char *prog)
     printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %smic%s    [on|off]          Toggle/set microphone\n", C_BLD, C_RST);
-    printf("    %sfnlock%s <on|off>          Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfn%s <lock|unlock>         Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %swebcam%s [on|off]          Toggle/set webcam\n\n",   C_BLD, C_RST);
 
     /* ── Battery ────────────────────────────────────────────────────────── */
@@ -1879,7 +1883,7 @@ static void print_usage(const char *prog)
 
     /* ── NVIDIA ─────────────────────────────────────────────────────────── */
     printf("  %sNVIDIA%s %s(needs root)%s\n", C_RED, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s  <on|off>         Persistent toggle %s(+initramfs rebuild, --force to skip checks)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  <on|off>         Persistent toggle %s(+initramfs rebuild)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  load             Session load %s(compute modules)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  loadgame         Session load %s(all modules incl. drm)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  unload           Session unload + power off\n", C_BLD, C_RST);
@@ -1888,20 +1892,20 @@ static void print_usage(const char *prog)
     printf("    %snvidia%s  memclock <min,max> Lock GPU memory clocks %s(reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  pm <on|off>      Toggle persistence mode\n", C_BLD, C_RST);
     printf("    %snvidia%s  pmclock <min,max> Persistence on + lock GPU clocks\n", C_BLD, C_RST);
-    printf("    %snvidia-power%s [on|off]    Hardware D0/D3cold control\n\n", C_BLD, C_RST);
+    printf("    %snvidia power%s <on|off>    Hardware D0/D3cold control\n\n", C_BLD, C_RST);
 
     /* ── Info ───────────────────────────────────────────────────────────── */
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
     printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
     printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
-    printf("\n  %sv1.1.5%s\n", C_DIM, C_RST);
+    printf("\n  %sv1.1.6%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
  * NVIDIA GPU
  * ========================================================================
  * Commands:
- *   nvidia on|off [--force]  — Persistent toggle: blacklist/unblacklist +
+ *   nvidia on|off  — Persistent toggle: blacklist/unblacklist +
  *                               initramfs rebuild + modprobe/rmmod.
  *   nvidia load              — Session-only: wake GPU (D3cold→D0), temp-remove
  *                               blacklist, modprobe nvidia + nvidia_uvm, restore
@@ -1918,7 +1922,7 @@ static void print_usage(const char *prog)
  *   nvidia memclock reset    — Unlock GPU memory clocks (nvidia-smi -rmc).
  *   nvidia pm <on|off>       — Toggle persistence mode (nvidia-smi -pm).
  *   nvidia pmclock <min,max> — Persistence on + lock GPU clocks in one step.
- *   nvidia-power [on|off]    — Direct PCI runtime PM control (D0/D3cold).
+ *   nvidia power [on|off]    — Direct PCI runtime PM control (D0/D3cold).
  *                               Useful when no nvidia driver is loaded.
  * ======================================================================== */
 
@@ -1970,6 +1974,43 @@ static int nvidia_gpu_in_use(void)
         in_use = 1;
     }
     pclose(fp);
+    return in_use;
+}
+
+/* Detect whether the NVIDIA GPU is driving a connected display (DRM active).
+ * Returns 1 if an nvidia/nvidia_drm-driven, connected connector is found. */
+static int nvidia_display_in_use(void)
+{
+    DIR *d = opendir("/sys/class/drm");
+    if (!d) return 0;
+    struct dirent *ent;
+    char path[512];
+    int in_use = 0;
+    while ((ent = readdir(d)) != NULL) {
+        if (strncmp(ent->d_name, "card", 4) != 0) continue;
+        if (ent->d_name[4] < '0' || ent->d_name[4] > '9') continue;
+
+        snprintf(path, sizeof(path), "/sys/class/drm/%s/device/driver", ent->d_name);
+        char driver[64] = {0};
+        ssize_t l = readlink(path, driver, sizeof(driver) - 1);
+        if (l <= 0) continue;
+        driver[l] = '\0';
+        char *base = strrchr(driver, '/');
+        if (!base) continue;
+        if (strcmp(base + 1, "nvidia") != 0 && strcmp(base + 1, "nvidia_drm") != 0)
+            continue;
+
+        snprintf(path, sizeof(path), "/sys/class/drm/%s/status", ent->d_name);
+        FILE *fp = fopen(path, "r");
+        if (fp) {
+            char st[16] = {0};
+            if (fgets(st, sizeof(st), fp) && strncmp(st, "connected", 9) == 0)
+                in_use = 1;
+            fclose(fp);
+        }
+        if (in_use) break;
+    }
+    closedir(d);
     return in_use;
 }
 
@@ -2085,34 +2126,57 @@ static int try_load_nvidia(void)
     return -1;
 }
 
-static int nvidia_set_off(int force)
+static int reply_is_yes(const char *s)
 {
-    if (nvidia_is_blacklisted()) {
-        if (nvidia_is_loaded()) {
-            printf("  NVIDIA is blacklisted but modules are still loaded (reboot pending).\n");
-            int confirm = force;
-            if (!confirm) {
-                printf("  Attempt to unload modules now? [y/N] ");
-                char reply[16];
-                if (fgets(reply, sizeof(reply), stdin) && (reply[0] == 'y' || reply[0] == 'Y')) {
-                    confirm = 1;
-                }
-            }
-            if (confirm) try_unload_nvidia();
-        } else {
-            printf("  NVIDIA is already blacklisted and modules are unloaded.\n");
-        }
+    char buf[64];
+    size_t n = 0;
+    while (*s && n < sizeof(buf) - 1) {
+        buf[n++] = (char)tolower((unsigned char)*s);
+        s++;
+    }
+    buf[n] = '\0';
+    size_t a = 0;
+    while (a < n && (buf[a] == ' ' || buf[a] == '\t' || buf[a] == '\n' || buf[a] == '\r')) a++;
+    size_t b = n;
+    while (b > a && (buf[b-1] == ' ' || buf[b-1] == '\t' || buf[b-1] == '\n' || buf[b-1] == '\r')) b--;
+    buf[b] = '\0';
+    return strcmp(buf + a, "yes") == 0;
+}
+
+static int nvidia_set_off(void)
+{
+    if (nvidia_is_blacklisted() && !nvidia_is_loaded()) {
+        printf("  NVIDIA is already blacklisted and modules are unloaded.\n");
         return 0;
     }
 
-    int confirm = force;
-    if (!confirm) {
-        printf("  Blacklist NVIDIA and rebuild initramfs? [y/N] ");
-        char reply[16];
-        if (!fgets(reply, sizeof(reply), stdin) || (reply[0] != 'y' && reply[0] != 'Y')) {
-            printf("  Aborted.\n");
-            return 0;
-        }
+    /* Experimental / permanent-disable warning + double confirmation */
+    printf("\n");
+    printf("  %sWARNING: 'nvidia off' PERMANENTLY disables the discrete GPU at boot.%s\n", C_YLW, C_RST);
+    printf("  This is experimental and can break games and other dGPU-accelerated\n");
+    printf("  software. The GPU stays OFF after reboot until you run 'nvidia on'.\n");
+    printf("  This option is intended for developers, hardware tinkerers, and users\n");
+    printf("  who know exactly what they are doing.\n");
+    printf("  %sTry 'nvidia unload' first%s to switch the GPU off for this session\n", C_CYN, C_RST);
+    printf("  only (it reverts after reboot). Use 'nvidia off' as a LAST RESORT.\n");
+
+    char reply[64];
+    printf("  Type 'yes' to continue, or anything else to abort: ");
+    if (!fgets(reply, sizeof(reply), stdin) || !reply_is_yes(reply)) {
+        printf("  Aborted.\n");
+        return 0;
+    }
+    printf("  Are you sure? Type 'yes' again to proceed: ");
+    if (!fgets(reply, sizeof(reply), stdin) || !reply_is_yes(reply)) {
+        printf("  Aborted.\n");
+        return 0;
+    }
+
+    if (nvidia_is_blacklisted()) {
+        /* blacklisted but modules still loaded -> just unload now */
+        printf("  NVIDIA is blacklisted but modules are still loaded (reboot pending).\n");
+        try_unload_nvidia();
+        return 0;
     }
 
     printf("  Writing blacklist to /etc/modprobe.d/blacklist-nvidia.conf...\n");
@@ -2143,14 +2207,14 @@ static int nvidia_set_off(int force)
     return 0;
 }
 
-static int nvidia_set_on(int force)
+static int nvidia_set_on(void)
 {
     if (!nvidia_is_blacklisted()) {
         if (nvidia_is_loaded()) {
             printf("  NVIDIA is already enabled and modules are loaded.\n");
         } else {
             printf("  NVIDIA is enabled but modules aren't loaded.\n");
-            int confirm = force;
+            int confirm = 0;
             if (!confirm) {
                 printf("  Attempt to load modules now? [y/N] ");
                 char reply[16];
@@ -2163,7 +2227,7 @@ static int nvidia_set_on(int force)
         return 0;
     }
 
-    int confirm = force;
+    int confirm = 0;
     if (!confirm) {
         printf("  Unblacklist NVIDIA and rebuild initramfs? [y/N] ");
         char reply[16];
@@ -2352,6 +2416,11 @@ static int nvidia_unload(void)
         return 1;
     }
 
+    if (nvidia_display_in_use()) {
+        fprintf(stderr, "  Warning: GPU appears to be driving a display (nvidia_drm active).\n");
+        fprintf(stderr, "  Unload may fail unless the session has released it (see AutoAddGPU note in README).\n");
+    }
+
     printf("  Unloading NVIDIA modules...\n");
     const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
     int loaded[4] = {0};
@@ -2446,45 +2515,6 @@ static int nvidia_power_set(int on)
     return 0;
 }
 
-static int cmd_nvidia_power(int argc, char **argv)
-{
-    if (argc < 3) {
-        /* Show current state */
-        char pci_path[512];
-        if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
-            fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
-            return 1;
-        }
-        char state_path[576];
-        snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
-        char state[16] = "unknown";
-        FILE *fp = fopen(state_path, "r");
-        if (fp) {
-            if (fgets(state, sizeof(state), fp))
-                state[strcspn(state, "\n")] = 0;
-            fclose(fp);
-        }
-        printf("  GPU power: %s%s%s\n",
-               strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
-        return 0;
-    }
-
-    const char *action = argv[2];
-    if (geteuid() != 0) {
-        fprintf(stderr, "Error: Must run as root (sudo %s nvidia-power %s)\n", argv[0], action);
-        return 1;
-    }
-
-    if (strcmp(action, "on") == 0) {
-        return nvidia_power_set(1);
-    } else if (strcmp(action, "off") == 0) {
-        return nvidia_power_set(0);
-    } else {
-        fprintf(stderr, "Error: Unknown action '%s'\n", action);
-        fprintf(stderr, "Usage: nvidia-power [on|off]\n");
-        return 1;
-    }
-}
 
 /* Run nvidia-smi -lgc <min,max> (lock GPU clocks to a range) */
 static int nvidia_clock_set(int min, int max)
@@ -2540,14 +2570,34 @@ static int cmd_nvidia(int argc, char **argv)
 {
     if (argc < 3) {
         fprintf(stderr, "Error: Missing action for nvidia command\n");
-        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|pmclock} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|power}\n");
         return 1;
     }
     const char *action = argv[2];
-    int force = (argc >= 4 && (strcmp(argv[3], "--force") == 0 || strcmp(argv[3], "-f") == 0));
 
     if (strcmp(action, "status") == 0) {
         nvidia_show_status();
+        return 0;
+    }
+
+    /* nvidia power with no argument shows state (no root needed) */
+    if (strcmp(action, "power") == 0 && argc < 4) {
+        char pci_path[512];
+        if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
+            fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
+            return 1;
+        }
+        char state_path[576];
+        snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
+        char state[16] = "unknown";
+        FILE *fp = fopen(state_path, "r");
+        if (fp) {
+            if (fgets(state, sizeof(state), fp))
+                state[strcspn(state, "\n")] = 0;
+            fclose(fp);
+        }
+        printf("  GPU power: %s%s%s\n",
+               strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
         return 0;
     }
 
@@ -2558,9 +2608,9 @@ static int cmd_nvidia(int argc, char **argv)
     }
 
     if (strcmp(action, "off") == 0) {
-        return nvidia_set_off(force);
+        return nvidia_set_off();
     } else if (strcmp(action, "on") == 0) {
-        return nvidia_set_on(force);
+        return nvidia_set_on();
     } else if (strcmp(action, "load") == 0) {
         return nvidia_load(0);
     } else if (strcmp(action, "loadgame") == 0) {
@@ -2610,6 +2660,14 @@ static int cmd_nvidia(int argc, char **argv)
         fprintf(stderr, "Error: Unknown nvidia pm argument '%s'\n", argv[3]);
         fprintf(stderr, "Usage: nvidia pm <on|off>\n");
         return 1;
+    } else if (strcmp(action, "power") == 0) {
+        if (strcmp(argv[3], "on") == 0)
+            return nvidia_power_set(1);
+        if (strcmp(argv[3], "off") == 0)
+            return nvidia_power_set(0);
+        fprintf(stderr, "Error: Unknown nvidia power argument '%s'\n", argv[3]);
+        fprintf(stderr, "Usage: nvidia power [on|off]\n");
+        return 1;
     } else if (strcmp(action, "pmclock") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Error: Missing argument for nvidia pmclock\n");
@@ -2627,7 +2685,7 @@ static int cmd_nvidia(int argc, char **argv)
         return nvidia_clock_set(min, max);
     } else {
         fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|pmclock} [--force]\n");
+        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|power}\n");
         return 1;
     }
 }
@@ -2734,7 +2792,7 @@ static int cmd_scale(int argc, char **argv)
     }
 
     const char *arg = argv[2];
-    if (strcmp(arg, "off") == 0 || strcmp(arg, "1") == 0 || strcmp(arg, "reset") == 0)
+    if (strcmp(arg, "off") == 0 || strcmp(arg, "reset") == 0)
         return scale_reset();
 
     /* Check if argument is a number (factor) or a resolution string */
@@ -2914,16 +2972,16 @@ static int cmd_turbo(int argc, char **argv)
 static int cmd_fnlock(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Error: Missing fnlock action (on/off)\n");
+        fprintf(stderr, "Error: Missing fn action (lock/unlock)\n");
         return 1;
     }
     int enabled;
-    if (strcmp(argv[2], "on") == 0)
+    if (strcmp(argv[2], "lock") == 0)
         enabled = 1;
-    else if (strcmp(argv[2], "off") == 0)
+    else if (strcmp(argv[2], "unlock") == 0)
         enabled = 0;
     else {
-        fprintf(stderr, "Error: Invalid fnlock action '%s' (use on or off)\n", argv[2]);
+        fprintf(stderr, "Error: Invalid fn action '%s' (use lock or unlock)\n", argv[2]);
         return 1;
     }
     int rc = set_fnlock(enabled);
@@ -2979,7 +3037,7 @@ static int cmd_rapl(int argc, char **argv)
     int skip_pl1 = 0, skip_pl2 = 0;
 
     /* Parse PL1 */
-    if (strcmp(argv[2], "skip") == 0 || strcmp(argv[2], "none") == 0 || strcmp(argv[2], "-") == 0) {
+    if (strcmp(argv[2], "skip") == 0) {
         skip_pl1 = 1;
     } else {
         if (safe_atoi(argv[2], &pl1) < 0 || pl1 < 1) {
@@ -2990,7 +3048,7 @@ static int cmd_rapl(int argc, char **argv)
 
     /* Parse PL2 */
     if (argc >= 4) {
-        if (strcmp(argv[3], "skip") == 0 || strcmp(argv[3], "none") == 0 || strcmp(argv[3], "-") == 0) {
+        if (strcmp(argv[3], "skip") == 0) {
             skip_pl2 = 1;
         } else {
             if (safe_atoi(argv[3], &pl2) < 0 || pl2 < 1) {
@@ -3085,10 +3143,7 @@ static int cmd_bat(int argc, char **argv)
             return 1;
         }
         printf("  Charge thresholds: ");
-        if (start == 0 && end == 0)
-            printf("disabled (full charge range)\n");
-        else
-            printf("start %d%% → stop %d%%\n", start, end);
+        printf("start %d%% → stop %d%%\n", start, end);
 
         /* Show available values */
         int avail[16], cnt;
@@ -3157,7 +3212,7 @@ static const struct command commands[] = {
     { "setR",    1, cmd_set },
     { "fan",     1, cmd_fan },
     { "turbo",   1, cmd_turbo },
-    { "fnlock",  1, cmd_fnlock },
+    { "fn",      1, cmd_fnlock },
     { "gov",     1, cmd_gov },
     { "epp",     1, cmd_epp },
     { "rapl",    1, cmd_rapl },
@@ -3167,7 +3222,7 @@ static const struct command commands[] = {
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
-    { "nvidia-power", 0, cmd_nvidia_power },
+
 };
 
 int main(int argc, char **argv)
