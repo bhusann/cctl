@@ -1921,7 +1921,7 @@ static void print_usage(const char *prog)
         printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
     }
 
-    printf("\n  %sv1.1.7%s\n", C_DIM, C_RST);
+    printf("\n  %sv2.0%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
@@ -2096,7 +2096,7 @@ static int try_unload_nvidia(void)
     printf("  Attempting to unload NVIDIA modules...\n");
     if (nvidia_gpu_in_use()) {
         fprintf(stderr, "Error: GPU is actively in use by running processes:\n");
-        system("nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | awk -F', ' '{print \"    PID \" $1 \": \" $2}'");
+        (void)system("nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | awk -F', ' '{print \"    PID \" $1 \": \" $2}'");
         fprintf(stderr, "Cannot unload modules while GPU is in use.\n");
         return -1;
     }
@@ -2300,7 +2300,7 @@ static void nvidia_show_status(void)
     if (loaded) {
         if (access("/usr/bin/nvidia-smi", X_OK) == 0) {
             printf("\n%s--- NVIDIA GPU Telemetry ---%s\n", C_YLW, C_RST);
-            system("nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | "
+            (void)system("nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | "
                    "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\"}'");
             
             FILE *p_fp = popen("nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null", "r");
@@ -3245,7 +3245,7 @@ static void add_shell_alias(const char *user)
         snprintf(d, sizeof(d), "%s/.config/fish", home);
         if (access(d, F_OK) != 0) {
             mkdir(d, 0700);
-            chown(d, pw->pw_uid, pw->pw_gid);
+            (void)chown(d, pw->pw_uid, pw->pw_gid);
         }
     } else if (strcmp(sh, "zsh") == 0) {
         snprintf(rc, sizeof(rc), "%s/.zshrc", home);
@@ -3281,7 +3281,7 @@ static void add_shell_alias(const char *user)
 
     /* If we created a new fish config, give it back to the user */
     if (strcmp(sh, "fish") == 0)
-        chown(rc, pw->pw_uid, pw->pw_gid);
+        (void)chown(rc, pw->pw_uid, pw->pw_gid);
 
     printf("Alias:    added 'cctl' → 'sudo cctl' to %s (%s)\n", rc, sh);
 }
@@ -3410,7 +3410,7 @@ static int cmd_drivers_install(int argc, char **argv)
         fprintf(stderr, "Error: failed to extract archive\n");
         char rm_cmd[PATH_MAX + 64];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
-        system(rm_cmd);
+        (void)system(rm_cmd);
         return 1;
     }
 
@@ -3421,7 +3421,7 @@ static int cmd_drivers_install(int argc, char **argv)
         fprintf(stderr, "Error: driverinstall.sh not found in extracted archive\n");
         char rm_cmd[PATH_MAX + 64];
         snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
-        system(rm_cmd);
+        (void)system(rm_cmd);
         return 1;
     }
 
