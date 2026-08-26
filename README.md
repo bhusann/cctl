@@ -2,6 +2,17 @@
 
 CCTL is a small command-line tool for managing performance on Clevo P15 laptops. It sets CPU power profiles (governor, turbo, EPP, RAPL limits), controls fans through direct EC I/O, adjusts the keyboard backlight, toggles webcam/microphone, sets the display refresh rate and GPU scaling — all with no GUI and only libc as a dependency.
 
+## Tested on
+
+Working and tested on two **Colorful Evol P15** laptops (two variants of the same chassis):
+
+| Laptop | CPU | GPU |
+|--------|-----|-----|
+| Colorful Evol P15 | Intel Core i7-13620H | NVIDIA GeForce RTX 4060 8 GB (100 W) |
+| Colorful Evol P15 | Intel Core i5-12500H | NVIDIA GeForce RTX 4050 6 GB (100 W) |
+
+Other Clevo-badged machines with TUXEDO/Clevo driver support will likely work too, but only these two are verified.
+
 ## Build
 
 ```bash
@@ -86,11 +97,29 @@ Most commands need `sudo`.
 **Profiles**
 | Command | Description |
 |---|---|
-| `set <profile>` | Apply a profile (no RAPL) |
-| `setR <profile>` | Apply a profile and also set RAPL limits |
+| `set <profile>` | Apply a CPU/GPU preset — GPU slot, turbo, governor, EPP. Power limits untouched |
+| `setR <profile>` | The same preset, then clamp CPU package power via RAPL (PL1/PL2 in watts) |
 
-Profiles: `max`, `cpuperf`, `balanced`, `powersave`, `eco`
-`setR` limits: max 45/90W · cpuperf 70W · balanced 35/40W · eco 9/10W
+Each profile bundles four CPU/GPU knobs into a single atomic command. `set` applies them as-is; `setR` additionally writes RAPL package power limits (PL1 = sustained wall for the package, PL2 = short-term boost).
+
+| Profile | Best for | GPU slot | Turbo | Governor | EPP | Power cap (`setR` only) |
+|---------|----------|----------|-------|----------|-----|--------------------------|
+| max | Gaming, heavy GPU workloads | performance (2) | ON | performance | performance | 45W / 90W |
+| cpuperf | Peak CPU speed — compiles, renders, heavy compute | turbo (3) | ON | performance | performance | PL2 70W only |
+| balanced | Daily driver — responsive under load, cool and quiet otherwise | turbo (3) | ON | powersave | balance_performance | 35W / 40W |
+| powersave | Light use, easy on the battery | standard (1) | OFF | powersave | balance_power | none |
+| eco | Maximum battery life | quiet (0) | OFF | powersave | power | 9W / 10W |
+
+Column notes:
+
+- **GPU slot** is the Clevo performance profile written through `tuxedo_io`; cctl reports it by name and number (e.g. `standard (1)`) when applying or in `status`.
+- **Turbo** overrides Intel Turbo Boost entirely: ON lets cores clock past base frequency, OFF pins them at/below it.
+- **Governor** picks the frequency-scaling policy (`powersave` defers to EPP on `intel_pstate`).
+- **EPP** (Energy Performance Preference) biases how aggressively the governor boosts between speed and savings.
+- **Power cap** applies only with `setR`. `powersave` never sets RAPL limits, even via `setR`.
+
+> [!NOTE]
+> **`max` power behavior.** Plain `set max` writes no RAPL limit, so the platform defaults apply on this P15: CPU runs at **PL1 90 W / PL2 115 W** and the GPU is unlocked at its full **100 W** budget. `setR max` instead holds the CPU to 45 W sustained / 90 W boost.
 
 **Fan**
 | Command | Description |
@@ -113,8 +142,6 @@ Profiles: `max`, `cpuperf`, `balanced`, `powersave`, `eco`
 | `kbc <name>` | Color by preset name (`kbc cyan`) |
 | `kbb <pct>` | Brightness (0–100%) |
 
-`kbcp` is still accepted as an alias for `kbc`.
-
 **System**
 | Command | Description |
 |---|---|
@@ -134,7 +161,7 @@ Profiles: `max`, `cpuperf`, `balanced`, `powersave`, `eco`
 |---|---|
 | `bat` | Show charge thresholds |
 | `bat <start> <stop>` | Set start/stop charge % (sudo) |
-| `bat off` | Widest range (min/max) |
+| `bat off` | Top-up mode: charge to max, resume near full (e.g. 95/100) |
 
 **NVIDIA** (needs root)
 | Command | Description |
@@ -172,16 +199,6 @@ sudo cctl rapl 50        # one arg = PL2 only
 
 > [!NOTE]
 > `skip` cleanly omits a limit — no placeholder value is ever written to the omitted power limit.
-
-## Profiles
-
-| Profile | GPU | Turbo | Governor | EPP | RAPL (setR) |
-|---------|-----|-------|----------|-----|-------------|
-| max | 2 | ON | perf | performance | 45W / 90W |
-| cpuperf | 3 | ON | perf | performance | 70W |
-| balanced | 3 | ON | powersave | balance_performance | 35W / 40W |
-| powersave | 1 | OFF | powersave | balance_power | — |
-| eco | 0 | OFF | powersave | power | 9W / 10W |
 
 ## Fan notes
 

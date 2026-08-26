@@ -512,6 +512,8 @@ static int fan_set_duty(int fan_idx, int percent)
  * max (perf_gpu):
  *   GPU=2(performance), turbo=ON, governor=performance, EPP=performance,
  *   display=auto, RAPL PL1=45W PL2=90W
+ *   (RAPL values are setR-only; with plain 'set' the platform defaults run:
+ *    PL1=90W, PL2=115W, GPU free to use its full 100W)
  *
  * cpuperf (perf_cpu):
  *   GPU=3(turbo), turbo=ON, governor=performance, EPP=performance,
@@ -1227,16 +1229,23 @@ static int bat_read_end(void)
     return (v >= 0) ? (int)v : -1;
 }
 
-/* Set battery charge thresholds. Use widest range (40, 100) to effectively disable. */
+/* Set battery charge thresholds. "off" (the start==end==0 sentinel) selects
+ * a near-full top-up range: charge all the way to the max stop threshold,
+ * but only resume charging once the battery drops below the highest usable
+ * start threshold (e.g. 95/100). Avoids keeping cells at mid-charge without
+ * deep-discharge cycling. */
 static int bat_set(int start, int end)
 {
-    /* "off" → widest available range: start=min, end=max */
+    /* "off" → stop=max, start=highest listed value below stop */
     if (start == 0 && end == 0) {
         int avail[16], cnt;
-        cnt = read_avail_thresholds(BAT_START_AVAIL_PATH, avail, 16);
-        start = (cnt > 0) ? avail[0] : 40;
         cnt = read_avail_thresholds(BAT_END_AVAIL_PATH, avail, 16);
         end = (cnt > 0) ? avail[cnt - 1] : 100;
+        cnt = read_avail_thresholds(BAT_START_AVAIL_PATH, avail, 16);
+        start = 95;
+        for (int i = cnt - 1; i >= 0; i--) {
+            if (avail[i] < end) { start = avail[i]; break; }
+        }
     }
 
     /* Validate start threshold */
@@ -1830,6 +1839,14 @@ static int is_installed_systemwide(void)
     return (strcmp(path, "/usr/local/bin/cctl") == 0);
 }
 
+/* True when the TUXEDO/Clevo driver stack is loaded. /dev/tuxedo_io only
+ * appears once tuxedo_io is up, and clevo_acpi + tuxedo_keyboard come with
+ * it as hard modprobe dependencies — so one stat covers the whole stack. */
+static int drivers_loaded(void)
+{
+    return access("/dev/tuxedo_io", F_OK) == 0;
+}
+
 static void print_usage(const char *prog)
 {
     const char *base = strrchr(prog, '/');
@@ -1855,11 +1872,15 @@ static void print_usage(const char *prog)
 
     /* ── Profiles ──────────────────────────────────────────────────────── */
     printf("  %sPROFILES%s\n", C_YLW, C_RST);
-    printf("    %sset%s   <profile>          Apply profile %s(no RAPL)%s\n",  C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %ssetR%s  <profile>          Apply profile %s(with RAPL)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("      %smax%s  %scpuperf%s  %sbalanced%s  %spowersave%s  %seco%s\n",
-           C_RED, C_RST, C_YLW, C_RST, C_GRN, C_RST, C_CYN_BLD, C_RST, C_DIM, C_RST);
-    printf("      %ssetR RAPL: max 45/90W · cpuperf 70W · balanced 35/40W · eco 9/10W%s\n\n", C_DIM, C_RST);
+    printf("    %sset%s   <profile>          Apply CPU/GPU preset %s(no power cap)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %ssetR%s  <profile>          Same, plus RAPL package power cap %s(PL1/PL2 W)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("\n");
+    printf("      %smax%s       gaming / full performance — everything unlocked %s(CPU 90/115W · GPU 100W)%s\n", C_RED, C_RST, C_DIM, C_RST);
+    printf("      %scpuperf%s   peak CPU speed — compiles, renders, heavy compute\n", C_YLW, C_RST);
+    printf("      %sbalanced%s  daily driver — responsive, yet cool and quiet\n", C_GRN, C_RST);
+    printf("      %spowersave%s light use — turbo off, quiet, battery-friendly\n", C_CYN_BLD, C_RST);
+    printf("      %seco%s       max battery life — power draw held near idle\n", C_DIM, C_RST);
+    printf("      %ssetR RAPL: max 45/90W · cpuperf PL2 70W · balanced 35/40W · eco 9/10W%s\n\n", C_DIM, C_RST);
 
     /* ── Fan ────────────────────────────────────────────────────────────── */
     printf("  %sFAN%s\n", C_YLW, C_RST);
@@ -1894,14 +1915,19 @@ static void print_usage(const char *prog)
     printf("    %smic%s    [on|off]          Toggle/set microphone\n", C_BLD, C_RST);
     printf("    %sfn%s <lock|unlock>         Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %swebcam%s [on|off]          Toggle/set webcam\n",      C_BLD, C_RST);
-    printf("    %sinstall%s                Install: copy to /usr/local/bin + passwordless sudo\n", C_BLD, C_RST);
-    printf("    %sdrivers-install%s       Find cctl-drivers.tar.gz in ~ and run the driver installer\n\n", C_BLD, C_RST);
+    /* install is only relevant when not already running the system-wide copy */
+    if (!is_installed_systemwide())
+        printf("    %sinstall%s                Install: copy to /usr/local/bin + passwordless sudo\n", C_BLD, C_RST);
+    /* drivers-install is pointless when the driver stack is already loaded */
+    if (!drivers_loaded())
+        printf("    %sdrivers-install%s       Find cctl-drivers.tar.gz in ~ and run the driver installer\n", C_BLD, C_RST);
+    printf("\n");
 
     /* ── Battery ────────────────────────────────────────────────────────── */
     printf("  %sBATTERY%s\n", C_GRN, C_RST);
     printf("    %sbat%s                      Show current thresholds\n",       C_BLD, C_RST);
     printf("    %sbat%s    <start> <stop>    Set charge thresholds %s(sudo)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sbat off%s                  Widest range %s(start=min, stop=max)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sbat off%s                  Top-up mode %s(charge to max, resume near full)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── NVIDIA ─────────────────────────────────────────────────────────── */
     printf("  %sNVIDIA%s %s(needs root)%s\n", C_RED, C_RST, C_DIM, C_RST);
@@ -1929,7 +1955,17 @@ static void print_usage(const char *prog)
         printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
     }
 
-    printf("\n  %sv2.0%s\n", C_DIM, C_RST);
+    /* Driver hint — only shown when the TUXEDO/Clevo stack is not loaded */
+    if (!drivers_loaded()) {
+        printf("  %sDRIVERS NOT LOADED%s — some features need them:\n", C_YLW, C_RST);
+        printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        printf("    • %sset/setR%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        printf("    Fix: run %scctl drivers-install%s (or %smake drivers-install%s)\n\n",
+               C_BLD, C_RST, C_BLD, C_RST);
+    }
+
+    printf("\n  %sv2.1%s\n", C_DIM, C_RST);
 }
 
 /* ========================================================================
@@ -3475,7 +3511,6 @@ static const struct command commands[] = {
     { "epp",     1, cmd_epp },
     { "rapl",    1, cmd_rapl },
     { "kbc",     1, cmd_kbc },
-    { "kbcp",    1, cmd_kbc },     /* backward compat alias */
     { "kbb",     1, cmd_kbb },
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
