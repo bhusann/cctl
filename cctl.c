@@ -661,7 +661,7 @@ static char *find_webcam_usb_id(void)
         n = read(fd, prod_buf, sizeof(prod_buf) - 1);
         close(fd);
         if (n > 0) {
-            for (char *p = prod_buf; *p; p++) *p = tolower((unsigned char)*p);
+            for (char *p = prod_buf; *p; p++) *p = (char)tolower((unsigned char)*p);
             if (strstr(prod_buf, "camera") || strstr(prod_buf, "webcam") ||
                 strstr(prod_buf, "video") || strstr(prod_buf, "chicony")) {
                 free(result);
@@ -980,7 +980,7 @@ static int is_cpu_e_core(int cpu_num)
                          "/sys/devices/system/cpu/%s/cpufreq/cpuinfo_max_freq", ent->d_name);
                 long khz = read_sysfs_long(path, -1);
                 if (khz > global_max_khz) {
-                    global_max_khz = khz;
+                    global_max_khz = (int)khz;
                 }
             }
             closedir(d);
@@ -1414,7 +1414,7 @@ static int kbd_set_preset(const char *name)
     char lower[64];
     size_t i;
     for (i = 0; i < sizeof(lower) - 1 && name[i]; i++)
-        lower[i] = tolower((unsigned char)name[i]);
+        lower[i] = (char)tolower((unsigned char)name[i]);
     lower[i] = '\0';
 
     for (const struct kbd_preset *p = kbd_presets; p->name; p++) {
@@ -1504,10 +1504,10 @@ static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *
 
     /* RPM from EC RAM: 0xD0:D1 (CPU), 0xD2:D3 (GPU), formula: EC_FAN_RPM_DIVISOR / raw16 */
     unsigned int cpu_raw16 = ((unsigned int)ram[0xD0] << 8) | ram[0xD1];
-    *cpu_rpm = cpu_raw16 > 0 ? EC_FAN_RPM_DIVISOR / cpu_raw16 : 0;
+    *cpu_rpm = (int)(cpu_raw16 > 0 ? EC_FAN_RPM_DIVISOR / cpu_raw16 : 0);
 
     unsigned int gpu_raw16 = ((unsigned int)ram[0xD2] << 8) | ram[0xD3];
-    *gpu_rpm = gpu_raw16 > 0 ? EC_FAN_RPM_DIVISOR / gpu_raw16 : 0;
+    *gpu_rpm = (int)(gpu_raw16 > 0 ? EC_FAN_RPM_DIVISOR / gpu_raw16 : 0);
 
     return 0;
 }
@@ -1558,7 +1558,7 @@ static int get_cpu_usage_pct(void)
     prev_total = total;
 
     if (d_total == 0) return 0;
-    return (int)((100.0 * (d_total - d_idle)) / d_total);
+    return (int)((100.0 * (double)(d_total - d_idle)) / (double)d_total);
 }
 
 /* ========================================================================
@@ -1625,7 +1625,7 @@ static void cpumonitor_sigint(int sig) { (void)sig; cpumonitor_running = 0; }
 static int cpumonitor(void)
 {
     /* Count CPUs */
-    int max_cpus = sysconf(_SC_NPROCESSORS_CONF);
+    int max_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
     if (max_cpus <= 0) max_cpus = 64;
 
     struct sigaction sa = { .sa_handler = cpumonitor_sigint };
@@ -1702,7 +1702,7 @@ static int cpumonitor(void)
                 if (strncmp(line, "cpu MHz", 7) == 0) {
                     char *p = strchr(line, ':');
                     if (p) {
-                        freqs[cpu_count++] = atof(p + 1);
+                        freqs[cpu_count++] = (float)atof(p + 1);
                     }
                 }
             }
@@ -1758,10 +1758,10 @@ static int cpumonitor(void)
             printf("CPU Temp:      N/A\n");
         }
         if (e1 >= 0 && e2 >= 0) {
-            double dt = (t2.tv_sec - t1.tv_sec) + (t2.tv_nsec - t1.tv_nsec) / 1e9;
+            double dt = (double)(t2.tv_sec - t1.tv_sec) + (double)(t2.tv_nsec - t1.tv_nsec) / 1e9;
             if (dt > 0) {
                 long duj = e2 - e1;
-                printf("Package Power: %.2f Watts\n", (duj / dt) / 1000000.0);
+                printf("Package Power: %.2f Watts\n", ((double)duj / dt) / 1000000.0);
             }
         } else {
             printf("Package Power: N/A\n");
@@ -2926,7 +2926,7 @@ static int cmd_monitor(int argc, char **argv)
 
 static int cmd_set(int argc, char **argv)
 {
-    int with_rapl = (strcmp(argv[1], "setR") == 0);
+    int with_rapl = (strcmp(argv[1], "setr") == 0);
     if (argc < 3) {
         fprintf(stderr, "Error: Missing profile name\n");
         fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
@@ -3503,7 +3503,7 @@ static const struct command commands[] = {
     { "mic",     0, cmd_mic },
     { "monitor", 1, cmd_monitor },
     { "set",     1, cmd_set },
-    { "setR",    1, cmd_set },
+    { "setr",    1, cmd_set },
     { "fan",     1, cmd_fan },
     { "turbo",   1, cmd_turbo },
     { "fn",      1, cmd_fnlock },
@@ -3530,13 +3530,13 @@ int main(int argc, char **argv)
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
         int pinned_count = 0;
-        int max_cpus = sysconf(_SC_NPROCESSORS_CONF);
+        int max_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
         if (max_cpus <= 0) max_cpus = 64;
 
         for (int i = 0; i < max_cpus; i++) {
             if (i >= CPU_SETSIZE) continue; /* cannot represent in cpu_set_t */
             if (is_cpu_e_core(i)) {
-                CPU_SET(i, &cpuset);
+                CPU_SET((unsigned)i, &cpuset);
                 pinned_count++;
                 if (pinned_count >= 2) break; // pin to up to 2 E-cores
             }
@@ -3551,6 +3551,11 @@ int main(int argc, char **argv)
         print_usage(argv[0]);
         return 1;
     }
+
+    /* Normalize the command verb to lowercase so any case works
+     * (e.g. setR, SetR and setr are all treated as the RAPL variant). */
+    for (char *p = argv[1]; *p; p++)
+        *p = (char)tolower((unsigned char)*p);
 
     if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
         print_usage(argv[0]);

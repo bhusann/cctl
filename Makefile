@@ -2,7 +2,7 @@ obj-m += legacymethod/
 
 # ── Default: only cctl binary ───────────────────────────────────────────────
 cctl: cctl.c
-	gcc -o $@ $< -Os -s
+	gcc -o $@ $< -Os -s -Wall -Wextra -Wshadow
 
 # ── Everything: cctl + kernel modules ───────────────────────────────────────
 all: cctl drivers
