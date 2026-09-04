@@ -22,11 +22,15 @@ header() { echo -e "\n${CYAN}══ $1 ══${NC}"; }
 
 # ─── Package Manager ────────────────────────────────────────────────────────
 detect_pkg_manager() {
+    # Immutable distros (Bazzite, Silverblue, etc.) have dnf but DKMS
+    # doesn't survive image updates — treat as unsupported.
+    if command -v rpm-ostree &>/dev/null; then echo "unsupported"; return; fi
+
     if command -v pacman &>/dev/null; then echo "pacman"
     elif command -v apt-get &>/dev/null; then echo "apt"
     elif command -v dnf &>/dev/null; then echo "dnf"
     elif command -v zypper &>/dev/null; then echo "zypper"
-    else echo "unknown"
+    else echo "unsupported"
     fi
 }
 
@@ -74,8 +78,14 @@ check_prereqs() {
     # Detect package manager
     local pm
     pm="$(detect_pkg_manager)"
-    if [ "$pm" = "unknown" ]; then
-        echo -e "\n${RED}Could not detect package manager. Install manually and re-run.${NC}" >&2
+    if [ "$pm" = "unsupported" ]; then
+        echo
+        warn "Your distro has not been tested with this installer."
+        info "Driver source is located at: ${CYAN}${SCRIPT_DIR}${NC}"
+        info "You need 'dkms' and kernel headers installed to build these modules."
+        info "Refer to your distro's documentation for manual DKMS installation."
+        info "You can also use an AI assistant (ChatGPT, Gemini, etc.) for step-by-step guidance."
+        echo
         exit 1
     fi
 

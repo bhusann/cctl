@@ -23,6 +23,30 @@ sudo ./cctl install
 
 Restart your terminal after running `cctl install`.
 
+## Kernel Drivers
+
+The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is required for fan control, keyboard backlight, battery thresholds, and EC-based GPU profile slots. The installer handles DKMS registration, build, and modprobe config.
+
+```bash
+sudo ./cctl drivers-install       # Interactive: detects state, installs or uninstalls
+sudo ./drivers/driverinstall.sh --install    # Direct install
+sudo ./drivers/driverinstall.sh --uninstall  # Direct uninstall
+./drivers/driverinstall.sh --status          # Check current state (no root needed)
+```
+
+**Auto-installs prerequisites** (dkms + kernel headers) if missing, with confirmation prompt.
+
+Tested distros:
+
+| Family | Distros | Package Manager |
+|---|---|---|
+| Arch-based | Arch, Manjaro, EndeavourOS, CachyOS | `pacman` |
+| Debian-based | Ubuntu, Debian, Mint, Pop!_OS | `apt` |
+| Fedora | Fedora, Nobara | `dnf` |
+| SUSE | openSUSE Tumbleweed/Leap | `zypper` |
+
+On unsupported or immutable distros (NixOS, Gentoo, Alpine, Bazzite, etc.) the installer will point you to the driver source at `drivers/` and exit — you'll need to build and install the modules manually using your distro's documentation or an AI assistant for step-by-step guidance.
+
 ## Build
 
 ```bash
