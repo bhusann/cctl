@@ -20,18 +20,88 @@ fail() { echo -e "  ${RED}✗${NC} $1"; }
 info() { echo -e "  ${CYAN}→${NC} $1"; }
 header() { echo -e "\n${CYAN}══ $1 ══${NC}"; }
 
+# ─── Package Manager ────────────────────────────────────────────────────────
+detect_pkg_manager() {
+    if command -v pacman &>/dev/null; then echo "pacman"
+    elif command -v apt-get &>/dev/null; then echo "apt"
+    elif command -v dnf &>/dev/null; then echo "dnf"
+    elif command -v zypper &>/dev/null; then echo "zypper"
+    else echo "unknown"
+    fi
+}
+
+get_headers_pkg() {
+    case "$1" in
+        pacman)
+            # Derive from the package that owns the running kernel's modules
+            local kpkg
+            kpkg="$(pacman -Qoq "/lib/modules/${KERNEL}/" 2>/dev/null | head -1 || true)"
+            echo "${kpkg:-linux}-headers"
+            ;;
+        apt)    echo "linux-headers-${KERNEL}" ;;
+        dnf)    echo "kernel-devel" ;;
+        zypper) echo "kernel-devel" ;;
+        *)      echo "" ;;
+    esac
+}
+
+install_packages() {
+    local pm="$1"; shift
+    case "$pm" in
+        pacman) pacman -S --needed --noconfirm "$@" ;;
+        apt)    apt-get install -y "$@" ;;
+        dnf)    dnf install -y "$@" ;;
+        zypper) zypper install -y "$@" ;;
+    esac
+}
+
 # ─── Prerequisites Check ────────────────────────────────────────────────────
 check_prereqs() {
-    local missing=0
-    command -v dkms &>/dev/null || { fail "dkms not found"; missing=1; }
-    if [ ! -d "$KERNEL_BUILD" ]; then
-        fail "Kernel headers not found at $KERNEL_BUILD"
-        missing=1
+    local need_dkms=0 need_headers=0
+    command -v dkms &>/dev/null || need_dkms=1
+    [ -d "$KERNEL_BUILD" ] || need_headers=1
+
+    # Nothing missing — carry on
+    if [ $need_dkms -eq 0 ] && [ $need_headers -eq 0 ]; then
+        return 0
     fi
-    if [ $missing -ne 0 ]; then
-        echo -e "\n${RED}Fix missing prerequisites and re-run.${NC}" >&2
+
+    # Show what's missing
+    header "Missing Prerequisites"
+    [ $need_dkms -eq 1 ] && fail "dkms not found"
+    [ $need_headers -eq 1 ] && fail "Kernel headers not found at $KERNEL_BUILD"
+
+    # Detect package manager
+    local pm
+    pm="$(detect_pkg_manager)"
+    if [ "$pm" = "unknown" ]; then
+        echo -e "\n${RED}Could not detect package manager. Install manually and re-run.${NC}" >&2
         exit 1
     fi
+
+    # Build package list
+    local pkgs=()
+    [ $need_dkms -eq 1 ] && pkgs+=("dkms")
+    if [ $need_headers -eq 1 ]; then
+        local hpkg
+        hpkg="$(get_headers_pkg "$pm")"
+        [ -n "$hpkg" ] && pkgs+=("$hpkg")
+    fi
+
+    echo
+    info "Detected package manager: $pm"
+    info "Will install: ${pkgs[*]}"
+    echo -n "  Proceed? [Y/n] "
+    read -r ans
+    case "$ans" in
+        [nN]|[nN][oO])
+            echo -e "${RED}Cannot proceed without prerequisites.${NC}" >&2
+            exit 1
+            ;;
+    esac
+
+    install_packages "$pm" "${pkgs[@]}"
+    ok "Prerequisites installed"
 }
 
 # ─── Fix missing autoconf.h (cachyos-headers bug workaround) ────────────────
