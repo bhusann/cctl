@@ -1971,7 +1971,7 @@ static void print_usage(const char *prog)
                C_BLD, C_RST, C_BLD, C_RST);
     }
 
-    printf("\n  %sv2.1%s\n", C_DIM, C_RST);
+    printf("\n  %sv2.2%s\n", C_DIM, C_RST);
 }
 
 #ifdef CCTL_NVIDIA

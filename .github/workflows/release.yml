@@ -3,6 +3,9 @@ name: Release
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -17,8 +20,8 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y build-essential
 
-      - name: Build cctl binary
-        run: gcc -o cctl cctl.c -Os -s
+      - name: Build cctl binary (no-NVIDIA)
+        run: make cctl
 
       - name: Package drivers source tarball
         run: |
