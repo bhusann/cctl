@@ -15,10 +15,15 @@ Other Clevo-badged machines with TUXEDO/Clevo driver support will likely work to
 
 ## Build
 
+The default build includes `nvidia clock`, `nvidia memclock`, `nvidia pm`, and `nvidia pmclock` (the `nvidia-smi` clock/power-limit commands) but **excludes** the module-toggle commands (`nvidia on/off/load/loadgame/unload/status/power`). To include those, build with the `CCTL_NVIDIA` flag.
+
 ```bash
-make            # build just the cctl binary
-make all        # build cctl + kernel drivers
+make                  # build just the cctl binary (clock/memclock/pm/pmclock only)
+make cctl-nvidia      # build cctl with full nvidia command set (on/off/load/unload/status/power/clock/memclock/pm/pmclock)
+make all              # build cctl + kernel drivers
 ```
+
+> Note: the pre-built `cctl` on the Releases page is the default (no-NVIDIA) build. If you need the full `nvidia` commands, build from source with `make cctl-nvidia` (or `gcc -o cctl cctl.c -Os -s -DCCTL_NVIDIA`).
 
 ## Installation
 

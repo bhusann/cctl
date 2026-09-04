@@ -1,5 +1,6 @@
 # Binaries
 cctl
+cctl-nvidia
 legacygpu.ko
 *.o
 

@@ -61,8 +61,10 @@ static int read_cpu_temp(void);
 static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *gpu_rpm, int cached_fd);
 #define read_fan_telemetry(c, g, cr, gr) read_fan_telemetry_ex(c, g, cr, gr, -1)
 static int is_cpu_e_core(int cpu_num);
+#ifdef CCTL_NVIDIA
 static int nvidia_is_blacklisted(void);
 static int nvidia_is_loaded(void);
+#endif
 static int bat_read_start(void);
 static int bat_read_end(void);
 
@@ -1117,11 +1119,13 @@ static void show_status(void)
     }
 
     /* Nvidia GPU */
+#ifdef CCTL_NVIDIA
     int nv_blacklisted = nvidia_is_blacklisted();
     int nv_loaded = nvidia_is_loaded();
     printf("  Nvidia GPU: %s%s%s (modules %s%s%s)\n",
            nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
            nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
+#endif
 
     /* CPU Max Frequency (P-core vs E-core) */
     printf("\n%s--- CPU Max Frequency ---%s\n", C_YLW, C_RST);
@@ -1931,16 +1935,18 @@ static void print_usage(const char *prog)
 
     /* ── NVIDIA ─────────────────────────────────────────────────────────── */
     printf("  %sNVIDIA%s %s(needs root)%s\n", C_RED, C_RST, C_DIM, C_RST);
+#ifdef CCTL_NVIDIA
     printf("    %snvidia%s  <on|off>         Persistent toggle %s(+initramfs rebuild)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  load             Session load %s(compute modules)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  loadgame         Session load %s(all modules incl. drm)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  unload           Session unload + power off\n", C_BLD, C_RST);
     printf("    %snvidia%s  status           Show GPU status & telemetry\n", C_BLD, C_RST);
+    printf("    %snvidia power%s <on|off>    Hardware D0/D3cold control\n", C_BLD, C_RST);
+#endif
     printf("    %snvidia%s  clock <min,max>  Lock GPU clocks %s(reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  memclock <min,max> Lock GPU memory clocks %s(reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  pm <on|off>      Toggle persistence mode\n", C_BLD, C_RST);
-    printf("    %snvidia%s  pmclock <min,max> Persistence on + lock GPU clocks\n", C_BLD, C_RST);
-    printf("    %snvidia power%s <on|off>    Hardware D0/D3cold control\n\n", C_BLD, C_RST);
+    printf("    %snvidia%s  pmclock <min,max> Persistence on + lock GPU clocks\n\n", C_BLD, C_RST);
 
     /* ── Info ───────────────────────────────────────────────────────────── */
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
@@ -1968,6 +1974,7 @@ static void print_usage(const char *prog)
     printf("\n  %sv2.1%s\n", C_DIM, C_RST);
 }
 
+#ifdef CCTL_NVIDIA
 /* ========================================================================
  * NVIDIA GPU
  * ========================================================================
@@ -2099,6 +2106,7 @@ static int run_cmd_silent(const char *cmd, char *const argv[])
     waitpid(pid, &status, 0);
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
+#endif /* CCTL_NVIDIA */
 
 static int run_cmd(const char *cmd, char *const argv[])
 {
@@ -2113,6 +2121,7 @@ static int run_cmd(const char *cmd, char *const argv[])
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+#ifdef CCTL_NVIDIA
 /* Check whether an initramfs image exists in /boot.
  * Returns 1 if found, 0 otherwise. */
 static int initramfs_present(void)
@@ -2191,7 +2200,8 @@ static int initramfs_rebuild_ready(void)
 
     if (access("/usr/bin/mkinitcpio", X_OK) == 0 ||
         access("/usr/bin/dracut", X_OK) == 0 ||
-        access("/usr/sbin/update-initramfs", X_OK) == 0)
+        access("/usr/sbin/update-initramfs", X_OK) == 0 ||
+        access("/sbin/update-initramfs", X_OK) == 0)
         return 1;
 
     /* initramfs present but no tool to rebuild it */
@@ -2209,17 +2219,22 @@ static int rebuild_initramfs(void)
     if (access("/usr/bin/mkinitcpio", X_OK) == 0) {
         printf("  Rebuilding initramfs with mkinitcpio (this may take a minute)...\n");
         char *const args[] = { "mkinitcpio", "-P", NULL };
-        return run_cmd("mkinitcpio", args);
+        return run_cmd("/usr/bin/mkinitcpio", args);
     }
     if (access("/usr/bin/dracut", X_OK) == 0) {
         printf("  Rebuilding initramfs with dracut (this may take a minute)...\n");
         char *const args[] = { "dracut", "--force", NULL };
-        return run_cmd("dracut", args);
+        return run_cmd("/usr/bin/dracut", args);
     }
     if (access("/usr/sbin/update-initramfs", X_OK) == 0) {
         printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
         char *const args[] = { "update-initramfs", "-u", NULL };
-        return run_cmd("update-initramfs", args);
+        return run_cmd("/usr/sbin/update-initramfs", args);
+    }
+    if (access("/sbin/update-initramfs", X_OK) == 0) {
+        printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
+        char *const args[] = { "update-initramfs", "-u", NULL };
+        return run_cmd("/sbin/update-initramfs", args);
     }
     /* Should never reach here if initramfs_rebuild_ready() was called first */
     fprintf(stderr, "Error: No initramfs tool found (mkinitcpio/dracut/update-initramfs).\n");
@@ -2697,6 +2712,7 @@ static int nvidia_power_set(int on)
            strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
     return 0;
 }
+#endif /* CCTL_NVIDIA */
 
 
 /* Run nvidia-smi -lgc <min,max> (lock GPU clocks to a range) */
@@ -2749,15 +2765,33 @@ static int nvidia_parse_clock_range(const char *str, int *min, int *max)
     return 0;
 }
 
+#ifdef CCTL_NVIDIA
+#define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|power|clock|memclock|pm|pmclock}"
+#else
+#define NVIDIA_USAGE_STR "nvidia {clock|memclock|pm|pmclock} (module commands require make cctl-nvidia)"
+#endif
+
 static int cmd_nvidia(int argc, char **argv)
 {
     if (argc < 3) {
         fprintf(stderr, "Error: Missing action for nvidia command\n");
-        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|power}\n");
+        fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
         return 1;
     }
     const char *action = argv[2];
 
+#ifndef CCTL_NVIDIA
+    /* Module/GPU-toggle commands are only compiled into the NVIDIA build. */
+    if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
+        strcmp(action, "load") == 0 || strcmp(action, "loadgame") == 0 ||
+        strcmp(action, "unload") == 0 || strcmp(action, "status") == 0 ||
+        strcmp(action, "power") == 0) {
+        fprintf(stderr, "Error: 'nvidia %s' requires a build with NVIDIA support (make cctl-nvidia).\n", action);
+        return 1;
+    }
+#endif
+
+#ifdef CCTL_NVIDIA
     if (strcmp(action, "status") == 0) {
         nvidia_show_status();
         return 0;
@@ -2783,6 +2817,7 @@ static int cmd_nvidia(int argc, char **argv)
                strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
         return 0;
     }
+#endif
 
     /* All other actions need root */
     if (geteuid() != 0) {
@@ -2790,6 +2825,7 @@ static int cmd_nvidia(int argc, char **argv)
         return 1;
     }
 
+#ifdef CCTL_NVIDIA
     if (strcmp(action, "off") == 0) {
         return nvidia_set_off();
     } else if (strcmp(action, "on") == 0) {
@@ -2800,7 +2836,17 @@ static int cmd_nvidia(int argc, char **argv)
         return nvidia_load(1);
     } else if (strcmp(action, "unload") == 0) {
         return nvidia_unload();
-    } else if (strcmp(action, "clock") == 0) {
+    } else if (strcmp(action, "power") == 0) {
+        if (strcmp(argv[3], "on") == 0)
+            return nvidia_power_set(1);
+        if (strcmp(argv[3], "off") == 0)
+            return nvidia_power_set(0);
+        fprintf(stderr, "Error: Unknown nvidia power argument '%s'\n", argv[3]);
+        fprintf(stderr, "Usage: nvidia power [on|off]\n");
+        return 1;
+    } else
+#endif
+    if (strcmp(action, "clock") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Error: Missing argument for nvidia clock\n");
             fprintf(stderr, "Usage: nvidia clock <min>,<max> | reset\n");
@@ -2843,14 +2889,6 @@ static int cmd_nvidia(int argc, char **argv)
         fprintf(stderr, "Error: Unknown nvidia pm argument '%s'\n", argv[3]);
         fprintf(stderr, "Usage: nvidia pm <on|off>\n");
         return 1;
-    } else if (strcmp(action, "power") == 0) {
-        if (strcmp(argv[3], "on") == 0)
-            return nvidia_power_set(1);
-        if (strcmp(argv[3], "off") == 0)
-            return nvidia_power_set(0);
-        fprintf(stderr, "Error: Unknown nvidia power argument '%s'\n", argv[3]);
-        fprintf(stderr, "Usage: nvidia power [on|off]\n");
-        return 1;
     } else if (strcmp(action, "pmclock") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Error: Missing argument for nvidia pmclock\n");
@@ -2868,7 +2906,7 @@ static int cmd_nvidia(int argc, char **argv)
         return nvidia_clock_set(min, max);
     } else {
         fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: nvidia {on|off|load|loadgame|unload|status|clock|memclock|pm|power}\n");
+        fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
         return 1;
     }
 }
