@@ -2113,6 +2113,97 @@ static int run_cmd(const char *cmd, char *const argv[])
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+/* Check whether an initramfs image exists in /boot.
+ * Returns 1 if found, 0 otherwise. */
+static int initramfs_present(void)
+{
+    DIR *d = opendir("/boot");
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strstr(e->d_name, "initramfs") || strstr(e->d_name, "initrd")) {
+            closedir(d);
+            return 1;
+        }
+    }
+    closedir(d);
+    return 0;
+}
+
+/* Print a distro-appropriate install command for the initramfs rebuild tool. */
+static void print_initramfs_install_hint(void)
+{
+    char id[64] = {0};
+    FILE *fp = fopen("/etc/os-release", "r");
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            if (strncmp(line, "ID=", 3) == 0) {
+                char *val = line + 3;
+                while (*val == '"' || *val == '\'') val++;
+                size_t len = strlen(val);
+                while (len > 0 && (val[len - 1] == '"' || val[len - 1] == '\'' ||
+                                   val[len - 1] == '\n' || val[len - 1] == '\r'))
+                    val[--len] = '\0';
+                strncpy(id, val, sizeof(id) - 1);
+                break;
+            }
+        }
+        fclose(fp);
+    }
+
+    if (strstr(id, "arch") || strstr(id, "manjaro") || strstr(id, "endeavouros"))
+        fprintf(stderr, "  Install: sudo pacman -S mkinitcpio\n");
+    else if (strstr(id, "fedora"))
+        fprintf(stderr, "  Install: sudo dnf install dracut\n");
+    else if (strstr(id, "rhel") || strstr(id, "centos") || strstr(id, "rocky") || strstr(id, "alma"))
+        fprintf(stderr, "  Install: sudo dnf install dracut\n");
+    else if (strstr(id, "suse"))
+        fprintf(stderr, "  Install: sudo zypper install dracut\n");
+    else if (strstr(id, "debian") || strstr(id, "ubuntu") || strstr(id, "mint") ||
+             strstr(id, "pop") || strstr(id, "elementary") || strstr(id, "zorin"))
+        fprintf(stderr, "  Install: sudo apt install initramfs-tools\n");
+    else
+        fprintf(stderr, "  Install one of:\n"
+                "    sudo pacman -S mkinitcpio          (Arch/Manjaro)\n"
+                "    sudo dnf install dracut             (Fedora/RHEL)\n"
+                "    sudo zypper install dracut           (openSUSE)\n"
+                "    sudo apt install initramfs-tools     (Debian/Ubuntu)\n");
+}
+
+/* Pre-check whether an initramfs rebuild can be performed.
+ * Must be called BEFORE writing any config files so that on failure
+ * nothing is left in a half-applied state.
+ *
+ * Returns:
+ *   1  -> initramfs tool present; caller may write config then rebuild
+ *   0  -> no initramfs on this system; no rebuild needed (config-only)
+ *  -1  -> initramfs present but no rebuild tool installed; caller MUST abort
+ */
+static int initramfs_rebuild_ready(void)
+{
+    int has_initramfs = initramfs_present();
+    if (!has_initramfs) {
+        printf("  No initramfs detected in /boot. The modprobe blacklist\n");
+        printf("  takes effect directly on next boot without a rebuild.\n");
+        return 0;
+    }
+
+    if (access("/usr/bin/mkinitcpio", X_OK) == 0 ||
+        access("/usr/bin/dracut", X_OK) == 0 ||
+        access("/usr/sbin/update-initramfs", X_OK) == 0)
+        return 1;
+
+    /* initramfs present but no tool to rebuild it */
+    fprintf(stderr, "\n  %sError: This system uses an initramfs but no rebuild tool is installed.%s\n\n", C_RED, C_RST);
+    print_initramfs_install_hint();
+    fprintf(stderr, "  Install the tool first, then re-run this command.\n\n");
+    return -1;
+}
+
+/* Rebuild the initramfs using whichever tool is available.
+ * Caller must have already confirmed initramfs_rebuild_ready() == 1.
+ * Returns 0 on success, -1 on failure. */
 static int rebuild_initramfs(void)
 {
     if (access("/usr/bin/mkinitcpio", X_OK) == 0) {
@@ -2130,9 +2221,9 @@ static int rebuild_initramfs(void)
         char *const args[] = { "update-initramfs", "-u", NULL };
         return run_cmd("update-initramfs", args);
     }
-    fprintf(stderr, "Warning: No initramfs tool found (mkinitcpio/dracut/update-initramfs).\n");
-    fprintf(stderr, "You may need to rebuild initramfs manually before rebooting.\n");
-    return 0;
+    /* Should never reach here if initramfs_rebuild_ready() was called first */
+    fprintf(stderr, "Error: No initramfs tool found (mkinitcpio/dracut/update-initramfs).\n");
+    return -1;
 }
 
 static int try_unload_nvidia(void)
@@ -2246,6 +2337,12 @@ static int nvidia_set_off(void)
         return 0;
     }
 
+    /* Pre-check: can initramfs be rebuilt if needed? Must be called
+     * BEFORE writing the blacklist so nothing is left half-applied. */
+    int initrd_ready = initramfs_rebuild_ready();
+    if (initrd_ready < 0)
+        return -1;
+
     printf("  Writing blacklist to /etc/modprobe.d/blacklist-nvidia.conf...\n");
     FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "w");
     if (!fp) {
@@ -2260,10 +2357,12 @@ static int nvidia_set_off(void)
     }
     fclose(fp);
 
-    if (rebuild_initramfs() < 0) {
-        fprintf(stderr, "Error: Initramfs rebuild failed. Removing blacklist config.\n");
-        unlink("/etc/modprobe.d/blacklist-nvidia.conf");
-        return -1;
+    if (initrd_ready == 1) {
+        if (rebuild_initramfs() < 0) {
+            fprintf(stderr, "Error: Initramfs rebuild failed. Removing blacklist config.\n");
+            unlink("/etc/modprobe.d/blacklist-nvidia.conf");
+            return -1;
+        }
     }
 
     if (nvidia_is_loaded()) {
@@ -2304,12 +2403,29 @@ static int nvidia_set_on(void)
         }
     }
 
+    /* Pre-check: can initramfs be rebuilt if needed? */
+    int initrd_ready = initramfs_rebuild_ready();
+    if (initrd_ready < 0)
+        return -1;
+
     printf("  Removing /etc/modprobe.d/blacklist-nvidia.conf...\n");
     unlink("/etc/modprobe.d/blacklist-nvidia.conf");
 
-    if (rebuild_initramfs() < 0) {
-        fprintf(stderr, "Error: Initramfs rebuild failed.\n");
-        return -1;
+    if (initrd_ready == 1) {
+        if (rebuild_initramfs() < 0) {
+            fprintf(stderr, "Error: Initramfs rebuild failed. Restoring blacklist config.\n");
+            FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "w");
+            if (fp) {
+                fprintf(fp, "# Disabled by cctl nvidia off\n");
+                const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
+                for (size_t i = 0; i < 4; i++) {
+                    fprintf(fp, "blacklist %s\n", modules[i]);
+                    fprintf(fp, "alias %s off\n", modules[i]);
+                }
+                fclose(fp);
+            }
+            return -1;
+        }
     }
 
     if (!nvidia_is_loaded()) {
