@@ -1943,10 +1943,8 @@ static void print_usage(const char *prog)
     printf("    %snvidia%s  status           Show GPU status & telemetry\n", C_BLD, C_RST);
     printf("    %snvidia power%s <on|off>    Hardware D0/D3cold control\n", C_BLD, C_RST);
 #endif
-    printf("    %snvidia%s  clock <min,max>  Lock GPU clocks %s(reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s  memclock <min,max> Lock GPU memory clocks %s(reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s  pm <on|off>      Toggle persistence mode\n", C_BLD, C_RST);
-    printf("    %snvidia%s  pmclock <min,max> Persistence on + lock GPU clocks\n\n", C_BLD, C_RST);
+    printf("    %snvidia%s  clock <min,max>  Lock GPU clocks %s(auto persistence, reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s  memclock <min,max> Lock memory clocks %s(auto persistence, reset to unlock)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Info ───────────────────────────────────────────────────────────── */
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
@@ -1990,12 +1988,10 @@ static void print_usage(const char *prog)
  *   nvidia unload            — Session-only: rmmod all nvidia modules, power off
  *                               GPU (D0→D3cold). Requires blacklist mode.
  *   nvidia status            — Show boot config, module state, GPU telemetry.
- *   nvidia clock <min,max>   — Lock GPU clocks to [min,max] (nvidia-smi -lgc).
- *   nvidia clock reset       — Unlock GPU clocks (nvidia-smi -rgc).
- *   nvidia memclock <min,max>— Lock GPU memory clocks (nvidia-smi -lmc).
- *   nvidia memclock reset    — Unlock GPU memory clocks (nvidia-smi -rmc).
- *   nvidia pm <on|off>       — Toggle persistence mode (nvidia-smi -pm).
- *   nvidia pmclock <min,max> — Persistence on + lock GPU clocks in one step.
+ *   nvidia clock <min,max>   — Auto-enable persistence + lock GPU clocks (-lgc).
+ *   nvidia clock reset       — Unlock GPU clocks (-rgc), persistence untouched.
+ *   nvidia memclock <min,max>— Auto-enable persistence + lock memory clocks (-lmc).
+ *   nvidia memclock reset    — Unlock memory clocks (-rmc), persistence untouched.
  *   nvidia power [on|off]    — Direct PCI runtime PM control (D0/D3cold).
  *                               Useful when no nvidia driver is loaded.
  * ======================================================================== */
@@ -2475,8 +2471,8 @@ static void nvidia_show_status(void)
     if (loaded) {
         if (access("/usr/bin/nvidia-smi", X_OK) == 0) {
             printf("\n%s--- NVIDIA GPU Telemetry ---%s\n", C_YLW, C_RST);
-            run_quiet("nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | "
-                   "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\"}'");
+            run_quiet("nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu,persistence_mode --format=csv,noheader,nounits 2>/dev/null | "
+                   "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\\n  Persistence:   \" $7}'");
             
             FILE *p_fp = popen("nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null", "r");
             if (p_fp) {
@@ -2715,9 +2711,18 @@ static int nvidia_power_set(int on)
 #endif /* CCTL_NVIDIA */
 
 
-/* Run nvidia-smi -lgc <min,max> (lock GPU clocks to a range) */
+/* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
+static int nvidia_pm_set(int on)
+{
+    char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
+    return run_cmd("nvidia-smi", args);
+}
+
+/* Auto-enable persistence + lock GPU clocks to [min,max] (nvidia-smi -lgc) */
 static int nvidia_clock_set(int min, int max)
 {
+    if (nvidia_pm_set(1) != 0)
+        fprintf(stderr, "  Warning: failed to enable persistence mode\n");
     char range[32];
     snprintf(range, sizeof(range), "%d,%d", min, max);
     char *const args[] = { "nvidia-smi", "-lgc", range, NULL };
@@ -2731,9 +2736,11 @@ static int nvidia_clock_reset(void)
     return run_cmd("nvidia-smi", args);
 }
 
-/* Run nvidia-smi -lmc <min,max> (lock GPU memory clocks to a range) */
+/* Auto-enable persistence + lock GPU memory clocks to [min,max] (nvidia-smi -lmc) */
 static int nvidia_memclock_set(int min, int max)
 {
+    if (nvidia_pm_set(1) != 0)
+        fprintf(stderr, "  Warning: failed to enable persistence mode\n");
     char range[32];
     snprintf(range, sizeof(range), "%d,%d", min, max);
     char *const args[] = { "nvidia-smi", "-lmc", range, NULL };
@@ -2744,13 +2751,6 @@ static int nvidia_memclock_set(int min, int max)
 static int nvidia_memclock_reset(void)
 {
     char *const args[] = { "nvidia-smi", "-rmc", NULL };
-    return run_cmd("nvidia-smi", args);
-}
-
-/* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
-static int nvidia_pm_set(int on)
-{
-    char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
     return run_cmd("nvidia-smi", args);
 }
 
@@ -2766,9 +2766,9 @@ static int nvidia_parse_clock_range(const char *str, int *min, int *max)
 }
 
 #ifdef CCTL_NVIDIA
-#define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|power|clock|memclock|pm|pmclock}"
+#define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|power|clock|memclock}"
 #else
-#define NVIDIA_USAGE_STR "nvidia {clock|memclock|pm|pmclock} (module commands require make cctl-nvidia)"
+#define NVIDIA_USAGE_STR "nvidia {clock|memclock} (module commands require make cctl-nvidia)"
 #endif
 
 static int cmd_nvidia(int argc, char **argv)
@@ -2876,34 +2876,6 @@ static int cmd_nvidia(int argc, char **argv)
             return 1;
         }
         return nvidia_memclock_set(min, max);
-    } else if (strcmp(action, "pm") == 0) {
-        if (argc < 4) {
-            fprintf(stderr, "Error: Missing argument for nvidia pm\n");
-            fprintf(stderr, "Usage: nvidia pm <on|off>\n");
-            return 1;
-        }
-        if (strcmp(argv[3], "on") == 0)
-            return nvidia_pm_set(1);
-        if (strcmp(argv[3], "off") == 0)
-            return nvidia_pm_set(0);
-        fprintf(stderr, "Error: Unknown nvidia pm argument '%s'\n", argv[3]);
-        fprintf(stderr, "Usage: nvidia pm <on|off>\n");
-        return 1;
-    } else if (strcmp(action, "pmclock") == 0) {
-        if (argc < 4) {
-            fprintf(stderr, "Error: Missing argument for nvidia pmclock\n");
-            fprintf(stderr, "Usage: nvidia pmclock <min>,<max>\n");
-            return 1;
-        }
-        int min, max;
-        if (nvidia_parse_clock_range(argv[3], &min, &max) != 0) {
-            fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max> with min <= max)\n", argv[3]);
-            fprintf(stderr, "Usage: nvidia pmclock <min>,<max>\n");
-            return 1;
-        }
-        if (nvidia_pm_set(1) != 0)
-            fprintf(stderr, "  Warning: failed to enable persistence mode\n");
-        return nvidia_clock_set(min, max);
     } else {
         fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
         fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
