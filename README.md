@@ -41,9 +41,7 @@ Tested distros:
 | Family | Distros | Package Manager |
 |---|---|---|
 | Arch-based | Arch, Manjaro, EndeavourOS, CachyOS | `pacman` |
-| Debian-based | Ubuntu, Debian, Mint, Pop!_OS | `apt` |
-| Fedora | Fedora, Nobara | `dnf` |
-| SUSE | openSUSE Tumbleweed/Leap | `zypper` |
+| Debian-based | Debian, Mint | `apt` |
 
 On unsupported or immutable distros (NixOS, Gentoo, Alpine, Bazzite, etc.) the installer will point you to the driver source at `drivers/` and exit — you'll need to build and install the modules manually using your distro's documentation or an AI assistant for step-by-step guidance.
 
