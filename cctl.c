@@ -767,9 +767,35 @@ static int webcam_toggle(void)
  * MICROPHONE (amixer Capture switch)
  * ======================================================================== */
 
+/* Find the ALSA HDA Intel PCH card number from /proc/asound/cards.
+ * Returns the card number (>= 0) on success, or -1 if not found. */
+static int mic_find_card(void)
+{
+    FILE *fp = fopen("/proc/asound/cards", "r");
+    if (!fp) return -1;
+    char line[256];
+    int card = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        int num;
+        /* Lines look like: " 1 [PCH            ]: HDA-Intel - HDA Intel PCH" */
+        if (sscanf(line, " %d", &num) == 1 && strstr(line, "HDA-Intel") && strstr(line, "PCH")) {
+            card = num;
+            break;
+        }
+    }
+    fclose(fp);
+    return card;
+}
+
 static int mic_is_enabled(void)
 {
-    FILE *fp = popen("amixer -c 0 sget Capture 2>/dev/null", "r");
+    int card = mic_find_card();
+    char cmd[128];
+    if (card >= 0)
+        snprintf(cmd, sizeof(cmd), "amixer -c %d sget Capture 2>/dev/null", card);
+    else
+        snprintf(cmd, sizeof(cmd), "amixer sget Capture 2>/dev/null");
+    FILE *fp = popen(cmd, "r");
     if (!fp) return 1; /* assume enabled if amixer fails */
 
     char line[256];
@@ -788,10 +814,16 @@ static int mic_is_enabled(void)
 static int mic_set(int enabled)
 {
     const char *verb = enabled ? "cap" : "nocap";
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd), "amixer -c 0 sset Capture %s >/dev/null 2>&1", verb);
-    int rc = system(cmd);
-    if (rc != 0) {
+    int card = mic_find_card();
+    char cmd[256];
+
+    /* Toggle master capture switch — this gates all mic inputs (internal +
+     * headphone) regardless of which source the HDA codec mux has selected. */
+    if (card >= 0)
+        snprintf(cmd, sizeof(cmd), "amixer -c %d sset Capture %s >/dev/null 2>&1", card, verb);
+    else
+        snprintf(cmd, sizeof(cmd), "amixer sset Capture %s >/dev/null 2>&1", verb);
+    if (system(cmd) != 0) {
         fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
         return -1;
     }
@@ -1733,10 +1765,10 @@ static int cpumonitor(void)
         /* Clear screen and print */
         printf("\033[H\033[J");
         int p_threads_printed = 0;
-        printf("--- [ P-CORES ] (Performance) Max: %d MHz ---\n", p_max_mhz);
+        printf("%s--- [ P-CORES ] (Performance) Max: %d MHz ---%s\n", C_YLW, p_max_mhz, C_RST);
         for (int i = 0; i < cpu_count; i++) {
             if (!is_e_core[i]) {
-                printf("Thread %2d: %7.2f MHz%s", i, freqs[i],
+                printf("Thread %2d: %s%7.2f MHz%s%s", i, C_CYN, freqs[i], C_RST,
                        (p_threads_printed % 2 == 1 || i == cpu_count - 1) ? "\n" : "  |  ");
                 p_threads_printed++;
             }
@@ -1747,28 +1779,29 @@ static int cpumonitor(void)
         for (int i = 0; i < cpu_count; i++) {
             if (is_e_core[i]) {
                 if (e_cores_printed == 0) {
-                    printf("\n--- [ E-CORES ] (Efficiency) Max: %d MHz ---\n", e_max_mhz);
+                    printf("\n%s--- [ E-CORES ] (Efficiency) Max: %d MHz ---%s\n", C_YLW, e_max_mhz, C_RST);
                 }
-                printf("Core %2d:   %7.2f MHz\n", i, freqs[i]);
+                printf("Core %2d:   %s%7.2f MHz%s\n", i, C_CYN, freqs[i], C_RST);
                 e_cores_printed++;
             }
         }
 
-        printf("\n--- [ POWER & TEMP ] ---\n");
+        printf("\n%s--- [ POWER & TEMP ] ---%s\n", C_YLW, C_RST);
         int temp = read_cpu_temp();
         if (temp >= 0) {
-            printf("CPU Temp:      %d°C\n", temp);
+            const char *tc = temp >= 85 ? C_RED : temp >= 70 ? C_YLW : C_GRN;
+            printf("CPU Temp:      %s%d°C%s\n", tc, temp, C_RST);
         } else {
-            printf("CPU Temp:      N/A\n");
+            printf("CPU Temp:      %sN/A%s\n", C_DIM, C_RST);
         }
         if (e1 >= 0 && e2 >= 0) {
             double dt = (double)(t2.tv_sec - t1.tv_sec) + (double)(t2.tv_nsec - t1.tv_nsec) / 1e9;
             if (dt > 0) {
                 long duj = e2 - e1;
-                printf("Package Power: %.2f Watts\n", ((double)duj / dt) / 1000000.0);
+                printf("Package Power: %s%.2f Watts%s\n", C_CYN, ((double)duj / dt) / 1000000.0, C_RST);
             }
         } else {
-            printf("Package Power: N/A\n");
+            printf("Package Power: %sN/A%s\n", C_DIM, C_RST);
         }
 
         /* Read current PL1/PL2 using pread from cached descriptors */
@@ -1784,35 +1817,38 @@ static int cpumonitor(void)
                 nn = pread(pl2_fd, b, sizeof(b) - 1, 0);
                 if (nn > 0) { b[nn] = '\0'; pl2 = atol(b) / 1000000; }
             }
-            printf("PL1:          %ldW\n", pl1);
-            printf("PL2:          %ldW\n", pl2);
+            printf("PL1:          %s%ldW%s\n", C_CYN, pl1, C_RST);
+            printf("PL2:          %s%ldW%s\n", C_CYN, pl2, C_RST);
         }
 
         /* CPU Usage */
         int cpu_usage = get_cpu_usage_pct();
-        if (cpu_usage >= 0)
-            printf("CPU Usage:    %d%%\n", cpu_usage);
-        else
-            printf("CPU Usage:    --\n");
+        if (cpu_usage >= 0) {
+            const char *uc = cpu_usage >= 90 ? C_RED : cpu_usage >= 60 ? C_YLW : C_GRN;
+            printf("CPU Usage:    %s%d%%%s\n", uc, cpu_usage, C_RST);
+        } else
+            printf("CPU Usage:    %s--%s\n", C_DIM, C_RST);
 
         /* Memory Usage */
         long mem_used, mem_total;
         get_mem_usage(&mem_used, &mem_total);
-        if (mem_total > 0)
-            printf("Memory:       %ld MB / %ld MB (%ld%%)\n",
-                   mem_used, mem_total, (mem_used * 100) / mem_total);
-        else
-            printf("Memory:       N/A\n");
+        if (mem_total > 0) {
+            long mem_pct = (mem_used * 100) / mem_total;
+            const char *mc = mem_pct >= 90 ? C_RED : mem_pct >= 70 ? C_YLW : C_CYN;
+            printf("Memory:       %s%ld MB / %ld MB (%ld%%)%s\n",
+                   mc, mem_used, mem_total, mem_pct, C_RST);
+        } else
+            printf("Memory:       %sN/A%s\n", C_DIM, C_RST);
 
-        printf("\n--- [ FANS ] ---\n");
+        printf("\n%s--- [ FANS ] ---%s\n", C_YLW, C_RST);
         if (has_fans) {
-            printf("CPU Fan: %3d%% duty  %4d RPM\n", cpu_pct, cpu_rpm);
-            printf("GPU Fan: %3d%% duty  %4d RPM\n", gpu_pct, gpu_rpm);
+            printf("CPU Fan: %s%3d%% duty  %4d RPM%s\n", C_CYN, cpu_pct, cpu_rpm, C_RST);
+            printf("GPU Fan: %s%3d%% duty  %4d RPM%s\n", C_CYN, gpu_pct, gpu_rpm, C_RST);
         } else {
-            printf("Fan telemetry: N/A (ec_sys not loaded)\n");
+            printf("Fan telemetry: %sN/A (ec_sys not loaded)%s\n", C_DIM, C_RST);
         }
 
-        printf("\nPress [Ctrl+C] to stop.\n");
+        printf("\n%sPress [Ctrl+C] to stop.%s\n", C_DIM, C_RST);
         fflush(stdout);
     }
 
@@ -1876,15 +1912,15 @@ static void print_usage(const char *prog)
 
     /* ── Profiles ──────────────────────────────────────────────────────── */
     printf("  %sPROFILES%s\n", C_YLW, C_RST);
-    printf("    %sset%s   <profile>          Apply CPU/GPU preset %s(no power cap)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %ssetR%s  <profile>          Same, plus RAPL package power cap %s(PL1/PL2 W)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("\n");
-    printf("      %smax%s       gaming / full performance — everything unlocked %s(CPU 90/115W · GPU 100W)%s\n", C_RED, C_RST, C_DIM, C_RST);
-    printf("      %scpuperf%s   peak CPU speed — compiles, renders, heavy compute\n", C_YLW, C_RST);
-    printf("      %sbalanced%s  daily driver — responsive, yet cool and quiet\n", C_GRN, C_RST);
-    printf("      %spowersave%s light use — turbo off, quiet, battery-friendly\n", C_CYN_BLD, C_RST);
-    printf("      %seco%s       max battery life — power draw held near idle\n", C_DIM, C_RST);
-    printf("      %ssetR RAPL: max 45/90W · cpuperf PL2 70W · balanced 35/40W · eco 9/10W%s\n\n", C_DIM, C_RST);
+    printf("    %sset%s   <profile>          Apply a preset %s(changes turbo, governor, EPP, GPU TDP)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %ssetR%s  <profile>          Same as set, plus a RAPL power cap %s(limits total CPU wattage)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("      %sProfile     Turbo  Governor     EPP                TDP, applied with set  RAPL, overrides TDP with setR%s\n", C_BLD, C_RST);
+    printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────── ────────────────────────────%s\n", C_DIM, C_RST);
+    printf("      %smax%s         ON     performance  performance        90/115W + GPU 100W     PL1 45 / PL2 90W\n", C_RED, C_RST);
+    printf("      %scpuperf%s     ON     performance  performance        45/115W + GPU 70W      PL2 70W\n", C_YLW, C_RST);
+    printf("      %sbalanced%s    ON     powersave    balance_performance 45/115W + GPU 70W     PL1 35 / PL2 40W\n", C_GRN, C_RST);
+    printf("      %spowersave%s   OFF    powersave    balance_power      15/30W  + GPU 70W      %s(no RAPL change)%s\n", C_CYN_BLD, C_RST, C_DIM, C_RST);
+    printf("      %seco%s         OFF    powersave    power              15/30W  + GPU 70W      PL1 9 / PL2 10W\n\n", C_DIM, C_RST);
 
     /* ── Fan ────────────────────────────────────────────────────────────── */
     printf("  %sFAN%s\n", C_YLW, C_RST);
