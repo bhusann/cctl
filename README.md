@@ -114,15 +114,15 @@ cctl monitor                  # Live curses-free CPU/power/fan monitor
 
 #### NVIDIA GPU
 ```bash
-# Clock management (available in all builds, auto-enables persistence mode):
-cctl nvidia clock <min,max>|reset    # Lock GPU clocks (-lgc), reset unlocks (-rgc)
+# Clock management + PCI power (available in all builds):
+cctl nvidia clock <min,max>|reset    # Lock GPU clocks (-lgc), reset unlocks (-rgc); auto-enables persistence mode
 cctl nvidia memclock <min,max>|reset # Lock VRAM clocks (-lmc), reset unlocks (-rmc)
+cctl nvidia power [on|off]           # PCI power state (D0 / D3cold); no arg checks state (no root needed)
 
-# Module & hardware controls (requires make cctl-nvidia):
+# Module controls (requires make cctl-nvidia):
 cctl nvidia load                     # Session load: compute modules (nvidia, nvidia_uvm)
 cctl nvidia loadgame                 # Session load: all modules (+ modeset, drm)
 cctl nvidia unload                   # Session unload: rmmod all modules + cut power (D3cold)
-cctl nvidia power [on|off]           # PCI power state (D0 / D3cold); no arg checks state
 cctl nvidia status                   # Telemetry, loaded modules, and active GPU PIDs
 cctl nvidia on|off                   # Persistent boot toggle (modprobe blacklist + initramfs)
 ```

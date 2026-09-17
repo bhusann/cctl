@@ -1942,6 +1942,8 @@ static void print_usage(const char *prog)
     printf("    %snvidia%s  unload           Session unload + power off\n", C_BLD, C_RST);
     printf("    %snvidia%s  status           Show GPU status & telemetry\n", C_BLD, C_RST);
     printf("    %snvidia power%s <on|off>    Hardware D0/D3cold control\n", C_BLD, C_RST);
+#else
+    printf("    %snvidia power%s [on|off]    Hardware D0/D3cold control %s(no arg: show state)%s\n", C_BLD, C_RST, C_DIM, C_RST);
 #endif
     printf("    %snvidia%s  clock <min,max>  Lock GPU clocks %s(auto persistence, reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %snvidia%s  memclock <min,max> Lock memory clocks %s(auto persistence, reset to unlock)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
@@ -1969,7 +1971,7 @@ static void print_usage(const char *prog)
                C_BLD, C_RST, C_BLD, C_RST);
     }
 
-    printf("\n  %sv2.2%s\n", C_DIM, C_RST);
+    printf("\n  %sv2.3%s\n", C_DIM, C_RST);
 }
 
 #ifdef CCTL_NVIDIA
@@ -2116,6 +2118,12 @@ static int run_cmd(const char *cmd, char *const argv[])
     waitpid(pid, &status, 0);
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
+
+/* Forward declarations: common PCI power helpers (defined after the
+ * CCTL_NVIDIA block so both builds share them). */
+static int nvidia_find_pci_address(char *buf, size_t bufsz);
+static int nvidia_power_show(void);
+static int nvidia_power_set(int on);
 
 #ifdef CCTL_NVIDIA
 /* Check whether an initramfs image exists in /boot.
@@ -2497,43 +2505,6 @@ static void nvidia_show_status(void)
     }
 }
 
-/* Find the nvidia GPU PCI sysfs path (vendor 0x10de, VGA class 0x0300xx) */
-static int nvidia_find_pci_address(char *buf, size_t bufsz)
-{
-    DIR *d = opendir("/sys/bus/pci/devices");
-    if (!d) return -1;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        char path[512];
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", ent->d_name);
-        FILE *fp = fopen(path, "r");
-        if (!fp) continue;
-        char vendor[16] = {0};
-        if (fgets(vendor, sizeof(vendor), fp)) {
-            vendor[strcspn(vendor, "\n")] = 0;
-        }
-        fclose(fp);
-        if (strcmp(vendor, "0x10de") != 0) continue;
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", ent->d_name);
-        fp = fopen(path, "r");
-        if (!fp) continue;
-        char class[16] = {0};
-        if (fgets(class, sizeof(class), fp)) {
-            class[strcspn(class, "\n")] = 0;
-        }
-        fclose(fp);
-        /* VGA compatible controller: class 0x030000 or 0x0300xx */
-        if (strncmp(class, "0x0300", 6) == 0) {
-            snprintf(buf, bufsz, "/sys/bus/pci/devices/%s", ent->d_name);
-            closedir(d);
-            return 0;
-        }
-    }
-    closedir(d);
-    return -1;
-}
-
 static int nvidia_load(int load_game)
 {
     if (!nvidia_is_blacklisted()) {
@@ -2671,6 +2642,71 @@ static int nvidia_unload(void)
     }
     return failed ? -1 : 0;
 }
+#endif /* CCTL_NVIDIA */
+
+/* ========================================================================
+ * NVIDIA PCI POWER (available in all builds)
+ * Direct PCI runtime PM control (D0/D3cold). No driver modules required.
+ * ======================================================================== */
+
+/* Find the nvidia GPU PCI sysfs path (vendor 0x10de, VGA class 0x0300xx) */
+static int nvidia_find_pci_address(char *buf, size_t bufsz)
+{
+    DIR *d = opendir("/sys/bus/pci/devices");
+    if (!d) return -1;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char path[512];
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", ent->d_name);
+        FILE *fp = fopen(path, "r");
+        if (!fp) continue;
+        char vendor[16] = {0};
+        if (fgets(vendor, sizeof(vendor), fp)) {
+            vendor[strcspn(vendor, "\n")] = 0;
+        }
+        fclose(fp);
+        if (strcmp(vendor, "0x10de") != 0) continue;
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", ent->d_name);
+        fp = fopen(path, "r");
+        if (!fp) continue;
+        char class[16] = {0};
+        if (fgets(class, sizeof(class), fp)) {
+            class[strcspn(class, "\n")] = 0;
+        }
+        fclose(fp);
+        /* VGA compatible controller: class 0x030000 or 0x0300xx */
+        if (strncmp(class, "0x0300", 6) == 0) {
+            snprintf(buf, bufsz, "/sys/bus/pci/devices/%s", ent->d_name);
+            closedir(d);
+            return 0;
+        }
+    }
+    closedir(d);
+    return -1;
+}
+
+/* Show current GPU PCI power state (no root needed). Returns 0 on success. */
+static int nvidia_power_show(void)
+{
+    char pci_path[512];
+    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
+        fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
+        return 1;
+    }
+    char state_path[576];
+    snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
+    char state[16] = "unknown";
+    FILE *fp = fopen(state_path, "r");
+    if (fp) {
+        if (fgets(state, sizeof(state), fp))
+            state[strcspn(state, "\n")] = 0;
+        fclose(fp);
+    }
+    printf("  GPU power: %s%s%s\n",
+           strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
+    return 0;
+}
 
 static int nvidia_power_set(int on)
 {
@@ -2708,7 +2744,6 @@ static int nvidia_power_set(int on)
            strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
     return 0;
 }
-#endif /* CCTL_NVIDIA */
 
 
 /* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
@@ -2768,7 +2803,7 @@ static int nvidia_parse_clock_range(const char *str, int *min, int *max)
 #ifdef CCTL_NVIDIA
 #define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|power|clock|memclock}"
 #else
-#define NVIDIA_USAGE_STR "nvidia {clock|memclock} (module commands require make cctl-nvidia)"
+#define NVIDIA_USAGE_STR "nvidia {power|clock|memclock} (module commands require make cctl-nvidia)"
 #endif
 
 static int cmd_nvidia(int argc, char **argv)
@@ -2784,8 +2819,7 @@ static int cmd_nvidia(int argc, char **argv)
     /* Module/GPU-toggle commands are only compiled into the NVIDIA build. */
     if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
         strcmp(action, "load") == 0 || strcmp(action, "loadgame") == 0 ||
-        strcmp(action, "unload") == 0 || strcmp(action, "status") == 0 ||
-        strcmp(action, "power") == 0) {
+        strcmp(action, "unload") == 0 || strcmp(action, "status") == 0) {
         fprintf(stderr, "Error: 'nvidia %s' requires a build with NVIDIA support (make cctl-nvidia).\n", action);
         return 1;
     }
@@ -2796,28 +2830,12 @@ static int cmd_nvidia(int argc, char **argv)
         nvidia_show_status();
         return 0;
     }
-
-    /* nvidia power with no argument shows state (no root needed) */
-    if (strcmp(action, "power") == 0 && argc < 4) {
-        char pci_path[512];
-        if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
-            fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
-            return 1;
-        }
-        char state_path[576];
-        snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
-        char state[16] = "unknown";
-        FILE *fp = fopen(state_path, "r");
-        if (fp) {
-            if (fgets(state, sizeof(state), fp))
-                state[strcspn(state, "\n")] = 0;
-            fclose(fp);
-        }
-        printf("  GPU power: %s%s%s\n",
-               strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
-        return 0;
-    }
 #endif
+
+    /* nvidia power with no argument shows state (no root needed, all builds) */
+    if (strcmp(action, "power") == 0 && argc < 4) {
+        return nvidia_power_show();
+    }
 
     /* All other actions need root */
     if (geteuid() != 0) {
@@ -2836,7 +2854,11 @@ static int cmd_nvidia(int argc, char **argv)
         return nvidia_load(1);
     } else if (strcmp(action, "unload") == 0) {
         return nvidia_unload();
-    } else if (strcmp(action, "power") == 0) {
+    } else
+#endif
+    if (strcmp(action, "power") == 0) {
+        if (argc < 4)
+            return nvidia_power_show();
         if (strcmp(argv[3], "on") == 0)
             return nvidia_power_set(1);
         if (strcmp(argv[3], "off") == 0)
@@ -2844,9 +2866,7 @@ static int cmd_nvidia(int argc, char **argv)
         fprintf(stderr, "Error: Unknown nvidia power argument '%s'\n", argv[3]);
         fprintf(stderr, "Usage: nvidia power [on|off]\n");
         return 1;
-    } else
-#endif
-    if (strcmp(action, "clock") == 0) {
+    } else if (strcmp(action, "clock") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Error: Missing argument for nvidia clock\n");
             fprintf(stderr, "Usage: nvidia clock <min>,<max> | reset\n");
