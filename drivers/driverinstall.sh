@@ -24,12 +24,15 @@ header() { echo -e "\n${CYAN}══ $1 ══${NC}"; }
 detect_pkg_manager() {
     # Immutable distros (Bazzite, Silverblue, etc.) have dnf but DKMS
     # doesn't survive image updates — treat as unsupported.
-    if command -v rpm-ostree &>/dev/null; then echo "unsupported"; return; fi
+    if command -v rpm-ostree &>/dev/null; then echo "immutable"; return; fi
 
     if command -v pacman &>/dev/null; then echo "pacman"
     elif command -v apt-get &>/dev/null; then echo "apt"
     elif command -v dnf &>/dev/null; then echo "dnf"
     elif command -v zypper &>/dev/null; then echo "zypper"
+    elif command -v xbps-install &>/dev/null; then echo "xbps"
+    elif command -v emerge &>/dev/null; then echo "emerge"
+    elif command -v eopkg &>/dev/null; then echo "eopkg"
     else echo "unsupported"
     fi
 }
@@ -45,6 +48,21 @@ get_headers_pkg() {
         apt)    echo "linux-headers-${KERNEL}" ;;
         dnf)    echo "kernel-devel" ;;
         zypper) echo "kernel-devel" ;;
+        xbps)
+            # Void: headers package matches kernel, e.g. linux6.6-headers
+            local kpkg
+            kpkg="$(xbps-query -o "/lib/modules/${KERNEL}/" 2>/dev/null | head -1 | awk '{print $2}' | sed 's/-[0-9]*$//' || true)"
+            echo "${kpkg:-linux}-headers"
+            ;;
+        emerge) echo "sys-kernel/linux-headers" ;;
+        eopkg)
+            # Solus: linux-current-headers or linux-lts-headers
+            if eopkg info linux-current &>/dev/null 2>&1; then
+                echo "linux-current-headers"
+            else
+                echo "linux-lts-headers"
+            fi
+            ;;
         *)      echo "" ;;
     esac
 }
@@ -56,6 +74,9 @@ install_packages() {
         apt)    apt-get install -y "$@" ;;
         dnf)    dnf install -y "$@" ;;
         zypper) zypper install -y "$@" ;;
+        xbps)   xbps-install -Sy "$@" ;;
+        emerge) emerge --ask "$@" ;;
+        eopkg)  eopkg install -y "$@" ;;
     esac
 }
 
@@ -78,9 +99,20 @@ check_prereqs() {
     # Detect package manager
     local pm
     pm="$(detect_pkg_manager)"
+    if [ "$pm" = "immutable" ]; then
+        echo
+        warn "Immutable OS detected (rpm-ostree / Bazzite / Silverblue)."
+        fail "DKMS modules do not survive image updates on immutable systems."
+        info "Modules must be layered into the OS image to persist across updates."
+        info "Refer to your distro's documentation for building and layering kernel modules."
+        info "You can also use an AI assistant (ChatGPT, Gemini, etc.) for step-by-step guidance."
+        info "Driver source is located at: ${CYAN}${SCRIPT_DIR}${NC}"
+        echo
+        exit 1
+    fi
     if [ "$pm" = "unsupported" ]; then
         echo
-        warn "Your distro has not been tested with this installer."
+        warn "Could not detect a supported package manager for your distro."
         info "Driver source is located at: ${CYAN}${SCRIPT_DIR}${NC}"
         info "You need 'dkms' and kernel headers installed to build these modules."
         info "Refer to your distro's documentation for manual DKMS installation."
