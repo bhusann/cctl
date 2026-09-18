@@ -178,6 +178,8 @@ detect_state() {
         state="installed"
     elif echo "$dkms_out" | grep -q "added\|built"; then
         state="partial"
+    elif echo "$dkms_out" | grep -q "broken" || [ -d "/var/lib/dkms/${PACKAGE}" ]; then
+        state="broken"
     fi
 
     # Check modprobe config
@@ -194,6 +196,7 @@ print_status() {
     case "$state" in
         installed) ok "DKMS: installed" ;;
         partial)   warn "DKMS: partially registered (not installed)" ;;
+        broken)    warn "DKMS: broken/stale registration" ;;
         *)         fail "DKMS: not registered" ;;
     esac
 
@@ -292,33 +295,81 @@ do_install() {
         echo "    $m → $f"
     done
     echo
-    ok "Done. Reboot or modprobe -a ${MODULES[*]} to load."
+
+    # 10. Load kernel modules
+    info "Loading kernel modules..."
+    if modprobe -a "${MODULES[@]}"; then
+        ok "Kernel modules loaded successfully"
+    else
+        warn "Could not auto-load modules (reboot may be required)"
+    fi
+
+    # 11. Verify loaded modules with lsmod
+    echo
+    info "Active driver modules in kernel:"
+    lsmod | grep -E "clevo_acpi|tuxedo_keyboard|tuxedo_io" || true
+    echo
+
+    # 12. Initialize keyboard backlight to 100% brightness and Green color
+    local kbd="/sys/class/leds/rgb:kbd_backlight"
+    if [ -d "$kbd" ]; then
+        echo 255 > "$kbd/brightness" 2>/dev/null || true
+        if [ -f "$kbd/multi_intensity" ]; then
+            echo "0 255 0" > "$kbd/multi_intensity" 2>/dev/null || true
+        fi
+        ok "Keyboard backlight initialized to 100% brightness (Green)"
+    fi
+
+    echo
+    ok "Done."
 }
 
 # ─── Uninstall ──────────────────────────────────────────────────────────────
 do_uninstall() {
     header "Uninstall"
 
-    # 1. DKMS remove
+    # 1. Unload active kernel modules first (before deleting module files or running depmod)
+    # clevo_acpi and tuxedo_io depend on tuxedo_keyboard, so they must unload first
+    local unloaded_any=0
+    for m in "clevo_acpi" "tuxedo_io" "tuxedo_keyboard"; do
+        if grep -q "^${m} " /proc/modules; then
+            if rmmod "$m" 2>/dev/null || modprobe -r "$m" 2>/dev/null; then
+                ok "Unloaded $m"
+                unloaded_any=1
+            else
+                warn "Could not unload $m (module in use)"
+            fi
+        fi
+    done
+    [ $unloaded_any -eq 0 ] && info "No active modules were loaded"
+
+    # 2. DKMS remove
     if dkms status "${PACKAGE}/${VERSION}" 2>/dev/null | grep -q "added\|built\|installed"; then
-        dkms remove "${PACKAGE}/${VERSION}" --all
+        dkms remove "${PACKAGE}/${VERSION}" --all 2>/dev/null || true
         ok "DKMS module removed"
-    else
-        warn "DKMS not registered, skipping"
     fi
 
-    # 2. Remove built .ko files from updates/
-    local updates_dir="/lib/modules/${KERNEL}/updates"
-    if [ -d "$updates_dir" ]; then
-        for m in "${MODULES[@]}"; do
-            find "$updates_dir" -name "${m}.ko*" -delete 2>/dev/null || true
-        done
-        # Remove empty directories
-        find "$updates_dir" -type d -empty -delete 2>/dev/null || true
-        ok "Removed built modules from ${updates_dir}"
+    # Clean any leftover /var/lib/dkms directory (handles broken states)
+    local dkms_lib="/var/lib/dkms/${PACKAGE}"
+    if [ -d "$dkms_lib" ]; then
+        rm -rf "$dkms_lib"
+        ok "Cleaned DKMS state from ${dkms_lib}"
     fi
 
-    # 3. Remove modprobe config
+    # 3. Remove built .ko files from updates/ across all installed kernels
+    local cleaned_any=0
+    for udir in /lib/modules/*/updates; do
+        if [ -d "$udir" ]; then
+            for m in "${MODULES[@]}"; do
+                find "$udir" -name "${m}.ko*" -delete 2>/dev/null || true
+            done
+            find "$udir" -type d -empty -delete 2>/dev/null || true
+            cleaned_any=1
+        fi
+    done
+    [ $cleaned_any -eq 1 ] && ok "Removed built modules from kernel update directories"
+
+    # 4. Remove modprobe config
     if [ -f "$MODPROBE_FILE" ]; then
         rm -f "$MODPROBE_FILE"
         ok "Removed ${MODPROBE_FILE}"
@@ -326,20 +377,20 @@ do_uninstall() {
         warn "modprobe config not found, skipping"
     fi
 
-    # 4. Remove source from /usr/src
+    # 5. Remove source from /usr/src
     if [ -d "$SOURCE_TARGET" ]; then
         rm -rf "$SOURCE_TARGET"
         ok "Removed ${SOURCE_TARGET}"
     fi
 
-    # 5. Also clean original_module backups
+    # 6. Also clean original_module backups
     local backup="/var/lib/dkms/${PACKAGE}/original_module"
     if [ -d "$backup" ]; then
         rm -rf "$backup"
         ok "Cleaned DKMS original module backups"
     fi
 
-    # 6. depmod
+    # 7. depmod
     depmod -a
     ok "Module dependencies updated"
 
@@ -395,6 +446,13 @@ main() {
         case "$ans" in
             [yY]|[yY][eE][sS]) do_uninstall ;;
             *) echo "Aborted." ;;
+        esac
+    elif [ "$state" = "broken" ] || [ "$state" = "partial" ]; then
+        echo -n "tuxedo-drivers are in a broken/partial state. Clean and uninstall? [Y/n] "
+        read -r ans
+        case "$ans" in
+            [nN]|[nN][oO]) echo "Aborted." ;;
+            *) do_uninstall ;;
         esac
     else
         echo -n "tuxedo-drivers are not installed. Install? [Y/n] "

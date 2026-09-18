@@ -134,7 +134,8 @@ cctl nvidia on|off                      # Persistent boot toggle (blacklist + in
 ```bash
 make                # Standard build (profiles, fans, display, battery, nvidia clock/power)
 make cctl-nvidia    # Full build with NVIDIA module management (on/off/load/unload/status)
-make all            # Build cctl + in-tree kernel drivers
+make drivers        # Install kernel drivers via DKMS (runs driverinstall.sh --install)
+make test-drivers   # Compile kernel drivers locally in-tree for testing (no install)
 ```
 
 ---
