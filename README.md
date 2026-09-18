@@ -1,6 +1,6 @@
-# cctl — Clevo Laptop Control
+# CCTL — ColorControl
 
-Fast, single-binary CLI tool for Clevo/TUXEDO laptops. Controls power profiles, fans, keyboard backlight, display, battery, and NVIDIA GPU — pure C, no GUI, no daemon.
+Linux CLI alternative to the Windows-only Colorful Laptop Control Center. Fast, single-binary tool for Colorful Evol P15 laptops (Clevo/TUXEDO chassis) — controls power profiles, fans, keyboard backlight, display, battery, and NVIDIA GPU. Pure C, no GUI, no daemon.
 
 ## Tested Hardware
 
@@ -9,7 +9,7 @@ Fast, single-binary CLI tool for Clevo/TUXEDO laptops. Controls power profiles, 
 | Colorful Evol P15 | Intel Core i7-13620H | RTX 4060 Mobile 100W |
 | Colorful Evol P15 | Intel Core i5-12500H | RTX 4050 Mobile 100W |
 
-Should work on most Clevo-chassis variants that support the TUXEDO/Clevo EC interface.
+Built and tested for the Colorful Evol P15 series. Other Clevo/TUXEDO variants may have different EC register layouts, fan byte orders, or GPU profile slots — use at your own risk.
 
 ---
 
