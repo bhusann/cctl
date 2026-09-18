@@ -2,14 +2,23 @@
 
 Linux CLI alternative to the Windows-only Colorful Laptop Control Center. Fast, single-binary tool for Colorful Evol P15 laptops (Clevo/TUXEDO chassis) — controls power profiles, fans, keyboard backlight, display, battery, and NVIDIA GPU. Pure C, no GUI, no daemon.
 
-## Tested Hardware
+## Hardware Compatibility
 
-| Laptop | CPU | GPU |
-|---|---|---|
-| Colorful Evol P15 | Intel Core i7-13620H | RTX 4060 Mobile 100W |
-| Colorful Evol P15 | Intel Core i5-12500H | RTX 4050 Mobile 100W |
+Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis).
 
-Built and tested for the Colorful Evol P15 series. Other Clevo/TUXEDO variants may have different EC register layouts, fan byte orders, or GPU profile slots — use at your own risk.
+### Tested Hardware
+| Laptop | CPU | GPU | Keyboard |
+|---|---|---|---|
+| Colorful Evol P15 | Intel Core i7-13620H | RTX 4060 Mobile 100W | Single-zone RGB |
+| Colorful Evol P15 | Intel Core i5-12500H | RTX 4050 Mobile 100W | Single-zone RGB |
+
+### Supported Configurations
+* **Series:** Colorful Evol P15 series
+* **GPUs:** NVIDIA GeForce RTX 4060 Mobile or RTX 4050 Mobile (both 100W and 140W variants supported)
+* **CPUs:** Intel Core i7-13620H, i5-12500H, i7-12650H, and i5-12450H
+* **Keyboard:** Single-zone RGB keyboard (tested)
+
+> **Note:** Built specifically for Colorful Evol P15 series laptops. Other laptop models or other Clevo/TUXEDO variants may have different EC register layouts, fan byte orders, or GPU profile slots — use at your own risk.
 
 ---
 
@@ -61,8 +70,13 @@ cctl fan cpu|gpu <pct>          # Set individual fan duty
 ```
 
 ### Display
+> **Note:** Display commands rely on `xrandr` and are only supported on native **X11** sessions. They are **not** supported under Wayland or XWayland.
+>
+> Displays only support their specific predefined hardware/EDID refresh rates — arbitrary in-between refresh rates cannot be set. Run `cctl rr` without arguments to list all available/supported refresh rates for your screen, and choose only from those listed.
+
 ```bash
-cctl rr [1|2|<rate>]            # Refresh rate (1=max, 2=min, or e.g. 60)
+cctl rr                         # List all supported refresh rates
+cctl rr [1|2|<rate>]            # Set refresh rate (1=highest, 2=lowest, or explicit value like 60 or 144)
 cctl scale <factor|WxH|off>    # GPU scaling (0.75, 1920x1080, or off to reset)
 ```
 
@@ -154,13 +168,46 @@ On immutable distros (Bazzite, Silverblue, etc.) the installer explains that DKM
 
 ---
 
-## Hardware Quirks
+## Hardware Quirks & Developer Notes
 
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
 
 - **EC Fan Byte Order** — Clevo's EC expects reversed byte order depending on command context. Auto-restore uses `{0xFF, fan_idx}`, duty cycle uses `{fan_idx, duty}`.
 
 - **GPU Fan Duty Register** — ACPI `FANINFO1` byte 2 is stuck at ~15% on this model. `cctl` reads GPU fan duty from `FANINFO2` (`0x64`, byte 0) for accurate readings.
+
+- **Keyboard Backlight Type Override (`force_backlight_type=6`)** — Why the driver installer forces type 6:
+  - In `drivers/src/clevo_leds.h:clevo_leds_init()`:
+    1. The driver calls `clevo_evaluate_method2(0x0D, 0)` to read the ACPI `_DSM` buffer. `buffer[0x0f]` holds the keyboard type ID. Known IDs include: `0x00` (NONE), `0x01` (FIXED), `0x02` (3ZONE), `0x06` (1ZONE), `0xF3` (PERKEY).
+    2. The Colorful Evol P15 EC returns `0x26`. Because this ID is unknown to the driver, probe switches fail to match, registering no `led_classdev` — resulting in no `/sys/class/leds/*::kbd_backlight` and leaving brightness/color ioctls non-functional.
+    3. `0x26` (`0b00100110`) vs `0x06` (`0b00000110`): the low nibble is identical, while the high bits likely signify a newer revision or flag. The wire protocol (`0x67` + `0xF4000000 | brightness`, zone color) remains standard single-zone RGB.
+    4. Passing module option `force_backlight_type=6` (`tuxedo_keyboard`) bypasses ACPI buffer evaluation directly:
+       ```c
+       if (force_backlight_type >= 0) type = force; else { /* SPECS retry x3 -> 0x52/0x7A fallback */ }
+       ```
+    5. Upstream driver fix would be handling `case 0x26: type = 1ZONE;` or matching `(type & 0x0F) == 0x06`. Until upstreamed, forcing type 6 via modprobe is required.
+  - **Customizing your keyboard type:**
+    If you have a different variant and need to force another keyboard backlight mode, edit `/etc/modprobe.d/tuxedo_keyboard.conf`:
+    ```
+    options tuxedo_keyboard force_backlight_type=<value>
+    ```
+    Known values:
+    * `1` — FIXED white backlight (`0x01`)
+    * `2` — 3-zone RGB (`0x02`)
+    * `6` — 1-zone RGB (`0x06`) *(default configured by this project)*
+    * `243` — Per-key RGB (`0xF3`)
+
+  - **Sysfs LED Exposure (`/sys/class/leds`):**
+    All keyboard backlight controls registered by the driver are exposed under `/sys/class/leds`:
+    * For **1-zone RGB (`force_backlight_type=6`)**: A single device entry is created:
+      ```
+      /sys/class/leds/rgb:kbd_backlight/
+      ```
+      (Contains controls like `brightness`, `multi_intensity`, `color`, etc.)
+    * For **3-zone RGB (`force_backlight_type=2`)**: The kernel driver registers 3 separate LED device entries under `/sys/class/leds` corresponding to each keyboard zone (e.g., `rgb:kbd_backlight`, `rgb:kbd_backlight_1`, `rgb:kbd_backlight_2` or separate zone descriptors), allowing each zone's color and brightness to be tuned individually via sysfs.
+    * For **Fixed White (`force_backlight_type=1`)**: A `white:kbd_backlight` directory is exposed for brightness level control.
+
+    > **Note:** `cctl`'s command implementation currently only supports **1-zone RGB** (using type 6). If your hardware uses 3-zone RGB or per-key RGB, you can manage the zones directly through their respective `/sys/class/leds` folders or adapt `cctl`'s source code (`cctl.c`) to control individual zones.
 
 - **Xorg Holding GPU on Hotplug** — When using `nvidia loadgame` under Xorg, it may grab the hotplugged card, preventing `nvidia unload`. Fix by adding to `/etc/X11/xorg.conf.d/10-no-gpu-hotplug.conf`:
   ```

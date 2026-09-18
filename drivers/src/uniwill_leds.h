@@ -22,6 +22,7 @@
 #define UNIWILL_LEDS_H
 
 #include <linux/platform_device.h>
+#include <linux/version.h>
 
 typedef enum {
 	UNIWILL_KB_BACKLIGHT_TYPE_NONE,
@@ -55,6 +56,7 @@ bool uniwill_leds_notify_brightness_change_extern(void);
 #define UNIWILL_KBD_BRIGHTNESS_MAX_1_ZONE_RGB		0x04
 #define UNIWILL_KBD_BRIGHTNESS_DEFAULT_1_ZONE_RGB	0x00
 
+#define UNIWILL_KBD_INTENSITY_MAX_1_ZONE_RGB		0xff
 #define UNIWILL_KBD_COLOR_DEFAULT_RED			0xff
 #define UNIWILL_KBD_COLOR_DEFAULT_GREEN			0xff
 #define UNIWILL_KBD_COLOR_DEFAULT_BLUE			0xff
@@ -198,16 +200,25 @@ static struct mc_subled uw_mcled_cdev_subleds[3] = {
 	{
 		.color_index = LED_COLOR_ID_RED,
 		.intensity = UNIWILL_KBD_COLOR_DEFAULT_RED,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+		.max_intensity = UNIWILL_KBD_INTENSITY_MAX_1_ZONE_RGB,
+#endif
 		.channel = 0
 	},
 	{
 		.color_index = LED_COLOR_ID_GREEN,
 		.intensity = UNIWILL_KBD_COLOR_DEFAULT_GREEN,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+		.max_intensity = UNIWILL_KBD_INTENSITY_MAX_1_ZONE_RGB,
+#endif
 		.channel = 0
 	},
 	{
 		.color_index = LED_COLOR_ID_BLUE,
 		.intensity = UNIWILL_KBD_COLOR_DEFAULT_BLUE,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+		.max_intensity = UNIWILL_KBD_INTENSITY_MAX_1_ZONE_RGB,
+#endif
 		.channel = 0
 	}
 };
