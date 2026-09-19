@@ -96,7 +96,7 @@ cctl turbo on|off               # Toggle Intel turbo boost
 cctl gov powersave|performance  # CPU scaling governor
 cctl epp <preference>           # performance, balance_performance, balance_power, power
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
-cctl mic [on|off]               # Toggle or set microphone (internal + headphone)
+cctl mic [on|off]               # Toggle or set internal microphone (laptop mic only)
 cctl webcam [on|off]            # Toggle or set webcam
 cctl fn lock|unlock             # Fn Lock toggle
 cctl status                     # Print all current settings
@@ -216,3 +216,19 @@ On immutable distros (Bazzite, Silverblue, etc.) the installer explains that DKM
       Option "AutoAddGPU" "false"
   EndSection
   ```
+
+---
+
+## License
+
+`cctl` own code is licensed under the MIT License — see [LICENSE](LICENSE).
+
+The driver code under `drivers/` is **not** MIT. It is derived from the TUXEDO Linux driver project and remains under **GPL-2.0-or-later** — see [drivers/LICENSE](drivers/LICENSE) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
+
+## Credits
+
+`cctl` uses driver code from the TUXEDO Linux driver project:
+
+https://github.com/tuxedocomputers/tuxedo-drivers
+
+The driver code is licensed under GPL-2.0-or-later. Copyright belongs to the respective original authors (TUXEDO Computers GmbH and contributors).

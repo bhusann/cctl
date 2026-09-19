@@ -1,6 +1,9 @@
 /*
  * cctl - Lightweight Clevo P15 performance profile & fan controller
  *
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 bhusann
+ *
  * Pure C, no dependencies beyond libc. Direct EC port I/O for fan control,
  * sysfs writes for CPU power management.
  *
@@ -827,7 +830,7 @@ static int mic_set(int enabled)
         fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
         return -1;
     }
-    printf("  Microphone: %s\n", enabled ? "ON" : "OFF");
+    printf("  Laptop internal microphone: %s\n", enabled ? "ON" : "OFF");
     return 0;
 }
 
@@ -1952,7 +1955,7 @@ static void print_usage(const char *prog)
     printf("    %sgov%s    <governor>        CPU governor %s(powersave, performance)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %smic%s    [on|off]          Toggle/set microphone\n", C_BLD, C_RST);
+    printf("    %smic%s    [on|off]          Toggle/set internal microphone %s(laptop mic only)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfn%s <lock|unlock>         Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %swebcam%s [on|off]          Toggle/set webcam\n",      C_BLD, C_RST);
     /* install is only relevant when not already running the system-wide copy */

@@ -1,0 +1,24 @@
+Third-Party Software
+====================
+
+TUXEDO Drivers
+https://github.com/tuxedocomputers/tuxedo-drivers
+
+The driver code included in this repository under `drivers/` is based on
+the TUXEDO Linux driver project.
+
+Copyright (c) 2018-2026 TUXEDO Computers GmbH <tux@tuxedocomputers.com>
+and contributors.
+
+Licensed under the GNU General Public License, version 2 or later
+(GPL-2.0-or-later). See `drivers/LICENSE` for details.
+
+License text:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+Scope
+-----
+- `cctl` own code (e.g. `cctl.c`, `Makefile` at repo root): MIT, see `LICENSE`.
+- `drivers/` (TUXEDO-derived code): GPL-2.0-or-later, copyright belongs to
+  the respective original authors. The MIT license does NOT apply to files
+  under `drivers/`.
