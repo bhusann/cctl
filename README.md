@@ -43,17 +43,17 @@ cctl status                # view all current settings
 
 ## Power Profiles
 
-`set <profile>` configures CPU governor, EPP, turbo boost, and the Clevo EC GPU profile slot.
-`setR <profile>` does the same, plus clamps CPU package power via RAPL.
+`set <profile>` applies a preset (changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults).
+`setR <profile>` applies a preset + custom pre-configured CPU TDP change (changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL).
 
 ```
-Profile     Turbo  Governor     EPP                TDP (CPU + GPU)        RAPL (with setR)
-─────────── ────── ──────────── ────────────────── ────────────────────── ────────────────────
-max         ON     performance  performance        90/115W + GPU 100W     PL1 45 / PL2 90W
-cpuperf     ON     performance  performance        45/115W + GPU 70W      PL2 70W
-balanced    ON     powersave    balance_performance 45/115W + GPU 70W     PL1 35 / PL2 40W
-powersave   OFF    powersave    balance_power      15/30W  + GPU 70W      (no RAPL change)
-eco         OFF    powersave    power              15/30W  + GPU 70W      PL1 9 / PL2 10W
+Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)
+─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────
+max         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W
+cpuperf     ON     performance  performance        45/115W + GPU 70W               PL2 70W
+balanced    ON     powersave    balance_performance 45/115W + GPU 70W              PL1 35 / PL2 40W
+powersave   OFF    powersave    balance_power      15/30W  + GPU 70W               (no RAPL change)
+eco         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W
 ```
 
 > **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
@@ -62,12 +62,57 @@ eco         OFF    powersave    power              15/30W  + GPU 70W      PL1 9 
 
 ## Commands
 
+### Keyboard Backlight
+```bash
+cctl kbc <color>                # Set keyboard color: R G B (0-255), #hex, or preset name
+cctl kbb <pct>                  # Brightness (0-100%)
+cctl fn lock|unlock             # Fn Lock toggle (Fn key behavior)
+```
+
+Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `off` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow`
+
 ### Fan Control
 ```bash
 cctl fan auto|max|silent        # Both fans: EC automatic / 100% / quiet
 cctl fan <pct>                  # Set both fans to duty cycle (21-100%)
 cctl fan cpu|gpu <pct>          # Set individual fan duty
 ```
+
+### Privacy
+```bash
+cctl webcam [on|off]            # Toggle or set webcam
+cctl mic [on|off]               # Toggle or set internal microphone (laptop mic only, needs alsa/amixer)
+```
+
+### Battery
+```bash
+cctl bat                        # Show current thresholds and battery health
+cctl bat <start> <stop>         # Set charge thresholds (custom, e.g. 40 80)
+cctl bat max                    # Standard mode (change to max - 100%)
+```
+
+### Info
+```bash
+cctl status                     # Print all current settings
+cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
+```
+
+### NVIDIA GPU
+```bash
+# Available in all builds:
+cctl nvidia power [on|off]              # Hardware D0/D3cold control; no arg shows state
+cctl nvidia clock <min,max> | reset     # Lock/unlock GPU clocks (auto persistence)
+cctl nvidia memclock <min,max> | reset  # Lock/unlock memory clocks (auto persistence)
+
+# Requires make cctl-nvidia:
+cctl nvidia <on|off>                    # Persistent boot toggle (blacklist + initramfs)
+cctl nvidia load                        # Load compute modules (nvidia, nvidia_uvm)
+cctl nvidia loadgame                    # Load all modules (+ modeset, drm)
+cctl nvidia unload                      # Unload all modules + power off (D3cold)
+cctl nvidia status                      # Telemetry, loaded modules, active GPU PIDs
+```
+
+> ⚠️ **`nvidia off`** permanently blacklists the driver and rebuilds initramfs. Use `nvidia unload` for session-only GPU power off.
 
 ### Display
 > **Note:** Display commands rely on `xrandr` and are only supported on native **X11** sessions. They are **not** supported under Wayland or XWayland.
@@ -80,52 +125,13 @@ cctl rr [1|2|<rate>]            # Set refresh rate (1=highest, 2=lowest, or expl
 cctl scale <factor|WxH|off>    # GPU scaling (0.75, 1920x1080, or off to reset)
 ```
 
-### Keyboard Backlight
-```bash
-cctl kbc <R G B>                # Set RGB color (e.g. 255 0 128)
-cctl kbc <#hex>                 # Set hex color (e.g. #00ffff)
-cctl kbc <preset>               # Named preset (see below)
-cctl kbb <pct>                  # Brightness (0-100%)
-```
-
-Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `off` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow`
-
-### Power & System
+### Profile Individual Overrides
 ```bash
 cctl turbo on|off               # Toggle Intel turbo boost
 cctl gov powersave|performance  # CPU scaling governor
 cctl epp <preference>           # performance, balance_performance, balance_power, power
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
-cctl mic [on|off]               # Toggle or set internal microphone (laptop mic only)
-cctl webcam [on|off]            # Toggle or set webcam
-cctl fn lock|unlock             # Fn Lock toggle
-cctl status                     # Print all current settings
-cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
 ```
-
-### Battery
-```bash
-cctl bat                        # Show charge thresholds and battery health
-cctl bat <start> <stop>         # Set charge thresholds (e.g. 40 80)
-cctl bat off                    # Top-up mode (charge to max)
-```
-
-### NVIDIA GPU
-```bash
-# Available in all builds:
-cctl nvidia power [on|off]              # PCI power state (D0/D3cold); no arg shows state
-cctl nvidia clock <min,max>|reset       # Lock GPU clocks; auto-enables persistence mode
-cctl nvidia memclock <min,max>|reset    # Lock VRAM clocks
-
-# Requires make cctl-nvidia:
-cctl nvidia load                        # Load compute modules (nvidia, nvidia_uvm)
-cctl nvidia loadgame                    # Load all modules (+ modeset, drm)
-cctl nvidia unload                      # Unload all modules + power off (D3cold)
-cctl nvidia status                      # Telemetry, loaded modules, active GPU PIDs
-cctl nvidia on|off                      # Persistent boot toggle (blacklist + initramfs)
-```
-
-> ⚠️ **`nvidia off`** permanently blacklists the driver and rebuilds initramfs. Use `nvidia unload` for session-only GPU power off.
 
 ---
 

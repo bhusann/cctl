@@ -1085,17 +1085,6 @@ static void show_status(void)
         printf("  RAPL PL2:  %sN/A%s\n", C_DIM, C_RST);
     }
 
-    /* CPU Temp */
-    int temp = read_cpu_temp();
-    if (temp >= 0) {
-        const char *temp_color = C_GRN;
-        if (temp > 80) temp_color = C_RED;
-        else if (temp > 65) temp_color = C_YLW;
-        printf("  CPU Temp:  %s%d°C%s\n", temp_color, temp, C_RST);
-    } else {
-        printf("  CPU Temp:  %sN/A%s\n", C_DIM, C_RST);
-    }
-
     /* Webcam */
     int cam = is_webcam_enabled();
     if (cam < 0) {
@@ -1915,15 +1904,25 @@ static void print_usage(const char *prog)
 
     /* ── Profiles ──────────────────────────────────────────────────────── */
     printf("  %sPROFILES%s\n", C_YLW, C_RST);
-    printf("    %sset%s   <profile>          Apply a preset %s(changes turbo, governor, EPP, GPU TDP)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %ssetR%s  <profile>          Same as set, plus a RAPL power cap %s(limits total CPU wattage)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("      %sProfile     Turbo  Governor     EPP                TDP, applied with set  RAPL, overrides TDP with setR%s\n", C_BLD, C_RST);
-    printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────── ────────────────────────────%s\n", C_DIM, C_RST);
-    printf("      %smax%s         ON     performance  performance        90/115W + GPU 100W     PL1 45 / PL2 90W\n", C_RED, C_RST);
-    printf("      %scpuperf%s     ON     performance  performance        45/115W + GPU 70W      PL2 70W\n", C_YLW, C_RST);
-    printf("      %sbalanced%s    ON     powersave    balance_performance 45/115W + GPU 70W     PL1 35 / PL2 40W\n", C_GRN, C_RST);
-    printf("      %spowersave%s   OFF    powersave    balance_power      15/30W  + GPU 70W      %s(no RAPL change)%s\n", C_CYN_BLD, C_RST, C_DIM, C_RST);
-    printf("      %seco%s         OFF    powersave    power              15/30W  + GPU 70W      PL1 9 / PL2 10W\n\n", C_DIM, C_RST);
+    printf("    %sset%s   <profile>          Apply a preset %s(changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %ssetR%s  <profile>          Apply a preset + custom pre configured CPU TDP change %s(changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)%s\n", C_BLD, C_RST);
+    printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────%s\n", C_DIM, C_RST);
+    printf("      %smax%s         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W\n", C_RED, C_RST);
+    printf("      %scpuperf%s     ON     performance  performance        45/115W + GPU 70W               PL2 70W\n", C_YLW, C_RST);
+    printf("      %sbalanced%s    ON     powersave    balance_performance 45/115W + GPU 70W              PL1 35 / PL2 40W\n", C_GRN, C_RST);
+    printf("      %spowersave%s   OFF    powersave    balance_power      15/30W  + GPU 70W               %s(no RAPL change)%s\n", C_CYN_BLD, C_RST, C_DIM, C_RST);
+    printf("      %seco%s         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W\n\n", C_DIM, C_RST);
+
+    /* ── Keyboard ───────────────────────────────────────────────────────── */
+    printf("  %sKEYBOARD%s\n", C_MAG, C_RST);
+    printf("    %skbc%s   <color>            Set keyboard color\n", C_BLD, C_RST);
+    printf("      %sFormat: R G B (0-255, e.g. 255 0 128) | #hex (e.g. #ff0080) | preset name (e.g. cyan)%s\n", C_DIM, C_RST);
+    printf("      %spresets: blue chocolate coral cyan gold gray green indigo lime\n"
+           "      magenta maroon navy off olive orange pink purple red salmon\n"
+           "      silver teal turquoise violet white yellow%s\n", C_DIM, C_RST);
+    printf("    %skbb%s   <pct>              Set brightness %s(0-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfn%s    <lock|unlock>      Fn Lock toggle %s(Fn key behavior)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Fan ────────────────────────────────────────────────────────────── */
     printf("  %sFAN%s\n", C_YLW, C_RST);
@@ -1931,74 +1930,50 @@ static void print_usage(const char *prog)
     printf("    %sfan%s   <pct>              Set both fans to duty %s(21-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfan%s   cpu|gpu <pct>      Set individual fan duty %s(21-100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
+    /* ── Privacy ────────────────────────────────────────────────────────── */
+    printf("  %sPRIVACY%s\n", C_CYN, C_RST);
+    printf("    %swebcam%s [on|off]          Toggle/set webcam\n",      C_BLD, C_RST);
+    printf("    %smic%s    [on|off]          Toggle/set internal microphone %s(laptop mic only, needs alsa/amixer)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+
+    /* ── Battery ────────────────────────────────────────────────────────── */
+    printf("  %sBATTERY%s\n", C_GRN, C_RST);
+    printf("    %sbat%s                      Show current thresholds\n",       C_BLD, C_RST);
+    printf("    %sbat%s    <start> <stop>    Set charge thresholds %s(custom)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sbat max%s                  standard mode %s(change to max - 100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+
+    /* ── Info ───────────────────────────────────────────────────────────── */
+    printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
+    printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
+    printf("    %smonitor%s                  Live CPU/power/fan monitor\n\n", C_BLD, C_RST);
+
+    /* ── NVIDIA ─────────────────────────────────────────────────────────── */
+    printf("  %sNVIDIA%s\n", C_RED, C_RST);
+#ifdef CCTL_NVIDIA
+    printf("    %snvidia%s power    [on|off]           Hardware D0/D3cold control\n", C_BLD, C_RST);
+    printf("    %snvidia%s <on|off>                    Persistent toggle %s(+initramfs rebuild)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s load                        Session load %s(compute modules)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s loadgame                    Session load %s(all modules incl. drm)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s unload                      Session unload + power off\n", C_BLD, C_RST);
+    printf("    %snvidia%s status                      Show GPU status & telemetry\n", C_BLD, C_RST);
+#else
+    printf("    %snvidia%s power    [on|off]           Hardware D0/D3cold control %s(no arg: show state)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+#endif
+    printf("    %snvidia%s clock    <min,max> | reset  Lock/unlock GPU clocks %s(auto persistence)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %snvidia%s memclock <min,max> | reset  Lock/unlock memory clocks %s(auto persistence)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+
     /* ── Display ────────────────────────────────────────────────────────── */
-    printf("  %sDISPLAY%s\n", C_BLU, C_RST);
+    printf("  %sDISPLAY%s %s(only X11 session is supported, needs xrandr)%s\n", C_BLU, C_RST, C_DIM, C_RST);
     printf("    %srr%s    [rate]             List/set refresh rate %s(1=high, 2=low)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sscale%s <value>            GPU-side scaling\n", C_BLD, C_RST);
     printf("      %sfactor: 0.01-1.0 (e.g. 0.5=half, 0.75=1080p on 1440p)%s\n", C_DIM, C_RST);
     printf("      %sresolution: WxH (e.g. 1920x1080)  |  off/reset: back to native%s\n\n", C_DIM, C_RST);
 
-    /* ── Keyboard ───────────────────────────────────────────────────────── */
-    printf("  %sKEYBOARD%s\n", C_MAG, C_RST);
-    printf("    %skbc%s   <color>            Set keyboard color\n", C_BLD, C_RST);
-    printf("      %sR G B: three values 0-255 (e.g. kbc 255 0 128)%s\n", C_DIM, C_RST);
-    printf("      %s#hex:  hex code (e.g. kbc #ff0080 or kbc ff0080)%s\n", C_DIM, C_RST);
-    printf("      %sname:  preset name (e.g. kbc cyan)%s\n", C_DIM, C_RST);
-    printf("    %skbb%s   <pct>              Set brightness %s(0-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("      %spresets: blue chocolate coral cyan gold gray green indigo lime\n"
-           "      magenta maroon navy off olive orange pink purple red salmon\n"
-           "      silver teal turquoise violet white yellow%s\n\n", C_DIM, C_RST);
-
-    /* ── System ─────────────────────────────────────────────────────────── */
-    printf("  %sSYSTEM%s\n", C_YLW, C_RST);
+    /* ── Profile Individual Overrides ───────────────────────────────────── */
+    printf("  %sPROFILE INDIVIDUAL OVERRIDES%s\n", C_YLW, C_RST);
     printf("    %sturbo%s  <on|off>          Turbo boost override\n",  C_BLD, C_RST);
     printf("    %sgov%s    <governor>        CPU governor %s(powersave, performance)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %smic%s    [on|off]          Toggle/set internal microphone %s(laptop mic only)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfn%s <lock|unlock>         Fn Lock toggle %s(Fn key behavior)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %swebcam%s [on|off]          Toggle/set webcam\n",      C_BLD, C_RST);
-    /* install is only relevant when not already running the system-wide copy */
-    if (!is_installed_systemwide())
-        printf("    %sinstall%s                Install: copy to /usr/local/bin + passwordless sudo\n", C_BLD, C_RST);
-    /* drivers-install is pointless when the driver stack is already loaded */
-    if (!drivers_loaded())
-        printf("    %sdrivers-install%s       Find cctl-drivers.tar.gz in ~ and run the driver installer\n", C_BLD, C_RST);
-    printf("\n");
-
-    /* ── Battery ────────────────────────────────────────────────────────── */
-    printf("  %sBATTERY%s\n", C_GRN, C_RST);
-    printf("    %sbat%s                      Show current thresholds\n",       C_BLD, C_RST);
-    printf("    %sbat%s    <start> <stop>    Set charge thresholds %s(sudo)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sbat off%s                  Top-up mode %s(charge to max, resume near full)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── NVIDIA ─────────────────────────────────────────────────────────── */
-    printf("  %sNVIDIA%s %s(needs root)%s\n", C_RED, C_RST, C_DIM, C_RST);
-#ifdef CCTL_NVIDIA
-    printf("    %snvidia%s  <on|off>         Persistent toggle %s(+initramfs rebuild)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s  load             Session load %s(compute modules)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s  loadgame         Session load %s(all modules incl. drm)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s  unload           Session unload + power off\n", C_BLD, C_RST);
-    printf("    %snvidia%s  status           Show GPU status & telemetry\n", C_BLD, C_RST);
-    printf("    %snvidia power%s <on|off>    Hardware D0/D3cold control\n", C_BLD, C_RST);
-#else
-    printf("    %snvidia power%s [on|off]    Hardware D0/D3cold control %s(no arg: show state)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-#endif
-    printf("    %snvidia%s  clock <min,max>  Lock GPU clocks %s(auto persistence, reset to unlock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s  memclock <min,max> Lock memory clocks %s(auto persistence, reset to unlock)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── Info ───────────────────────────────────────────────────────────── */
-    printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
-    printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
-    printf("    %smonitor%s                  Live CPU/power/fan monitor\n", C_BLD, C_RST);
-    /* Install hint — only shown when not installed system-wide */
-    if (!is_installed_systemwide()) {
-        printf("  %sNOT INSTALLED%s — run %ssudo %s install%s to set up:\n",
-               C_YLW, C_RST, C_BLD, prog, C_RST);
-        printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
-        printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
-        printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
-    }
+    printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* Driver hint — only shown when the TUXEDO/Clevo stack is not loaded */
     if (!drivers_loaded()) {
@@ -2006,11 +1981,39 @@ static void print_usage(const char *prog)
         printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
         printf("    • %sset/setR%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
         printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    Fix: run %scctl drivers-install%s (or %smake drivers-install%s)\n\n",
+        printf("    Fix: run %scctl drivers-install%s (or %smake drivers%s)\n\n",
                C_BLD, C_RST, C_BLD, C_RST);
     }
 
-    printf("\n  %sv2.3%s\n", C_DIM, C_RST);
+    /* Install hint — only shown when not installed system-wide */
+    if (!is_installed_systemwide()) {
+        printf("  %sNOT INSTALLED%s — run %ssudo ./%s install%s to set up:\n",
+               C_YLW, C_RST, C_BLD, prog, C_RST);
+        printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
+        printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
+        printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
+    }
+
+    printf("  %sv2.5%s\n", C_DIM, C_RST);
+}
+
+static int nvidia_is_loaded(void)
+{
+    FILE *fp = fopen("/proc/modules", "r");
+    if (!fp) return 0;
+    char line[256];
+    int loaded = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        char modname[64];
+        if (sscanf(line, "%63s", modname) == 1) {
+            if (strcmp(modname, "nvidia") == 0) {
+                loaded = 1;
+                break;
+            }
+        }
+    }
+    fclose(fp);
+    return loaded;
 }
 
 #ifdef CCTL_NVIDIA
@@ -2053,25 +2056,6 @@ static int nvidia_is_blacklisted(void)
     }
     fclose(fp);
     return found;
-}
-
-static int nvidia_is_loaded(void)
-{
-    FILE *fp = fopen("/proc/modules", "r");
-    if (!fp) return 0;
-    char line[256];
-    int loaded = 0;
-    while (fgets(line, sizeof(line), fp)) {
-        char modname[64];
-        if (sscanf(line, "%63s", modname) == 1) {
-            if (strcmp(modname, "nvidia") == 0) {
-                loaded = 1;
-                break;
-            }
-        }
-    }
-    fclose(fp);
-    return loaded;
 }
 
 static int nvidia_gpu_in_use(void)
@@ -2747,12 +2731,41 @@ static int nvidia_power_show(void)
     return 0;
 }
 
+/* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
+static int nvidia_pm_set(int on)
+{
+    char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
+    return run_cmd("nvidia-smi", args);
+}
+
+/* Check if NVIDIA persistence mode is currently enabled */
+static int nvidia_pm_is_enabled(void)
+{
+    if (!nvidia_is_loaded()) return 0;
+    FILE *fp = popen("nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null", "r");
+    if (!fp) return 0;
+    char line[64];
+    int enabled = 0;
+    if (fgets(line, sizeof(line), fp)) {
+        if (strncasecmp(line, "Enabled", 7) == 0)
+            enabled = 1;
+    }
+    pclose(fp);
+    return enabled;
+}
+
 static int nvidia_power_set(int on)
 {
     char pci_path[512];
     if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
         fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
         return 1;
+    }
+
+    /* If turning off and persistence mode is enabled, disable it first so the
+     * driver releases the GPU and allows PCI runtime PM to enter D3cold. */
+    if (!on && nvidia_pm_is_enabled()) {
+        nvidia_pm_set(0);
     }
 
     char ctrl_path[576], state_path[576];
@@ -2782,14 +2795,6 @@ static int nvidia_power_set(int on)
     printf("  GPU power: %s%s%s\n",
            strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
     return 0;
-}
-
-
-/* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
-static int nvidia_pm_set(int on)
-{
-    char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
-    return run_cmd("nvidia-smi", args);
 }
 
 /* Auto-enable persistence + lock GPU clocks to [min,max] (nvidia-smi -lgc) */
@@ -3418,10 +3423,10 @@ static int cmd_bat(int argc, char **argv)
         return 0;
     }
 
-    /* "off" or "default" → widest range */
-    if (strcmp(argv[2], "off") == 0 || strcmp(argv[2], "default") == 0) {
+    /* "max", "off", or "default" → widest range (charge to max) */
+    if (strcmp(argv[2], "max") == 0 || strcmp(argv[2], "off") == 0 || strcmp(argv[2], "default") == 0) {
         if (geteuid() != 0) {
-            fprintf(stderr, "Error: Must run as root (sudo %s bat off)\n", argv[0]);
+            fprintf(stderr, "Error: Must run as root (sudo %s bat max)\n", argv[0]);
             return 1;
         }
         int rc = bat_set(0, 0);
@@ -3431,7 +3436,7 @@ static int cmd_bat(int argc, char **argv)
 
     /* set <start> <end> */
     if (argc < 4) {
-        fprintf(stderr, "Error: Usage: bat <start> <end> or bat off\n");
+        fprintf(stderr, "Error: Usage: bat <start> <end> or bat max\n");
         return 1;
     }
     if (geteuid() != 0) {
