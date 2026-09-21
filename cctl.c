@@ -32,6 +32,14 @@
 #include <pwd.h>
 #include <sys/types.h>
 
+#define CCTL_VERSION      "2.8"
+/* NOTE FOR DEVELOPERS / AI AGENTS:
+ * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
+ * changes and committing. 'cctl install' checks this hidden value to determine
+ * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
+ * README or help menus. */
+#define CCTL_MICROVERSION 100002
+
 /* ========================================================================
  * ANSI COLOR SUPPORT
  * ======================================================================== */
@@ -69,10 +77,7 @@ static void self_elevate(int argc, char **argv)
     const char *bin = argv[0];
     if (n > 0) {
         exe_path[n] = '\0';
-        /* If running as installed /usr/local/bin/cctl, use that explicit path
-         * so it matches /etc/sudoers.d/cctl NOPASSWD rule perfectly */
-        if (strcmp(exe_path, "/usr/local/bin/cctl") == 0)
-            bin = "/usr/local/bin/cctl";
+        bin = exe_path;
     }
 
     char **args = malloc((size_t)(argc + 2) * sizeof(char *));
@@ -2266,7 +2271,7 @@ static void print_usage(const char *prog)
         printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
     }
 
-    printf("  %sv2.8%s\n", C_DIM, C_RST);
+    printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
 }
 
 static int nvidia_is_loaded(void)
@@ -3774,25 +3779,60 @@ static int cmd_bat(int argc, char **argv)
     return rc;
 }
 
+static int get_installed_microversion(void)
+{
+    if (access("/usr/local/bin/cctl", X_OK) != 0)
+        return -1; /* Not installed */
+
+    FILE *fp = popen("/usr/local/bin/cctl --microversion 2>/dev/null", "r");
+    if (!fp) return 0;
+
+    char buf[32];
+    int ver = 0;
+    if (fgets(buf, sizeof(buf), fp)) {
+        safe_atoi(buf, &ver);
+    }
+    pclose(fp);
+    return ver;
+}
+
 static int cmd_install(int argc, char **argv)
 {
-    /* main() already verified EUID==0 (needs_root). */
-    char src[PATH_MAX];
-    if (argc >= 3 && access(argv[2], R_OK) == 0) {
-        if (!realpath(argv[2], src)) {
-            strncpy(src, argv[2], sizeof(src) - 1);
-            src[sizeof(src) - 1] = '\0';
-        }
-    } else {
-        ssize_t n = readlink("/proc/self/exe", src, sizeof(src) - 1);
-        if (n <= 0) {
-            perror("Error: cannot determine running binary path");
-            return 1;
-        }
-        src[n] = '\0';
+    int force = (argc >= 3 && strcmp(argv[2], "--force") == 0);
+    if (argc > 3 || (argc == 3 && !force)) {
+        fprintf(stderr, "Error: 'cctl install' does not accept file arguments.\n");
+        return 1;
     }
 
-    printf("Installing cctl...\n");
+    /* main() already verified EUID==0 (needs_root). */
+    char src[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", src, sizeof(src) - 1);
+    if (n <= 0) {
+        perror("Error: cannot determine running binary path");
+        return 1;
+    }
+    src[n] = '\0';
+
+    /* If running from /usr/local/bin/cctl directly, it's already installed */
+    if (strcmp(src, "/usr/local/bin/cctl") == 0) {
+        printf("cctl is already installed at /usr/local/bin/cctl\n");
+        return 0;
+    }
+
+    /* Check microversion of currently installed binary */
+    int installed_ver = get_installed_microversion();
+    if (!force && installed_ver >= CCTL_MICROVERSION) {
+        printf("cctl is already up to date at /usr/local/bin/cctl\n");
+        return 0;
+    }
+
+    if (geteuid() != 0)
+        self_elevate(argc, argv);
+
+    if (installed_ver > 0)
+        printf("Upgrading cctl...\n");
+    else
+        printf("Installing cctl...\n");
 
     /* 1. Copy binary to /usr/local/bin/cctl with mode 0755 */
     char *const args[] = { "install", "-m", "755", src, "/usr/local/bin/cctl", NULL };
@@ -3986,7 +4026,7 @@ static const struct command commands[] = {
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
-    { "install", 1, cmd_install },
+    { "install", 0, cmd_install },
     { "mux",     0, cmd_mux },      /* root required for switch, checked in handler */
     { "drivers-install", 0, cmd_drivers_install },
 
@@ -4031,6 +4071,11 @@ int main(int argc, char **argv)
 
     if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
         print_usage(argv[0]);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "--microversion") == 0) {
+        printf("%d\n", CCTL_MICROVERSION);
         return 0;
     }
 
