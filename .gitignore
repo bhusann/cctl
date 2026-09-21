@@ -27,3 +27,6 @@ drivers/**/.module-common*
 *~
 *.swp
 .DS_Store
+
+# Local research notes (not for upstream)
+progress_finding.md

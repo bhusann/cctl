@@ -180,6 +180,157 @@ static int safe_atoi(const char *str, int *out)
     return 0;
 }
 
+/* ========================================================================
+ * GPU MUX SWITCHING (UEFI NVRAM)
+ * ========================================================================
+ * Board: COLORFUL P15 23 (Insyde H2O BIOS).
+ * Setup-a04a27f4-df00-4d42-b552-39511302113d, file offset 430:
+ *   0x03 = MSHybrid (iGPU + dGPU), 0x02 = dGPU only.
+ * MUX is latched at POST — write stages the request, reboot applies it.
+ * SaSetup side-effect bytes are firmware-synced, never touched here.
+ * ======================================================================== */
+
+#define MUX_VAR_PATH "/sys/firmware/efi/efivars/Setup-a04a27f4-df00-4d42-b552-39511302113d"
+#define MUX_OFFSET      430
+#define MUX_EXPECTED_LEN 1204
+#define MUX_VAL_DGPU     0x02
+#define MUX_VAL_MSHYBRID 0x03
+
+/* Read the MUX byte from the UEFI Setup variable.
+ * Returns MUX_VAL_DGPU / MUX_VAL_MSHYBRID on success, -1 on error. */
+static int mux_read(void)
+{
+    int fd = open(MUX_VAR_PATH, O_RDONLY);
+    if (fd < 0) return -1;
+
+    unsigned char blob[MUX_EXPECTED_LEN + 16];
+    ssize_t n = read(fd, blob, sizeof(blob));
+    close(fd);
+
+    if (n != MUX_EXPECTED_LEN) return -1;
+    int val = blob[MUX_OFFSET];
+    if (val != MUX_VAL_DGPU && val != MUX_VAL_MSHYBRID) return -1;
+    return val;
+}
+
+static const char *mux_mode_str(int val)
+{
+    if (val == MUX_VAL_MSHYBRID) return "MSHybrid";
+    if (val == MUX_VAL_DGPU)     return "dGPU";
+    return "Unknown";
+}
+
+/* Detect the actual running MUX mode from PCI topology.
+ * Intel iGPU at 00:02.0 with display class 0x0300xx → MSHybrid;
+ * absent or non-display → dGPU.  Returns MUX_VAL_*, or -1 on error. */
+static int mux_running_mode(void)
+{
+    char cls[16] = {0};
+    if (read_sysfs_str("/sys/bus/pci/devices/0000:00:02.0/class", cls, sizeof(cls)) < 0)
+        return MUX_VAL_DGPU; /* device absent → dGPU */
+    /* class is e.g. "0x030000" for VGA-compatible controller */
+    unsigned long val = strtoul(cls, NULL, 16);
+    return ((val >> 8) == 0x0300) ? MUX_VAL_MSHYBRID : MUX_VAL_DGPU;
+}
+
+static void mux_show(void)
+{
+    int nvram = mux_read();
+    if (nvram < 0) {
+        printf("  GPU MUX:   %sN/A (NVRAM variable not found or unrecognized)%s\n", C_DIM, C_RST);
+        return;
+    }
+    int running = mux_running_mode();
+    const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_MAG;
+    if (running >= 0 && nvram != running)
+        printf("  GPU MUX:   %s%s%s  %s← %s pending (reboot to apply)%s\n",
+               col, mux_mode_str(running), C_RST,
+               C_YLW, mux_mode_str(nvram), C_RST);
+    else
+        printf("  GPU MUX:   %s%s%s\n", col, mux_mode_str(nvram), C_RST);
+}
+
+/* Toggle the MUX to the opposite mode.  Returns 0 on success, 1 on error. */
+static int mux_switch(void)
+{
+    /* Preflight: NVRAM var must exist */
+    if (access(MUX_VAR_PATH, F_OK) != 0) {
+        fprintf(stderr, "Error: NVRAM variable not found: %s\n", MUX_VAR_PATH);
+        return 1;
+    }
+
+    /* Preflight: must be root */
+    if (geteuid() != 0) {
+        fprintf(stderr, "Error: MUX switch requires root (sudo cctl mux switch)\n");
+        return 1;
+    }
+
+    /* Preflight: battery check — refuse if on battery below 10% */
+    long bat_cap = read_sysfs_long("/sys/class/power_supply/BAT0/capacity", 100);
+    long ac_online = read_sysfs_long("/sys/class/power_supply/AC0/online", 1);
+    if (ac_online != 1 && bat_cap < 10) {
+        fprintf(stderr, "Error: Battery at %ld%% with no AC — plug in or charge above 10%%.\n", bat_cap);
+        return 1;
+    }
+
+    /* Read the full blob */
+    int fd = open(MUX_VAR_PATH, O_RDONLY);
+    if (fd < 0) {
+        perror("Error: cannot open NVRAM variable for reading");
+        return 1;
+    }
+    unsigned char blob[MUX_EXPECTED_LEN + 16];
+    ssize_t n = read(fd, blob, sizeof(blob));
+    close(fd);
+
+    if (n != MUX_EXPECTED_LEN) {
+        fprintf(stderr, "Error: NVRAM variable is %zd bytes, expected %d — refusing.\n",
+                n, MUX_EXPECTED_LEN);
+        return 1;
+    }
+
+    int current = blob[MUX_OFFSET];
+    if (current != MUX_VAL_DGPU && current != MUX_VAL_MSHYBRID) {
+        fprintf(stderr, "Error: byte @%d is 0x%02x, not 0x%02x/0x%02x — refusing "
+                "(BIOS update may have relocated the option).\n",
+                MUX_OFFSET, current, MUX_VAL_DGPU, MUX_VAL_MSHYBRID);
+        return 1;
+    }
+
+    int target = (current == MUX_VAL_MSHYBRID) ? MUX_VAL_DGPU : MUX_VAL_MSHYBRID;
+
+    /* Clear immutability (kernel re-marks every var immutable on each boot) */
+    run_quiet("chattr -i " MUX_VAR_PATH);  /* best-effort; ignore if chattr missing */
+
+    /* Write the toggled blob */
+    blob[MUX_OFFSET] = (unsigned char)target;
+    fd = open(MUX_VAR_PATH, O_WRONLY);
+    if (fd < 0) {
+        perror("Error: cannot open NVRAM variable for writing");
+        return 1;
+    }
+    ssize_t written = write(fd, blob, (size_t)n);
+    close(fd);
+    if (written != n) {
+        fprintf(stderr, "Error: short write (%zd/%zd bytes).\n", written, n);
+        return 1;
+    }
+
+    /* Readback verify */
+    int readback = mux_read();
+    if (readback != target) {
+        fprintf(stderr, "Error: readback 0x%02x != target 0x%02x — write may have failed!\n",
+                readback, target);
+        return 1;
+    }
+
+    printf("GPU MUX switched: %s%s%s → %s%s%s\n",
+           C_DIM, mux_mode_str(current), C_RST,
+           C_BLD, mux_mode_str(target), C_RST);
+    printf("%sReboot to apply.%s\n", C_YLW, C_RST);
+    return 0;
+}
+
 /* Iterate /sys/devices/system/cpu/cpuN/<file> for all online CPUs */
 static int write_to_all_cpus(const char *suffix, const char *value)
 {
@@ -1151,6 +1302,9 @@ static void show_status(void)
            nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
 #endif
 
+    /* GPU MUX */
+    mux_show();
+
     /* CPU Max Frequency (P-core vs E-core) */
     printf("\n%s--- CPU Max Frequency ---%s\n", C_YLW, C_RST);
     int p_max = 0, e_max = 0;
@@ -1968,6 +2122,11 @@ static void print_usage(const char *prog)
     printf("      %sfactor: 0.01-1.0 (e.g. 0.5=half, 0.75=1080p on 1440p)%s\n", C_DIM, C_RST);
     printf("      %sresolution: WxH (e.g. 1920x1080)  |  off/reset: back to native%s\n\n", C_DIM, C_RST);
 
+    /* ── GPU MUX ───────────────────────────────────────────────────────── */
+    printf("  %sGPU MUX%s %s(UEFI NVRAM, reboot required to apply)%s\n", C_MAG, C_RST, C_DIM, C_RST);
+    printf("    %smux%s                      Show current MUX mode %s(MSHybrid / dGPU)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %smux%s    switch            Toggle to the other mode %s(reboot to apply)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+
     /* ── Profile Individual Overrides ───────────────────────────────────── */
     printf("  %sPROFILE INDIVIDUAL OVERRIDES%s\n", C_YLW, C_RST);
     printf("    %sturbo%s  <on|off>          Turbo boost override\n",  C_BLD, C_RST);
@@ -1994,7 +2153,7 @@ static void print_usage(const char *prog)
         printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
     }
 
-    printf("  %sv2.5%s\n", C_DIM, C_RST);
+    printf("  %sv2.7%s\n", C_DIM, C_RST);
 }
 
 static int nvidia_is_loaded(void)
@@ -3680,6 +3839,28 @@ static int cmd_drivers_install(int argc, char **argv)
     return 0;
 }
 
+static int cmd_mux(int argc, char **argv)
+{
+    if (argc >= 3 && strcmp(argv[2], "switch") == 0)
+        return mux_switch();
+
+    /* 'cctl mux' with no subcommand — show current mode + pending */
+    int nvram = mux_read();
+    if (nvram < 0) {
+        fprintf(stderr, "GPU MUX: N/A (NVRAM variable not found or unrecognized)\n");
+        return 1;
+    }
+    int running = mux_running_mode();
+    const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_MAG;
+    if (running >= 0 && nvram != running)
+        printf("GPU MUX: %s%s%s  %s← %s pending (reboot to apply)%s\n",
+               col, mux_mode_str(running), C_RST,
+               C_YLW, mux_mode_str(nvram), C_RST);
+    else
+        printf("GPU MUX: %s%s%s\n", col, mux_mode_str(nvram), C_RST);
+    return 0;
+}
+
 struct command {
     const char *name;
     int needs_root;
@@ -3706,6 +3887,7 @@ static const struct command commands[] = {
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
     { "install", 1, cmd_install },
+    { "mux",     0, cmd_mux },      /* root required for switch, checked in handler */
     { "drivers-install", 0, cmd_drivers_install },
 
 };

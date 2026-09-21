@@ -172,25 +172,39 @@ check_prereqs() {
     ok "Prerequisites installed"
 }
 
-# ─── Fix missing autoconf.h (cachyos-headers bug workaround) ────────────────
+# ─── Fix missing autoconf.h (arch-headers workaround) ────────────────
 fix_autoconf() {
     local autoconf="${KERNEL_BUILD}/include/generated/autoconf.h"
-    local autoconf_src="${KERNEL_BUILD}/include/config/auto.conf"
+    local autoconf_dir="${KERNEL_BUILD}/include/generated"
+    local config_dir="${KERNEL_BUILD}/include/config"
+    local autoconf_dst="${config_dir}/auto.conf"
+    local dotconfig="${KERNEL_BUILD}/.config"
     if [ -f "$autoconf" ] && [ -s "$autoconf" ]; then
         return 0  # already fine
     fi
-    if [ ! -f "$autoconf_src" ]; then
-        fail "Cannot generate autoconf.h: ${autoconf_src} not found"
+    if [ ! -f "$dotconfig" ]; then
+        fail "Cannot generate autoconf.h: ${dotconfig} not found"
         return 1
     fi
-    warn "autoconf.h missing — generating from auto.conf"
-    awk -F= '/^CONFIG_/ {
-        if ($2 == "y") print "#define " $1 " 1"
-        else if ($2 == "m") print "#define " $1 "_MODULE 1"
-        else if ($2 == "")  print "#define " $1 ""
-        else                print "#define " $1 " " $2
-    }' "$autoconf_src" > "$autoconf"
-    ok "autoconf.h generated (${KERNEL})"
+    warn "autoconf.h missing - seeding from .config"
+    local arch
+    for arch in arm arm64 loongarch mips powerpc riscv s390 sparc x86; do
+        mkdir -p "${KERNEL_BUILD}/arch/${arch}/crypto"
+        touch "${KERNEL_BUILD}/arch/${arch}/crypto/Kconfig"
+    done
+    mkdir -p "$autoconf_dir" "$config_dir"
+    grep "^CONFIG_" "$dotconfig" | grep -v "^CONFIG_CC_VERSION_TEXT" | \
+    while IFS="=" read -r key val; do
+        if [ "$val" = "y" ] || [ "$val" = "m" ]; then
+            echo "#define $key 1"
+        elif [ -n "$val" ]; then
+            echo "#define $key $val"
+        fi
+    done > "$autoconf"
+    grep "^CONFIG_" "$dotconfig" | grep -v "^CONFIG_CC_VERSION_TEXT" \
+        > "$autoconf_dst"
+    touch "${autoconf_dst}.cmd"
+    ok "autoconf.h seeded from .config (${KERNEL})"
 }
 
 # ─── Detection ──────────────────────────────────────────────────────────────
