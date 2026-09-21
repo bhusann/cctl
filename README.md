@@ -1,6 +1,6 @@
 # CCTL — ColorControl
 
-Linux CLI alternative to the Windows-only Colorful Laptop Control Center. Fast, single-binary tool for Colorful Evol P15 laptops (Clevo/TUXEDO chassis) — controls power profiles, fans, keyboard backlight, display, battery, and NVIDIA GPU. Pure C, no GUI, no daemon.
+Linux CLI alternative to the Windows-only Colorful Laptop Control Center. Fast, single-binary tool for Colorful Evol P15 laptops (Clevo/TUXEDO chassis) — controls power profiles, fans, keyboard backlight, display, battery, GPU MUX switching, and NVIDIA GPU. Pure C, no GUI, no daemon.
 
 ## Hardware Compatibility
 
@@ -43,8 +43,8 @@ cctl status                # view all current settings
 
 ## Power Profiles
 
-`set <profile>` applies a preset (changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults).
-`setR <profile>` applies a preset + custom pre-configured CPU TDP change (changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL).
+`set <profile> [--nosafe]` applies a preset (changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults).
+`setR <profile> [--nosafe]` applies a preset + custom pre-configured CPU TDP change (changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL).
 
 ```
 Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)
@@ -56,6 +56,8 @@ powersave   OFF    powersave    balance_power      15/30W  + GPU 70W            
 eco         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W
 ```
 
+> **Safety Defaults**: Setting `max`, `cpuperf`, or `balanced` automatically switches fans to **`AUTO`** first to protect hardware if fans were previously locked to silent. Pass `--nosafe` (e.g. `cctl set max --nosafe`) to bypass fan changes.
+>
 > **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
 
 ---
@@ -73,7 +75,8 @@ Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime`
 
 ### Fan Control
 ```bash
-cctl fan auto|max|silent        # Both fans: EC automatic / 100% / quiet
+cctl fan auto|max               # Both fans: EC automatic / 100% full speed
+cctl fan silent [--nosafe]      # Quiet mode (forces eco profile first; bypass with --nosafe)
 cctl fan <pct>                  # Set both fans to duty cycle (21-100%)
 cctl fan cpu|gpu <pct>          # Set individual fan duty
 ```
@@ -93,9 +96,19 @@ cctl bat max                    # Standard mode (change to max - 100%)
 
 ### Info
 ```bash
-cctl status                     # Print all current settings
+cctl status                     # Print all current settings (profiles, GPU MUX, telemetry)
 cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
 ```
+
+### GPU MUX Switching
+Toggle the internal display hardware multiplexer between **MSHybrid** (panel driven by iGPU, both GPUs enumerated) and **dGPU** (panel driven directly by NVIDIA discrete GPU, iGPU removed from PCI display class).
+
+```bash
+cctl mux                        # Show current MUX mode (MSHybrid / dGPU) & pending status
+cctl mux switch                 # Toggle MUX mode (stages in UEFI NVRAM, reboot to apply)
+```
+
+> **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B), unknown value refusal, and battery protection (refuses on battery < 10% without AC).
 
 ### NVIDIA GPU
 ```bash
@@ -127,7 +140,7 @@ cctl scale <factor|WxH|off>    # GPU scaling (0.75, 1920x1080, or off to reset)
 
 ### Profile Individual Overrides
 ```bash
-cctl turbo on|off               # Toggle Intel turbo boost
+cctl turbo on|off [--nosafe]    # Toggle Intel turbo boost (on sets fans to auto; bypass with --nosafe)
 cctl gov powersave|performance  # CPU scaling governor
 cctl epp <preference>           # performance, balance_performance, balance_power, power
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
@@ -164,7 +177,7 @@ Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
 | Package Manager | Distros | Tested |
 |---|---|---|
 | `pacman` | Arch, Manjaro, EndeavourOS, CachyOS, Garuda | ✅ Arch, CachyOS |
-| `apt` | Debian, Ubuntu, Mint, Pop!_OS, Zorin | ✅ Debian |
+| `apt` | Debian, Ubuntu, Mint, Pop!_OS, Zorin | — |
 | `dnf` | Fedora, RHEL, Rocky, Alma | — |
 | `zypper` | openSUSE Tumbleweed/Leap | — |
 | `xbps` | Void Linux | — |
@@ -222,6 +235,11 @@ On immutable distros (Bazzite, Silverblue, etc.) the installer explains that DKM
       Option "AutoAddGPU" "false"
   EndSection
   ```
+
+- **GPU Display MUX via UEFI NVRAM (Insyde H2O)** — The laptop features a physical display multiplexer with two BIOS modes:
+  - `MSHybrid` (panel driven by Intel iGPU; NVIDIA dGPU provides render offload).
+  - `dGPU` (panel wired directly to NVIDIA GeForce RTX card; Intel iGPU is unmapped from PCI display class).
+  - The hardware MUX state cannot be flipped on-the-fly inside an active OS session (ACPI `_DSM` methods on this Insyde board hang the display subsystem). Instead, switching is staged via the UEFI NVRAM variable `Setup-a04a27f4-df00-4d42-b552-39511302113d` at file offset 430 (`0x03` = MSHybrid, `0x02` = dGPU). The new mode is latched during POST upon reboot.
 
 ---
 

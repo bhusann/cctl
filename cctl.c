@@ -2058,8 +2058,9 @@ static void print_usage(const char *prog)
 
     /* ── Profiles ──────────────────────────────────────────────────────── */
     printf("  %sPROFILES%s\n", C_YLW, C_RST);
-    printf("    %sset%s   <profile>          Apply a preset %s(changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %ssetR%s  <profile>          Apply a preset + custom pre configured CPU TDP change %s(changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sset%s   <profile> [--nosafe] Apply a preset %s(changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %ssetR%s  <profile> [--nosafe] Apply a preset + custom pre configured CPU TDP change %s(changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("      %s(max, cpuperf, balanced set fans to auto; bypass with --nosafe)%s\n\n", C_DIM, C_RST);
     printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)%s\n", C_BLD, C_RST);
     printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────%s\n", C_DIM, C_RST);
     printf("      %smax%s         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W\n", C_RED, C_RST);
@@ -2080,7 +2081,8 @@ static void print_usage(const char *prog)
 
     /* ── Fan ────────────────────────────────────────────────────────────── */
     printf("  %sFAN%s\n", C_YLW, C_RST);
-    printf("    %sfan%s   auto|max|silent    Set both fans %s(EC-controlled / full / quiet)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   auto|max           Set both fans %s(EC-controlled / full)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   silent [--nosafe]  Quiet mode %s(forces eco profile first; bypass with --nosafe)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfan%s   <pct>              Set both fans to duty %s(21-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfan%s   cpu|gpu <pct>      Set individual fan duty %s(21-100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
@@ -2129,7 +2131,7 @@ static void print_usage(const char *prog)
 
     /* ── Profile Individual Overrides ───────────────────────────────────── */
     printf("  %sPROFILE INDIVIDUAL OVERRIDES%s\n", C_YLW, C_RST);
-    printf("    %sturbo%s  <on|off>          Turbo boost override\n",  C_BLD, C_RST);
+    printf("    %sturbo%s  <on|off> [--nosafe] Turbo boost override %s(on sets fans to auto; bypass with --nosafe)%s\n",  C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sgov%s    <governor>        CPU governor %s(powersave, performance)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
@@ -2153,7 +2155,7 @@ static void print_usage(const char *prog)
         printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
     }
 
-    printf("  %sv2.7%s\n", C_DIM, C_RST);
+    printf("  %sv2.8%s\n", C_DIM, C_RST);
 }
 
 static int nvidia_is_loaded(void)
@@ -3276,25 +3278,46 @@ static int cmd_monitor(int argc, char **argv)
 static int cmd_set(int argc, char **argv)
 {
     int with_rapl = (strcmp(argv[1], "setr") == 0);
-    if (argc < 3) {
+    int nosafe = 0;
+    const char *profile = NULL;
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--nosafe") == 0)
+            nosafe = 1;
+        else if (!profile)
+            profile = argv[i];
+    }
+
+    if (!profile) {
         fprintf(stderr, "Error: Missing profile name\n");
         fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
         return 1;
     }
-    const char *profile = argv[2];
     int rc = 0;
 
-    if (strcmp(profile, "max") == 0)
+    if (strcmp(profile, "max") == 0) {
+        if (!nosafe) {
+            printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
+            fan_auto_all();
+        }
         rc = profile_max(with_rapl);
-    else if (strcmp(profile, "cpuperf") == 0)
+    } else if (strcmp(profile, "cpuperf") == 0) {
+        if (!nosafe) {
+            printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
+            fan_auto_all();
+        }
         rc = profile_cpuperf(with_rapl);
-    else if (strcmp(profile, "balanced") == 0)
+    } else if (strcmp(profile, "balanced") == 0) {
+        if (!nosafe) {
+            printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
+            fan_auto_all();
+        }
         rc = profile_balanced(with_rapl);
-    else if (strcmp(profile, "powersave") == 0)
+    } else if (strcmp(profile, "powersave") == 0) {
         rc = profile_powersave(with_rapl);
-    else if (strcmp(profile, "eco") == 0)
+    } else if (strcmp(profile, "eco") == 0) {
         rc = profile_eco(with_rapl);
-    else {
+    } else {
         fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
         fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
         return 1;
@@ -3307,12 +3330,24 @@ static int cmd_set(int argc, char **argv)
 
 static int cmd_fan(int argc, char **argv)
 {
-    if (argc < 3) {
+    int nosafe = 0;
+    const char *mode = NULL;
+    const char *val_str = NULL;
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--nosafe") == 0)
+            nosafe = 1;
+        else if (!mode)
+            mode = argv[i];
+        else if (!val_str)
+            val_str = argv[i];
+    }
+
+    if (!mode) {
         fprintf(stderr, "Error: Missing fan mode\n");
         fprintf(stderr, "Valid modes: auto, max, silent, cpu <pct>, gpu <pct>\n");
         return 1;
     }
-    const char *mode = argv[2];
     int rc = 0;
 
     if (strcmp(mode, "auto") == 0) {
@@ -3322,27 +3357,31 @@ static int cmd_fan(int argc, char **argv)
         printf("Setting both fans to MAX...\n");
         rc = fan_max_all();
     } else if (strcmp(mode, "silent") == 0) {
+        if (!nosafe) {
+            printf("Applying: eco profile (safety default for silent fans; use --nosafe to bypass)...\n");
+            profile_eco(0);
+        }
         printf("Setting both fans to SILENT...\n");
         rc = fan_silent_all();
     } else if (strcmp(mode, "cpu") == 0) {
-        if (argc < 4) {
+        if (!val_str) {
             fprintf(stderr, "Error: Missing duty percentage\n");
             return 1;
         }
         int pct;
-        if (safe_atoi(argv[3], &pct) < 0) {
-            fprintf(stderr, "Error: Invalid duty percentage '%s'\n", argv[3]);
+        if (safe_atoi(val_str, &pct) < 0) {
+            fprintf(stderr, "Error: Invalid duty percentage '%s'\n", val_str);
             return 1;
         }
         rc = fan_set_duty(FAN_CPU, pct);
     } else if (strcmp(mode, "gpu") == 0) {
-        if (argc < 4) {
+        if (!val_str) {
             fprintf(stderr, "Error: Missing duty percentage\n");
             return 1;
         }
         int pct;
-        if (safe_atoi(argv[3], &pct) < 0) {
-            fprintf(stderr, "Error: Invalid duty percentage '%s'\n", argv[3]);
+        if (safe_atoi(val_str, &pct) < 0) {
+            fprintf(stderr, "Error: Invalid duty percentage '%s'\n", val_str);
             return 1;
         }
         rc = fan_set_duty(FAN_GPU, pct);
@@ -3367,20 +3406,37 @@ static int cmd_fan(int argc, char **argv)
 
 static int cmd_turbo(int argc, char **argv)
 {
-    if (argc < 3) {
+    int nosafe = 0;
+    const char *action = NULL;
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--nosafe") == 0)
+            nosafe = 1;
+        else if (!action)
+            action = argv[i];
+    }
+
+    if (!action) {
         fprintf(stderr, "Error: Missing turbo action (on/off)\n");
         return 1;
     }
     int enabled;
-    if (strcmp(argv[2], "on") == 0)
+    if (strcmp(action, "on") == 0)
         enabled = 1;
-    else if (strcmp(argv[2], "off") == 0)
+    else if (strcmp(action, "off") == 0)
         enabled = 0;
     else {
-        fprintf(stderr, "Error: Invalid turbo action '%s' (use on or off)\n", argv[2]);
+        fprintf(stderr, "Error: Invalid turbo action '%s' (use on or off)\n", action);
         return 1;
     }
+
+    if (enabled && !nosafe) {
+        printf("Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
+        fan_auto_all();
+    }
+
     int rc = set_turbo(enabled);
+    ec_release_ports();
     if (rc == 0) printf("Done.\n");
     return rc;
 }

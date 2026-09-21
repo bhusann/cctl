@@ -193,14 +193,15 @@ fix_autoconf() {
         touch "${KERNEL_BUILD}/arch/${arch}/crypto/Kconfig"
     done
     mkdir -p "$autoconf_dir" "$config_dir"
-    grep "^CONFIG_" "$dotconfig" | grep -v "^CONFIG_CC_VERSION_TEXT" | \
-    while IFS="=" read -r key val; do
-        if [ "$val" = "y" ] || [ "$val" = "m" ]; then
-            echo "#define $key 1"
-        elif [ -n "$val" ]; then
-            echo "#define $key $val"
-        fi
-    done > "$autoconf"
+    awk -F= '/^CONFIG_/ && !/^CONFIG_CC_VERSION_TEXT/ {
+        if ($2 == "y")      print "#define " $1 " 1"
+        else if ($2 == "m") print "#define " $1 "_MODULE 1"
+        else if ($2 != "")  print "#define " $1 " " $2
+    }' "$dotconfig" > "$autoconf"
+    if [ ! -s "$autoconf" ]; then
+        fail "Generated autoconf.h is empty — .config may be corrupt"
+        return 1
+    fi
     grep "^CONFIG_" "$dotconfig" | grep -v "^CONFIG_CC_VERSION_TEXT" \
         > "$autoconf_dst"
     touch "${autoconf_dst}.cmd"
