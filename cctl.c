@@ -40,7 +40,7 @@
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
-#define CCTL_MICROVERSION 100004
+#define CCTL_MICROVERSION 100005
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -1873,7 +1873,9 @@ static int kbd_get_raw_brightness(int *bri)
     return 0;
 }
 
-static int kbe_read_state(pid_t *pid, char *effect, size_t effect_sz, int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
+static int kbe_read_state_ex(pid_t *pid, char *effect, size_t effect_sz,
+                             int *orig_r, int *orig_g, int *orig_b, int *orig_bri,
+                             char *resume_effect, size_t resume_sz)
 {
     FILE *fp = fopen(KBE_STATE_PATH, "r");
     if (!fp) return -1;
@@ -1904,17 +1906,43 @@ static int kbe_read_state(pid_t *pid, char *effect, size_t effect_sz, int *orig_
             if (orig_bri) *orig_bri = bri;
         }
     }
+    if (resume_effect && resume_sz > 0) {
+        resume_effect[0] = '\0';
+        if (fgets(line, sizeof(line), fp)) {
+            for (char *c = line; *c; c++) {
+                if (*c == '\n' || *c == '\r') *c = '\0';
+            }
+            if (strcmp(line, "none") != 0) {
+                strncpy(resume_effect, line, resume_sz - 1);
+                resume_effect[resume_sz - 1] = '\0';
+            }
+        }
+    }
     fclose(fp);
     return 0;
+}
+
+static inline int kbe_read_state(pid_t *pid, char *effect, size_t effect_sz,
+                                 int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
+{
+    return kbe_read_state_ex(pid, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, NULL, 0);
 }
 
 static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz, int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
 {
     pid_t p = 0;
-    if (kbe_read_state(&p, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri) < 0)
+    char resume_ef[32] = {0};
+    if (kbe_read_state_ex(&p, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, resume_ef, sizeof(resume_ef)) < 0)
         return 0;
     if (kill(p, 0) == 0 || errno == EPERM) {
         if (pid) *pid = p;
+        if (effect && strcmp(effect, "pulse-profile") == 0) {
+            if (resume_ef[0] != '\0') {
+                snprintf(effect, effect_sz, "%.20s", resume_ef);
+            } else {
+                snprintf(effect, effect_sz, "profile pulse");
+            }
+        }
         return 1;
     }
     if (errno == ESRCH && geteuid() == 0) {
@@ -2041,11 +2069,34 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
         }
     } else if (strcmp(effect, "pulse") == 0 || strcmp(effect, "heartbeat") == 0) {
         mode = 7;
+    } else if (strcmp(effect, "police") == 0 || strcmp(effect, "siren") == 0 ||
+               strcmp(effect, "cop") == 0 || strcmp(effect, "emergency") == 0) {
+        mode = 8;
+    } else if (strcmp(effect, "fire") == 0 || strcmp(effect, "flame") == 0 ||
+               strcmp(effect, "embers") == 0 || strcmp(effect, "burn") == 0) {
+        mode = 9;
+    } else if (strcmp(effect, "aurora") == 0 || strcmp(effect, "arora") == 0 ||
+               strcmp(effect, "northern-lights") == 0 || strcmp(effect, "borealis") == 0) {
+        mode = 10;
+    } else if (strcmp(effect, "storm") == 0 || strcmp(effect, "lightning") == 0 ||
+               strcmp(effect, "thunder") == 0) {
+        mode = 11;
+    } else if (strcmp(effect, "starlight") == 0 || strcmp(effect, "stars") == 0 ||
+               strcmp(effect, "star") == 0 || strcmp(effect, "twinkle") == 0) {
+        mode = 12;
+    } else if (strcmp(effect, "temp") == 0 || strcmp(effect, "temperature") == 0 ||
+               strcmp(effect, "thermal") == 0 || strcmp(effect, "heatmap") == 0) {
+        mode = 13;
     }
 
     int step = 0;
     int flash_hue = 0;
     int candle_val = 200;
+    int fire_hue = 20, fire_bri = 200;
+    int star_twinkle_steps = 0, star_peak_white = 220;
+    int cur_temp_val = -1;
+    int tgt_r = 0, tgt_g = 220, tgt_b = 255;
+    int smooth_r = 0, smooth_g = 220, smooth_b = 255;
 
     srand((unsigned int)(time(NULL) ^ getpid()));
 
@@ -2128,6 +2179,160 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
                 kbe_sleep_ms(700);
                 break;
             }
+            case 8: { /* police / siren */
+                for (int k = 0; k < 2 && g_kbe_running; k++) {
+                    kbe_write_frame(fd_col, 255, 0, 0);
+                    kbe_sleep_ms(60);
+                    if (!g_kbe_running) break;
+                    kbe_write_frame(fd_col, 0, 0, 0);
+                    kbe_sleep_ms(50);
+                }
+                kbe_sleep_ms(70);
+                for (int k = 0; k < 2 && g_kbe_running; k++) {
+                    kbe_write_frame(fd_col, 0, 0, 255);
+                    kbe_sleep_ms(60);
+                    if (!g_kbe_running) break;
+                    kbe_write_frame(fd_col, 0, 0, 0);
+                    kbe_sleep_ms(50);
+                }
+                kbe_sleep_ms(70);
+                break;
+            }
+            case 9: { /* fire */
+                int target_h = 5 + (rand() % 35);
+                int target_b = 130 + (rand() % 125);
+                if ((rand() % 14) == 0) {
+                    target_b = 255;
+                    target_h = 36;
+                }
+                fire_hue = (fire_hue * 6 + target_h * 4) / 10;
+                fire_bri = (fire_bri * 6 + target_b * 4) / 10;
+                int r, g, b;
+                kbe_hue_to_rgb(fire_hue, fire_bri, &r, &g, &b);
+                kbe_write_frame(fd_col, r, g, b);
+                kbe_sleep_ms(30 + (rand() % 25));
+                break;
+            }
+            case 10: { /* aurora */
+                int t = step % 480;
+                int cur_hue;
+                if (t < 160) {
+                    cur_hue = 130 + (t * 50) / 160;
+                } else if (t < 320) {
+                    cur_hue = 180 + ((t - 160) * 95) / 160;
+                } else {
+                    cur_hue = (275 + ((t - 320) * 215) / 160) % 360;
+                }
+                int bri = 130 + ((int)kbe_breathe_lut[step % 128] * 125) / 255;
+                int r, g, b;
+                kbe_hue_to_rgb(cur_hue, bri, &r, &g, &b);
+                kbe_write_frame(fd_col, r, g, b);
+                kbe_sleep_ms(25);
+                step++;
+                break;
+            }
+            case 11: { /* storm */
+                kbe_write_frame(fd_col, 8, 12, 35);
+                int wait_ms = 1200 + (rand() % 2800);
+                while (wait_ms > 0 && g_kbe_running) {
+                    if ((rand() % 10) == 0) {
+                        int rumble = 25 + (rand() % 30);
+                        kbe_write_frame(fd_col, rumble / 4, rumble / 3, rumble);
+                        kbe_sleep_ms(35);
+                        kbe_write_frame(fd_col, 8, 12, 35);
+                    }
+                    int chunk = wait_ms > 80 ? 80 : wait_ms;
+                    kbe_sleep_ms(chunk);
+                    wait_ms -= chunk;
+                }
+                if (!g_kbe_running) break;
+
+                kbe_write_frame(fd_col, 255, 255, 255);
+                kbe_sleep_ms(45);
+                kbe_write_frame(fd_col, 30, 45, 90);
+                kbe_sleep_ms(35);
+                kbe_write_frame(fd_col, 220, 240, 255);
+                kbe_sleep_ms(60);
+                if ((rand() % 2) == 0) {
+                    kbe_write_frame(fd_col, 20, 30, 60);
+                    kbe_sleep_ms(25);
+                    kbe_write_frame(fd_col, 180, 210, 255);
+                    kbe_sleep_ms(40);
+                }
+                kbe_write_frame(fd_col, 60, 90, 160);
+                kbe_sleep_ms(50);
+                kbe_write_frame(fd_col, 20, 30, 70);
+                kbe_sleep_ms(60);
+                break;
+            }
+            case 12: { /* starlight */
+                if (star_twinkle_steps <= 0) {
+                    int sky_bri = 35 + ((int)kbe_breathe_lut[step % 128] * 25) / 255;
+                    kbe_write_frame(fd_col, (sky_bri * 12) / 60, (sky_bri * 20) / 60, sky_bri);
+                    kbe_sleep_ms(30);
+                    step++;
+                    if ((rand() % 30) == 0) {
+                        star_twinkle_steps = 14;
+                        star_peak_white = 180 + (rand() % 75);
+                    }
+                } else {
+                    int progress = 7 - abs(star_twinkle_steps - 7);
+                    int factor = (progress * 255) / 7;
+                    int tr = 12 + ((star_peak_white - 12) * factor) / 255;
+                    int tg = 20 + ((star_peak_white - 20) * factor) / 255;
+                    int tb = 55 + ((255 - 55) * factor) / 255;
+                    kbe_write_frame(fd_col, tr, tg, tb);
+                    kbe_sleep_ms(25);
+                    star_twinkle_steps--;
+                }
+                break;
+            }
+            case 13: { /* temp */
+                if ((step % 20) == 0 || cur_temp_val < 0) {
+                    int t = read_cpu_temp();
+                    if (t > 0) cur_temp_val = t;
+                    else if (cur_temp_val < 0) cur_temp_val = 50;
+
+                    if (cur_temp_val <= 40) {
+                        tgt_r = 0; tgt_g = 220; tgt_b = 255;
+                    } else if (cur_temp_val <= 60) {
+                        int ratio = ((cur_temp_val - 40) * 255) / 20;
+                        tgt_r = 0;
+                        tgt_g = 220 + ((255 - 220) * ratio) / 255;
+                        tgt_b = 255 - ((255 - 40) * ratio) / 255;
+                    } else if (cur_temp_val <= 75) {
+                        int ratio = ((cur_temp_val - 60) * 255) / 15;
+                        tgt_r = (255 * ratio) / 255;
+                        tgt_g = 255 - ((255 - 220) * ratio) / 255;
+                        tgt_b = 40 - (40 * ratio) / 255;
+                    } else if (cur_temp_val <= 85) {
+                        int ratio = ((cur_temp_val - 75) * 255) / 10;
+                        tgt_r = 255;
+                        tgt_g = 220 - ((220 - 40) * ratio) / 255;
+                        tgt_b = 0;
+                    } else {
+                        tgt_r = 255; tgt_g = 0; tgt_b = 0;
+                    }
+                }
+
+                smooth_r = (smooth_r * 8 + tgt_r * 2) / 10;
+                smooth_g = (smooth_g * 8 + tgt_g * 2) / 10;
+                smooth_b = (smooth_b * 8 + tgt_b * 2) / 10;
+
+                int out_r = smooth_r;
+                int out_g = smooth_g;
+                int out_b = smooth_b;
+
+                if (cur_temp_val >= 90) {
+                    int pulse_bri = (int)kbe_breathe_lut[step % 128];
+                    out_r = (out_r * (128 + pulse_bri / 2)) / 255;
+                }
+
+                kbe_write_frame(fd_col, out_r, out_g, out_b);
+                kbe_sleep_ms(30);
+                step++;
+                break;
+            }
             default:
                 g_kbe_running = 0;
                 break;
@@ -2190,6 +2395,156 @@ static int kbe_start(const char *effect)
     }
 
     kbe_daemon_worker(effect, orig_r, orig_g, orig_b, orig_bri);
+    exit(0);
+}
+
+static void kbe_profile_pulse_worker(int pr, int pg, int pb,
+                                     const char *resume_effect,
+                                     int orig_r, int orig_g, int orig_b, int orig_bri)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = kbe_sig_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+
+    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0644);
+    if (lock_fd < 0) exit(1);
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+        close(lock_fd);
+        exit(1);
+    }
+
+    FILE *fp = fopen(KBE_STATE_PATH, "w");
+    if (!fp) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        exit(1);
+    }
+    fprintf(fp, "%d\npulse-profile\n%d %d %d %d\n%s\n",
+            (int)getpid(), orig_r, orig_g, orig_b, orig_bri,
+            (resume_effect && *resume_effect) ? resume_effect : "none");
+    fclose(fp);
+    chmod(KBE_STATE_PATH, 0644);
+
+    int fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
+    int fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
+
+    kbe_write_bri(fd_bri, 255);
+
+    static const uint8_t oneshot_lut[] = {
+        20, 60, 120, 180, 235, 255, 255, 230, 190, 140, 90, 50, 25, 10, 0
+    };
+
+    for (size_t i = 0; i < sizeof(oneshot_lut) && g_kbe_running; i++) {
+        int val = oneshot_lut[i];
+        int r = (pr * val) / 255;
+        int g = (pg * val) / 255;
+        int b = (pb * val) / 255;
+        kbe_write_frame(fd_col, r, g, b);
+        kbe_sleep_ms(25);
+    }
+
+    if (fd_col >= 0) close(fd_col);
+    if (fd_bri >= 0) close(fd_bri);
+
+    if (!g_kbe_running) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%d %d %d", orig_r, orig_g, orig_b);
+        write_sysfs(KBD_PATH "/multi_intensity", buf);
+        snprintf(buf, sizeof(buf), "%d", orig_bri);
+        write_sysfs(KBD_PATH "/brightness", buf);
+
+        unlink(KBE_STATE_PATH);
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        unlink(KBE_LOCK_PATH);
+        exit(0);
+    }
+
+    flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+
+    if (resume_effect && *resume_effect && strcmp(resume_effect, "none") != 0) {
+        kbe_daemon_worker(resume_effect, orig_r, orig_g, orig_b, orig_bri);
+        exit(0);
+    }
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d %d %d", orig_r, orig_g, orig_b);
+    write_sysfs(KBD_PATH "/multi_intensity", buf);
+    snprintf(buf, sizeof(buf), "%d", orig_bri);
+    write_sysfs(KBD_PATH "/brightness", buf);
+
+    unlink(KBE_STATE_PATH);
+    unlink(KBE_LOCK_PATH);
+    exit(0);
+}
+
+static void kbe_profile_pulse(const char *profile)
+{
+    if (access(KBD_PATH "/multi_intensity", F_OK) != 0)
+        return;
+
+    int pr = 0, pg = 0, pb = 0;
+    if (strcmp(profile, "max") == 0) {
+        pr = 255; pg = 0; pb = 0;        /* Red */
+    } else if (strcmp(profile, "cpuperf") == 0) {
+        pr = 255; pg = 110; pb = 0;      /* Orange */
+    } else if (strcmp(profile, "balanced") == 0) {
+        pr = 200; pg = 50; pb = 255;      /* Violet */
+    } else if (strcmp(profile, "powersave") == 0) {
+        pr = 0; pg = 255; pb = 0;        /* Green */
+    } else if (strcmp(profile, "eco") == 0) {
+        pr = 80; pg = 180; pb = 255;     /* Light Blue */
+    } else {
+        return;
+    }
+
+    pid_t old_pid = 0;
+    char running_effect[32] = {0};
+    char resume_effect[32] = {0};
+    int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
+
+    int had_running = kbe_read_state_ex(&old_pid, running_effect, sizeof(running_effect),
+                                        &orig_r, &orig_g, &orig_b, &orig_bri,
+                                        resume_effect, sizeof(resume_effect));
+
+    if (had_running == 0 && (kill(old_pid, 0) == 0 || errno == EPERM)) {
+        if (strcmp(running_effect, "pulse-profile") != 0) {
+            strncpy(resume_effect, running_effect, sizeof(resume_effect) - 1);
+            resume_effect[sizeof(resume_effect) - 1] = '\0';
+        }
+        kill(old_pid, SIGTERM);
+        for (int i = 0; i < 20; i++) {
+            usleep(10000);
+            if (kill(old_pid, 0) != 0 && errno == ESRCH) break;
+        }
+    } else {
+        resume_effect[0] = '\0';
+        if (kbd_get_color(&orig_r, &orig_g, &orig_b) < 0) {
+            orig_r = 255; orig_g = 255; orig_b = 255;
+        }
+        if (kbd_get_raw_brightness(&orig_bri) < 0) {
+            orig_bri = 255;
+        }
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid > 0) return;
+
+    setsid();
+    int null_fd = open("/dev/null", O_RDWR);
+    if (null_fd >= 0) {
+        dup2(null_fd, STDIN_FILENO);
+        dup2(null_fd, STDOUT_FILENO);
+        dup2(null_fd, STDERR_FILENO);
+        if (null_fd > 2) close(null_fd);
+    }
+
+    kbe_profile_pulse_worker(pr, pg, pb, resume_effect, orig_r, orig_g, orig_b, orig_bri);
     exit(0);
 }
 
@@ -3921,7 +4276,10 @@ static int cmd_set(int argc, char **argv)
     }
 
     ec_release_ports();
-    if (rc == 0) printf("Done.\n");
+    if (rc == 0) {
+        kbe_profile_pulse(profile);
+        printf("Done.\n");
+    }
     return rc;
 }
 
@@ -4212,6 +4570,11 @@ static int cmd_kbe(int argc, char **argv)
         if (kbe_is_running(&pid, effect, sizeof(effect), &orig_r, &orig_g, &orig_b, &orig_bri)) {
             printf("Keyboard Backlight Effect:\n");
             printf("  Status:              %s%s%s (active, PID %d)\n", C_GRN, effect, C_RST, (int)pid);
+            if (strcmp(effect, "temp") == 0 || strcmp(effect, "temperature") == 0) {
+                int t = read_cpu_temp();
+                if (t > 0)
+                    printf("  Live CPU Temp:       %s%d°C%s\n", t >= 85 ? C_RED : (t >= 70 ? C_YLW : C_GRN), t, C_RST);
+            }
             printf("  Original Color:      RGB(%d, %d, %d)\n", orig_r, orig_g, orig_b);
             int bri_pct = (orig_bri * 100 + 127) / 255;
             printf("  Original Brightness: %d%% (raw %d)\n\n", bri_pct, orig_bri);
@@ -4226,7 +4589,13 @@ static int cmd_kbe(int argc, char **argv)
             printf("  %-16s %s\n", "flash", "Strobe flash bursts (uses current color)");
             printf("  %-16s %s\n", "flash-cycle", "Strobe flash bursts cycling colors");
             printf("  %-16s %s\n", "candle", "Realistic flickering candle flame");
-            printf("  %-16s %s\n\n", "pulse", "Heartbeat double-pulse (uses current color)");
+            printf("  %-16s %s\n", "pulse", "Heartbeat double-pulse (uses current color)");
+            printf("  %-16s %s\n", "police", "Emergency red and blue alternating strobe");
+            printf("  %-16s %s\n", "fire", "Dynamic warm flickering campfire flames");
+            printf("  %-16s %s\n", "aurora", "Northern Lights emerald, cyan, and violet drift");
+            printf("  %-16s %s\n", "storm", "Dark moody sky with electric lightning strikes");
+            printf("  %-16s %s\n", "starlight", "Midnight sky with twinkling star shimmers");
+            printf("  %-16s %s\n\n", "temp", "Live CPU thermal heatmap (cyan→green→yellow→red)");
             printf("Usage: cctl kbe <effect>  |  cctl kbe stop\n");
         }
         return 0;
@@ -4251,9 +4620,21 @@ static int cmd_kbe(int argc, char **argv)
         strcmp(sub, "flash-cycle") != 0 && strcmp(sub, "flash+colorchange") != 0 &&
         strcmp(sub, "flash_cycle") != 0 && strcmp(sub, "flashcycle") != 0 &&
         strcmp(sub, "candle") != 0 && strcmp(sub, "flicker") != 0 &&
-        strcmp(sub, "pulse") != 0 && strcmp(sub, "heartbeat") != 0) {
+        strcmp(sub, "pulse") != 0 && strcmp(sub, "heartbeat") != 0 &&
+        strcmp(sub, "police") != 0 && strcmp(sub, "siren") != 0 &&
+        strcmp(sub, "cop") != 0 && strcmp(sub, "emergency") != 0 &&
+        strcmp(sub, "fire") != 0 && strcmp(sub, "flame") != 0 &&
+        strcmp(sub, "embers") != 0 && strcmp(sub, "burn") != 0 &&
+        strcmp(sub, "aurora") != 0 && strcmp(sub, "arora") != 0 &&
+        strcmp(sub, "northern-lights") != 0 && strcmp(sub, "borealis") != 0 &&
+        strcmp(sub, "storm") != 0 && strcmp(sub, "lightning") != 0 &&
+        strcmp(sub, "thunder") != 0 &&
+        strcmp(sub, "starlight") != 0 && strcmp(sub, "stars") != 0 &&
+        strcmp(sub, "star") != 0 && strcmp(sub, "twinkle") != 0 &&
+        strcmp(sub, "temp") != 0 && strcmp(sub, "temperature") != 0 &&
+        strcmp(sub, "thermal") != 0 && strcmp(sub, "heatmap") != 0) {
         fprintf(stderr, "Error: Unknown keyboard effect '%s'\n", sub);
-        fprintf(stderr, "Available effects: breathe, breathe-cycle, cycle, flash, flash-cycle, candle, pulse\n");
+        fprintf(stderr, "Available effects: breathe, breathe-cycle, cycle, flash, flash-cycle, candle, pulse, police, fire, aurora, storm, starlight, temp\n");
         return 1;
     }
 

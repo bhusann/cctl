@@ -62,6 +62,15 @@ eco         OFF    powersave    power              15/30W  + GPU 70W            
 > ⚠️ **Safety Notice & Disclaimer**: Safety defaults (running without `--nosafe`) are strongly recommended for daily use to protect your hardware. The `--nosafe` flag is intended strictly for experimenting or one-time use for a specific purpose — **not for daily or regular use**. Overriding safety mechanisms can lead to severe overheating, thermal throttling, or hardware stress; the author is not responsible for any damage or instability caused by using this flag.
 >
 > **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
+>
+> **Profile Change Visual Indicator**: Whenever switching profiles (`cctl set` or `cctl setR`), the keyboard backlight performs a snappy 375ms breathing pulse in the profile's signature color to provide instant visual feedback without blocking the shell, then immediately restores your previous state:
+> * **`max`**: Red (`#ff0000`)
+> * **`cpuperf`**: Orange (`#ff6e00`)
+> * **`balanced`**: Violet (`#c832ff`)
+> * **`powersave`**: Green (`#00ff00`)
+> * **`eco`**: Light Blue (`#50b4ff`)
+>
+> *Non-destructive state handling*: If the keyboard was set to a solid color (or off), it returns to that exact color and brightness. If a background animation was active (such as `fire` or `aurora`), the pulse temporarily overrides it and automatically resumes your animation afterward without losing your original solid state.
 
 ---
 
@@ -71,7 +80,7 @@ eco         OFF    powersave    power              15/30W  + GPU 70W            
 ```bash
 cctl kbc <color>                # Set keyboard color: R G B (0-255), #hex, or preset name
 cctl kbb <pct>                  # Brightness (0-100%)
-cctl kbe [effect]               # Start background keyboard effect (breathe, cycle, flash, candle, pulse)
+cctl kbe <effect>               # Start background keyboard effect
 cctl kbe stop                   # Stop active effect and restore original color & brightness
 cctl kbe                        # Show active effect status or list available effects
 cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/unlock)
@@ -87,6 +96,14 @@ Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime`
 * `flash-cycle` — Strobe flash bursts changing color on each burst
 * `candle` — Realistic flickering candlelight flame
 * `pulse` — Heartbeat double-pulse rhythm (uses current color)
+* `police` — Alternating emergency red & blue strobe bursts
+* `fire` — Dynamic warm campfire flame with turbulent embers
+* `aurora` — Hypnotic Northern Lights emerald, cyan, and violet drift
+* `storm` — Dark moody sky with sudden electric lightning strikes
+* `starlight` — Deep midnight sky with gentle twinkling star shimmers
+* `temp` — Live CPU thermal heatmap (cyan $\to$ green $\to$ yellow $\to$ red, pulses $>90^\circ\text{C}$)
+
+*Manual Status Check*: Run `cctl kbe` or inspect `/run/cctl_kbe.state` in RAM to view the active effect, PID, and preserved base state.
 
 ### Fan Control
 ```bash
