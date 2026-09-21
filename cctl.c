@@ -58,7 +58,40 @@ static void init_colors(void)
  * the result to a variable counts as "used"; the (void) silences the
  * unused-variable warning). */
 static void run_quiet(const char *cmd) { int r = system(cmd); (void)r; }
-static void chown_quiet(const char *path, uid_t uid, gid_t gid) { int r = chown(path, uid, gid); (void)r; }
+
+/* Re-execute the current command with sudo if not already running as root. */
+static void self_elevate(int argc, char **argv)
+{
+    if (geteuid() == 0) return;
+
+    char exe_path[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    const char *bin = argv[0];
+    if (n > 0) {
+        exe_path[n] = '\0';
+        /* If running as installed /usr/local/bin/cctl, use that explicit path
+         * so it matches /etc/sudoers.d/cctl NOPASSWD rule perfectly */
+        if (strcmp(exe_path, "/usr/local/bin/cctl") == 0)
+            bin = "/usr/local/bin/cctl";
+    }
+
+    char **args = malloc((size_t)(argc + 2) * sizeof(char *));
+    if (!args) {
+        fprintf(stderr, "Error: memory allocation failed during self-elevation\n");
+        exit(1);
+    }
+    args[0] = "sudo";
+    args[1] = (char *)bin;
+    for (int i = 1; i < argc; i++) {
+        args[i + 1] = argv[i];
+    }
+    args[argc + 1] = NULL;
+
+    execvp("sudo", args);
+    perror("Error: failed to re-run with sudo");
+    free(args);
+    exit(1);
+}
 
 static int read_cpu_temp(void);
 static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *gpu_rpm, int cached_fd);
@@ -237,17 +270,18 @@ static void mux_show(void)
 {
     int nvram = mux_read();
     if (nvram < 0) {
-        printf("  GPU MUX:   %sN/A (NVRAM variable not found or unrecognized)%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A (NVRAM variable not found or unrecognized)%s\n", "GPU MUX:", C_DIM, C_RST);
         return;
     }
     int running = mux_running_mode();
     const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_MAG;
     if (running >= 0 && nvram != running)
-        printf("  GPU MUX:   %s%s%s  %s← %s pending (reboot to apply)%s\n",
+        printf("  %-14s %s%s%s  %s← %s pending (reboot to apply)%s\n",
+               "GPU MUX:",
                col, mux_mode_str(running), C_RST,
                C_YLW, mux_mode_str(nvram), C_RST);
     else
-        printf("  GPU MUX:   %s%s%s\n", col, mux_mode_str(nvram), C_RST);
+        printf("  %-14s %s%s%s\n", "GPU MUX:", col, mux_mode_str(nvram), C_RST);
 }
 
 /* Toggle the MUX to the opposite mode.  Returns 0 on success, 1 on error. */
@@ -298,6 +332,19 @@ static int mux_switch(void)
     }
 
     int target = (current == MUX_VAL_MSHYBRID) ? MUX_VAL_DGPU : MUX_VAL_MSHYBRID;
+
+    /* Confirmation prompt */
+    printf("Switch GPU MUX mode from %s%s%s to %s%s%s?\n",
+           C_DIM, mux_mode_str(current), C_RST,
+           C_BLD, mux_mode_str(target), C_RST);
+    printf("Are you sure you want to switch to %s? [y/N] ", mux_mode_str(target));
+    fflush(stdout);
+
+    char ans[32] = {0};
+    if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
+        printf("Aborted.\n");
+        return 0;
+    }
 
     /* Clear immutability (kernel re-marks every var immutable on each boot) */
     run_quiet("chattr -i " MUX_VAR_PATH);  /* best-effort; ignore if chattr missing */
@@ -1010,7 +1057,7 @@ static int query_display_info(struct display_info *info)
     strcpy(info->resolution, "2560x1440");
     strcpy(info->current_rate, "60.00");
 
-    FILE *fp = popen("xrandr --query 2>/dev/null", "r");
+    FILE *fp = popen("xrandr --current 2>/dev/null", "r");
     if (!fp) return -1;
 
     char line[512];
@@ -1092,6 +1139,50 @@ static int query_display_info(struct display_info *info)
     }
     pclose(fp);
     return found_output ? 0 : -1;
+}
+
+static int command_exists(const char *cmd)
+{
+    if (strchr(cmd, '/'))
+        return access(cmd, X_OK) == 0;
+
+    const char *path = getenv("PATH");
+    if (!path) path = "/usr/bin:/bin:/usr/local/bin";
+
+    char pbuf[PATH_MAX];
+    strncpy(pbuf, path, sizeof(pbuf) - 1);
+    pbuf[sizeof(pbuf) - 1] = '\0';
+
+    char *dir = strtok(pbuf, ":");
+    while (dir) {
+        char full[PATH_MAX];
+        snprintf(full, sizeof(full), "%s/%s", dir, cmd);
+        if (access(full, X_OK) == 0)
+            return 1;
+        dir = strtok(NULL, ":");
+    }
+    return 0;
+}
+
+/* Fast check: DISPLAY is set and xrandr binary exists in PATH */
+static int has_display_support(void)
+{
+    const char *disp = getenv("DISPLAY");
+    if (!disp || !*disp) return 0;
+    return command_exists("xrandr");
+}
+
+/* Returns 1 if running in an X11 session with xrandr working and an active rate detected. */
+static int is_x11_xrandr_available(struct display_info *out_info)
+{
+    if (!has_display_support()) return 0;
+
+    struct display_info info;
+    if (query_display_info(&info) < 0) return 0;
+    if (info.current_rate[0] == '\0') return 0;
+
+    if (out_info) *out_info = info;
+    return 1;
 }
 
 static int rr_set(const char *rate)
@@ -1201,59 +1292,59 @@ static void show_status(void)
     /* Turbo */
     if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0) {
         int val = atoi(buf);
-        printf("  Turbo:     %s%s%s\n", val == 0 ? C_GRN : C_RED, val == 0 ? "ON" : "OFF", C_RST);
+        printf("  %-14s %s%s%s\n", "Turbo:", val == 0 ? C_GRN : C_RED, val == 0 ? "ON" : "OFF", C_RST);
     } else {
-        printf("  Turbo:     %sN/A (intel_pstate not loaded)%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A (intel_pstate not loaded)%s\n", "Turbo:", C_DIM, C_RST);
     }
 
     /* Governor (read cpu0) */
     if (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", buf, sizeof(buf)) >= 0) {
-        printf("  Governor:  %s%s%s\n", C_CYN, buf, C_RST);
+        printf("  %-14s %s%s%s\n", "Governor:", C_CYN, buf, C_RST);
     } else {
-        printf("  Governor:  %sN/A%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A%s\n", "Governor:", C_DIM, C_RST);
     }
 
     /* EPP (read cpu0) */
     if (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", buf, sizeof(buf)) >= 0) {
-        printf("  EPP:       %s%s%s\n", C_CYN, buf, C_RST);
+        printf("  %-14s %s%s%s\n", "EPP:", C_CYN, buf, C_RST);
     } else {
-        printf("  EPP:       %sN/A%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A%s\n", "EPP:", C_DIM, C_RST);
     }
 
     /* RAPL PL1 */
     long pl1_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", -1);
     if (pl1_uw >= 0) {
-        printf("  RAPL PL1:  %s%ldW%s\n", C_CYN, pl1_uw / 1000000, C_RST);
+        printf("  %-14s %s%ldW%s\n", "RAPL PL1:", C_CYN, pl1_uw / 1000000, C_RST);
     } else {
-        printf("  RAPL PL1:  %sN/A%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A%s\n", "RAPL PL1:", C_DIM, C_RST);
     }
 
     /* RAPL PL2 */
     long pl2_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", -1);
     if (pl2_uw >= 0) {
-        printf("  RAPL PL2:  %s%ldW%s\n", C_CYN, pl2_uw / 1000000, C_RST);
+        printf("  %-14s %s%ldW%s\n", "RAPL PL2:", C_CYN, pl2_uw / 1000000, C_RST);
     } else {
-        printf("  RAPL PL2:  %sN/A%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A%s\n", "RAPL PL2:", C_DIM, C_RST);
     }
 
     /* Webcam */
     int cam = is_webcam_enabled();
     if (cam < 0) {
-        printf("  Webcam:    %sNot detected%s\n", C_DIM, C_RST);
+        printf("  %-14s %sNot detected%s\n", "Webcam:", C_DIM, C_RST);
     } else {
-        printf("  Webcam:    %s%s%s\n", cam ? C_GRN : C_RED, cam ? "ON" : "OFF", C_RST);
+        printf("  %-14s %s%s%s\n", "Webcam:", cam ? C_GRN : C_RED, cam ? "ON" : "OFF", C_RST);
     }
 
     /* Microphone */
     int mic = mic_is_enabled();
-    printf("  Microphone: %s%s%s\n", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
+    printf("  %-14s %s%s%s\n", "Microphone:", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
 
     /* Fn Lock */
     if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
         int val = atoi(buf);
-        printf("  Fn Lock:   %s%s%s\n", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
+        printf("  %-14s %s%s%s\n", "Fn Lock:", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
     } else {
-        printf("  Fn Lock:   %sN/A (tuxedo_keyboard not loaded)%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A (tuxedo_keyboard not loaded)%s\n", "Fn Lock:", C_DIM, C_RST);
     }
 
     /* Battery */
@@ -1270,7 +1361,7 @@ static void show_status(void)
         int bat_start = bat_read_start();
         int bat_end   = bat_read_end();
 
-        printf("  Battery:     %ld%% %s", cap, bat_status);
+        printf("  %-14s %ld%% %s", "Battery:", cap, bat_status);
         if (bat_start > 0 && bat_end > 0)
             printf("  [threshold: %d%%→%d%%]", bat_start, bat_end);
         printf("\n");
@@ -1278,32 +1369,39 @@ static void show_status(void)
         if (full > 0 && full_dsn > 0) {
             int health = (int)((full * 100L) / full_dsn);
             const char *hcol = health > 100 ? C_GRN : (health < 80 ? C_RED : C_YLW);
-            printf("  Health:      %s%d%%%s (%ld / %ld mAh)\n", hcol, health, C_RST,
+            printf("  %-14s %s%d%%%s (%ld / %ld mAh)\n", "Health:", hcol, health, C_RST,
                    full / 1000, full_dsn / 1000);
         }
         if (cycles > 0)
-            printf("  Cycles:     %s%ld%s\n", C_CYN, cycles, C_RST);
+            printf("  %-14s %s%ld%s\n", "Cycles:", C_CYN, cycles, C_RST);
         if (now > 0)
-            printf("  Charge:     %ld mAh / %ld mAh\n", now / 1000, full / 1000);
+            printf("  %-14s %ld mAh / %ld mAh\n", "Charge:", now / 1000, full / 1000);
         if (current != 0) {
             long ma = current / 1000; /* microamps → milliamps */
-            printf("  Rate:       %s%+ld mA%s\n", current > 0 ? C_RED : C_GRN, ma, C_RST);
+            printf("  %-14s %s%+ld mA%s\n", "Rate:", current > 0 ? C_RED : C_GRN, ma, C_RST);
         }
         if (volt > 0)
-            printf("  Voltage:    %ld mV\n", volt / 1000);
+            printf("  %-14s %ld mV\n", "Voltage:", volt / 1000);
     }
 
     /* Nvidia GPU */
 #ifdef CCTL_NVIDIA
     int nv_blacklisted = nvidia_is_blacklisted();
     int nv_loaded = nvidia_is_loaded();
-    printf("  Nvidia GPU: %s%s%s (modules %s%s%s)\n",
+    printf("  %-14s %s%s%s (modules %s%s%s)\n",
+           "Nvidia GPU:",
            nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
            nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
 #endif
 
     /* GPU MUX */
     mux_show();
+
+    /* Refresh Rate (only shown if xrandr is present) */
+    struct display_info disp_info;
+    if (is_x11_xrandr_available(&disp_info)) {
+        printf("  %-14s %s%s Hz%s\n", "Refresh Rate:", C_CYN, disp_info.current_rate, C_RST);
+    }
 
     /* CPU Max Frequency (P-core vs E-core) */
     printf("\n%s--- CPU Max Frequency ---%s\n", C_YLW, C_RST);
@@ -1330,23 +1428,23 @@ static void show_status(void)
         closedir(d);
     }
     if (p_max > 0)
-        printf("  P-Core:    %s%d MHz%s\n", C_CYN, p_max, C_RST);
+        printf("  %-14s %s%d MHz%s\n", "P-Core:", C_CYN, p_max, C_RST);
     else
-        printf("  P-Core:    %sN/A%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A%s\n", "P-Core:", C_DIM, C_RST);
     if (e_max > 0)
-        printf("  E-Core:    %s%d MHz%s\n", C_CYN, e_max, C_RST);
+        printf("  %-14s %s%d MHz%s\n", "E-Core:", C_CYN, e_max, C_RST);
     else
-        printf("  E-Core:    %sN/A%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A%s\n", "E-Core:", C_DIM, C_RST);
 
     /* Fan Telemetry */
     int cpu_pct = 0, gpu_pct = 0, cpu_rpm = 0, gpu_rpm = 0;
     if (read_fan_telemetry(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm) == 0) {
         printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
-        printf("  CPU Fan:   %s%3d%%%s duty, %s%4d RPM%s\n", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
-        printf("  GPU Fan:   %s%3d%%%s duty, %s%4d RPM%s\n", C_CYN, gpu_pct, C_RST, C_CYN, gpu_rpm, C_RST);
+        printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n", "CPU Fan:", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
+        printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n", "GPU Fan:", C_CYN, gpu_pct, C_RST, C_CYN, gpu_rpm, C_RST);
     } else {
         printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
-        printf("  Fans:      %sN/A (ec_sys or tuxedo_io not available)%s\n", C_DIM, C_RST);
+        printf("  %-14s %sN/A (ec_sys or tuxedo_io not available)%s\n", "Fans:", C_DIM, C_RST);
     }
 
     printf("\n");
@@ -2118,11 +2216,13 @@ static void print_usage(const char *prog)
     printf("    %snvidia%s memclock <min,max> | reset  Lock/unlock memory clocks %s(auto persistence)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Display ────────────────────────────────────────────────────────── */
-    printf("  %sDISPLAY%s %s(only X11 session is supported, needs xrandr)%s\n", C_BLU, C_RST, C_DIM, C_RST);
-    printf("    %srr%s    [rate]             List/set refresh rate %s(1=high, 2=low)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sscale%s <value>            GPU-side scaling\n", C_BLD, C_RST);
-    printf("      %sfactor: 0.01-1.0 (e.g. 0.5=half, 0.75=1080p on 1440p)%s\n", C_DIM, C_RST);
-    printf("      %sresolution: WxH (e.g. 1920x1080)  |  off/reset: back to native%s\n\n", C_DIM, C_RST);
+    if (has_display_support()) {
+        printf("  %sDISPLAY%s %s(only X11 session is supported, needs xrandr)%s\n", C_BLU, C_RST, C_DIM, C_RST);
+        printf("    %srr%s    [rate]             List/set refresh rate %s(1=high, 2=low)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+        printf("    %sscale%s <value>            GPU-side scaling\n", C_BLD, C_RST);
+        printf("      %sfactor: 0.01-1.0 (e.g. 0.5=half, 0.75=1080p on 1440p)%s\n", C_DIM, C_RST);
+        printf("      %sresolution: WxH (e.g. 1920x1080)  |  off/reset: back to native%s\n\n", C_DIM, C_RST);
+    }
 
     /* ── GPU MUX ───────────────────────────────────────────────────────── */
     printf("  %sGPU MUX%s %s(UEFI NVRAM, reboot required to apply)%s\n", C_MAG, C_RST, C_DIM, C_RST);
@@ -2152,7 +2252,7 @@ static void print_usage(const char *prog)
                C_YLW, C_RST, C_BLD, prog, C_RST);
         printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
         printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
-        printf("    • Shell alias — %scctl%s runs as %ssudo cctl%s automatically\n\n", C_CYN, C_RST, C_CYN, C_RST);
+        printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
     }
 
     printf("  %sv2.8%s\n", C_DIM, C_RST);
@@ -3044,8 +3144,7 @@ static int cmd_nvidia(int argc, char **argv)
 
     /* All other actions need root */
     if (geteuid() != 0) {
-        fprintf(stderr, "Error: Must run as root (sudo %s nvidia %s)\n", argv[0], action);
-        return 1;
+        self_elevate(argc, argv);
     }
 
 #ifdef CCTL_NVIDIA
@@ -3640,10 +3739,8 @@ static int cmd_bat(int argc, char **argv)
 
     /* "max", "off", or "default" → widest range (charge to max) */
     if (strcmp(argv[2], "max") == 0 || strcmp(argv[2], "off") == 0 || strcmp(argv[2], "default") == 0) {
-        if (geteuid() != 0) {
-            fprintf(stderr, "Error: Must run as root (sudo %s bat max)\n", argv[0]);
-            return 1;
-        }
+        if (geteuid() != 0)
+            self_elevate(argc, argv);
         int rc = bat_set(0, 0);
         if (rc == 0) printf("Done.\n");
         return rc;
@@ -3654,10 +3751,8 @@ static int cmd_bat(int argc, char **argv)
         fprintf(stderr, "Error: Usage: bat <start> <end> or bat max\n");
         return 1;
     }
-    if (geteuid() != 0) {
-        fprintf(stderr, "Error: Must run as root (sudo %s bat %s %s)\n", argv[0], argv[2], argv[3]);
-        return 1;
-    }
+    if (geteuid() != 0)
+        self_elevate(argc, argv);
     int start, end;
     if (safe_atoi(argv[2], &start) < 0 || safe_atoi(argv[3], &end) < 0) {
         fprintf(stderr, "Error: Invalid threshold values\n");
@@ -3668,85 +3763,23 @@ static int cmd_bat(int argc, char **argv)
     return rc;
 }
 
-/* Append a 'cctl' -> 'sudo cctl' alias to the user's shell rc file.
- * Shell is taken from the user's passwd entry (not $SHELL, which would be
- * root's under sudo). Skips if the alias is already present. */
-static void add_shell_alias(const char *user)
-{
-    struct passwd *pw = getpwnam(user);
-    if (!pw) {
-        fprintf(stderr, "Warning: cannot lookup user '%s' — skipping shell alias\n", user);
-        return;
-    }
-    const char *home  = pw->pw_dir  ? pw->pw_dir  : getenv("HOME");
-    const char *shell = pw->pw_shell ? pw->pw_shell : getenv("SHELL");
-    if (!home || !shell) return;
-
-    const char *sh = strrchr(shell, '/');
-    sh = sh ? sh + 1 : shell;
-
-    char rc[PATH_MAX];
-    const char *alias_line = "alias cctl='sudo cctl'\n";
-
-    if (strcmp(sh, "fish") == 0) {
-        snprintf(rc, sizeof(rc), "%s/.config/fish/config.fish", home);
-        char d[PATH_MAX];
-        snprintf(d, sizeof(d), "%s/.config/fish", home);
-        if (access(d, F_OK) != 0) {
-            mkdir(d, 0700);
-            chown_quiet(d, pw->pw_uid, pw->pw_gid);
-        }
-    } else if (strcmp(sh, "zsh") == 0) {
-        snprintf(rc, sizeof(rc), "%s/.zshrc", home);
-    } else if (strcmp(sh, "bash") == 0) {
-        snprintf(rc, sizeof(rc), "%s/.bashrc", home);
-    } else {
-        /* sh/dash/unknown — fall back to .bashrc */
-        snprintf(rc, sizeof(rc), "%s/.bashrc", home);
-    }
-
-    /* Skip if alias already present */
-    FILE *fp = fopen(rc, "r");
-    int found = 0;
-    if (fp) {
-        char line[256];
-        while (fgets(line, sizeof(line), fp)) {
-            if (strstr(line, "alias cctl=")) { found = 1; break; }
-        }
-        fclose(fp);
-    }
-    if (found) {
-        printf("Alias:    already present in %s\n", rc);
-        return;
-    }
-
-    fp = fopen(rc, "a");
-    if (!fp) {
-        perror("Warning: cannot write shell rc file");
-        return;
-    }
-    fputs(alias_line, fp);
-    fclose(fp);
-
-    /* If we created a new fish config, give it back to the user */
-    if (strcmp(sh, "fish") == 0)
-        chown_quiet(rc, pw->pw_uid, pw->pw_gid);
-
-    printf("Alias:    added 'cctl' → 'sudo cctl' to %s (%s)\n", rc, sh);
-}
-
 static int cmd_install(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-
     /* main() already verified EUID==0 (needs_root). */
     char src[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", src, sizeof(src) - 1);
-    if (n <= 0) {
-        perror("Error: cannot determine running binary path");
-        return 1;
+    if (argc >= 3 && access(argv[2], R_OK) == 0) {
+        if (!realpath(argv[2], src)) {
+            strncpy(src, argv[2], sizeof(src) - 1);
+            src[sizeof(src) - 1] = '\0';
+        }
+    } else {
+        ssize_t n = readlink("/proc/self/exe", src, sizeof(src) - 1);
+        if (n <= 0) {
+            perror("Error: cannot determine running binary path");
+            return 1;
+        }
+        src[n] = '\0';
     }
-    src[n] = '\0';
 
     printf("Installing cctl...\n");
 
@@ -3778,11 +3811,8 @@ static int cmd_install(int argc, char **argv)
     chmod(sudoers, 0440);
     printf("Sudoers:  %s (passwordless sudo for %s)\n", sudoers, user);
 
-    /* Add a 'cctl' -> 'sudo cctl' alias in the user's shell rc */
-    add_shell_alias(user);
-
-    printf("\nDone. cctl is now on your PATH and 'sudo cctl <cmd>' won't ask for a password.\n");
-    printf("Restart your terminal (or open a new shell) for the PATH and alias to take effect.\n");
+    printf("\nDone. cctl is installed to /usr/local/bin/cctl and configured with passwordless sudo.\n");
+    printf("Privileged commands will auto-elevate seamlessly without needing any shell alias.\n");
     return 0;
 }
 
@@ -3897,8 +3927,11 @@ static int cmd_drivers_install(int argc, char **argv)
 
 static int cmd_mux(int argc, char **argv)
 {
-    if (argc >= 3 && strcmp(argv[2], "switch") == 0)
+    if (argc >= 3 && strcmp(argv[2], "switch") == 0) {
+        if (geteuid() != 0)
+            self_elevate(argc, argv);
         return mux_switch();
+    }
 
     /* 'cctl mux' with no subcommand — show current mode + pending */
     int nvram = mux_read();
@@ -3924,7 +3957,7 @@ struct command {
 };
 
 static const struct command commands[] = {
-    { "status",  0, cmd_status },
+    { "status",  1, cmd_status },
     { "rr",      0, cmd_rr },
     { "scale",   0, cmd_scale },
     { "mic",     0, cmd_mic },
@@ -3997,8 +4030,7 @@ int main(int argc, char **argv)
         if (strcmp(commands[i].name, argv[1]) == 0) {
             cmd_found = 1;
             if (commands[i].needs_root && geteuid() != 0) {
-                fprintf(stderr, "Error: Must run as root (sudo %s ...)\n", argv[0]);
-                return 1;
+                self_elevate(argc, argv);
             }
             rc = commands[i].handler(argc, argv);
             break;

@@ -27,15 +27,15 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
 Pre-built binaries and driver sources are available on the [Releases](https://github.com/bhusann/cctl/releases) page.
 
 ```bash
-# 1. Install cctl system-wide (adds to PATH, sets up passwordless sudo + shell alias)
+# 1. Install cctl system-wide (installs to /usr/local/bin, sets up passwordless sudo & auto-elevation)
 sudo ./cctl install
 
 # 2. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery)
 sudo ./cctl drivers-install
 
-# 3. Restart terminal, then use:
-cctl set balanced          # apply a power profile
-cctl fan auto              # set fans to automatic
+# 3. Ready to use immediately (privileged commands auto-elevate seamlessly, no manual sudo or aliases needed):
+cctl set balanced          # apply a power profile (auto-elevates via sudo)
+cctl fan auto              # set fans to automatic (auto-elevates via sudo)
 cctl status                # view all current settings
 ```
 
@@ -56,7 +56,7 @@ powersave   OFF    powersave    balance_power      15/30W  + GPU 70W            
 eco         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W
 ```
 
-> **Safety Defaults**: Setting `max`, `cpuperf`, or `balanced` automatically switches fans to **`AUTO`** first to protect hardware if fans were previously locked to silent. Pass `--nosafe` (e.g. `cctl set max --nosafe`) to bypass fan changes.
+> **Note on Fan Safety Defaults & Hardware Protection**: The Clevo Embedded Controller (EC) prioritizes manual fan modes over automatic thermal curves. If fans were previously set to `silent`, the EC keeps fan speeds strictly suppressed even when CPU and GPU temperatures spike under heavy load. Applying high-performance profiles (`max` at 90W CPU / 100W GPU, `cpuperf`, or `balanced`) or enabling `turbo on` while the cooling fans remain locked to silent will quickly lead to dangerous overheating, severe thermal throttling, and potential hardware stress. To ensure hardware safety, `cctl` automatically resets both fans to **`AUTO`** before activating these high-TDP profiles or enabling turbo boost. If you explicitly want to bypass this protection and keep your current fan state, pass the `--nosafe` flag (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`).
 >
 > **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
 
@@ -128,7 +128,7 @@ cctl nvidia status                      # Telemetry, loaded modules, active GPU 
 > ⚠️ **`nvidia off`** permanently blacklists the driver and rebuilds initramfs. Use `nvidia unload` for session-only GPU power off.
 
 ### Display
-> **Note:** Display commands rely on `xrandr` and are only supported on native **X11** sessions. They are **not** supported under Wayland or XWayland.
+> **Note:** Display commands rely on `xrandr` and are only supported on native **X11** sessions. They are **not** supported under Wayland or XWayland. `cctl` automatically checks for an active X11 session with `xrandr`: if not present, the `DISPLAY` section is hidden from `cctl --help` and the refresh rate is omitted from `cctl status`.
 >
 > Displays only support their specific predefined hardware/EDID refresh rates — arbitrary in-between refresh rates cannot be set. Run `cctl rr` without arguments to list all available/supported refresh rates for your screen, and choose only from those listed.
 
