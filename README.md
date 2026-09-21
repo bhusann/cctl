@@ -43,21 +43,23 @@ cctl status                # view all current settings
 
 ## Power Profiles
 
-`set <profile> [--nosafe]` applies a preset (changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults).
+`set <profile> [--nosafe]` applies preset (EC defaults + table values below).
 
-`setR <profile> [--nosafe]` applies a preset + custom pre-configured CPU TDP change (changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL).
+`setR <profile> [--nosafe]` applies preset (EC defaults + preconfigured CPU TDP override).
 
 ```
 Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)
 ─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────
 max         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W
-cpuperf     ON     performance  performance        45/115W + GPU 70W               PL2 70W
+cpuperf     ON     performance  performance        45/115W + GPU 70W               (no RAPL change)
 balanced    ON     powersave    balance_performance 45/115W + GPU 70W              PL1 35 / PL2 40W
 powersave   OFF    powersave    balance_power      15/30W  + GPU 70W               (no RAPL change)
 eco         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W
 ```
 
-> **Fan Safety Defaults**: If fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat. To prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass this and keep your current fan state.
+> **Fan Safety Defaults & Safety Disclaimer**: If fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat. To prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass this and keep your current fan state. Setting manual fan duty (`cctl fan <pct> --nosafe` or `cctl fan cpu|gpu <pct> --nosafe`) strictly requires `--nosafe`.
+>
+> ⚠️ **Safety Notice & Disclaimer**: Safety defaults (running without `--nosafe`) are strongly recommended for daily use to protect your hardware. The `--nosafe` flag is intended strictly for experimenting or one-time use for a specific purpose — **not for daily or regular use**. Overriding safety mechanisms can lead to severe overheating, thermal throttling, or hardware stress; the author is not responsible for any damage or instability caused by using this flag.
 >
 > **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
 
@@ -69,18 +71,40 @@ eco         OFF    powersave    power              15/30W  + GPU 70W            
 ```bash
 cctl kbc <color>                # Set keyboard color: R G B (0-255), #hex, or preset name
 cctl kbb <pct>                  # Brightness (0-100%)
+cctl kbe [effect]               # Start background keyboard effect (breathe, cycle, flash, candle, pulse)
+cctl kbe stop                   # Stop active effect and restore original color & brightness
+cctl kbe                        # Show active effect status or list available effects
 cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/unlock)
 ```
 
 Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
 
+**Keyboard Effects (`kbe`)**: Runs background animations on single-zone RGB keyboards without holding the terminal. Before starting, it records your current keyboard color and brightness; when stopped (`cctl kbe stop`), it restores the keyboard to that exact original state. Single-color effects automatically use your current keyboard color:
+* `breathe` — Smooth fade in/out breathing (uses current color)
+* `breathe-cycle` — Smooth breathing while cycling through the spectrum
+* `cycle` — Smooth continuous rainbow color cycle
+* `flash` — Strobe flash bursts (uses current color)
+* `flash-cycle` — Strobe flash bursts changing color on each burst
+* `candle` — Realistic flickering candlelight flame
+* `pulse` — Heartbeat double-pulse rhythm (uses current color)
+
 ### Fan Control
 ```bash
 cctl fan auto|max               # Both fans: EC automatic / 100% full speed
 cctl fan silent [--nosafe]      # Quiet mode (forces eco profile first; bypass with --nosafe)
-cctl fan <pct>                  # Set both fans to duty cycle (21-100%)
-cctl fan cpu|gpu <pct>          # Set individual fan duty
+cctl fan <pct> --nosafe         # Set both fans to duty cycle (21-100%, requires --nosafe)
+cctl fan cpu|gpu <pct> --nosafe # Set individual fan duty (requires --nosafe)
 ```
+
+### GPU MUX Switching
+Toggle the internal display hardware multiplexer between **MSHybrid** (panel driven by iGPU, both GPUs enumerated) and **dGPU** (panel driven directly by NVIDIA discrete GPU, iGPU removed from PCI display class).
+
+```bash
+cctl mux                        # Show current MUX mode (MSHybrid / dGPU) & pending status
+cctl mux switch                 # Toggle MUX mode (stages in UEFI NVRAM, reboot to apply)
+```
+
+> **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
 
 ### Privacy
 ```bash
@@ -100,16 +124,6 @@ cctl bat max                    # Standard mode (change to max - 100%)
 cctl status                     # Print all current settings (profiles, GPU MUX, telemetry)
 cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
 ```
-
-### GPU MUX Switching
-Toggle the internal display hardware multiplexer between **MSHybrid** (panel driven by iGPU, both GPUs enumerated) and **dGPU** (panel driven directly by NVIDIA discrete GPU, iGPU removed from PCI display class).
-
-```bash
-cctl mux                        # Show current MUX mode (MSHybrid / dGPU) & pending status
-cctl mux switch                 # Toggle MUX mode (stages in UEFI NVRAM, reboot to apply)
-```
-
-> **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
 
 ### NVIDIA GPU
 ```bash
@@ -174,6 +188,59 @@ Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
 | `eopkg` | Solus | — |
 
 > **Immutable / Atomic OS note:** Atomic and immutable editions of Fedora (Silverblue, Kinoite, Atomic Desktops, Bazzite, etc. using `rpm-ostree`) are **not supported** because the root filesystem is read-only and DKMS modules cannot persist across image updates. Only standard, non-atomic Fedora (Workstation, KDE Spin, etc. using regular `dnf`) is supported. On unrecognized distros, the installer points to the driver source at `drivers/` for manual installation.
+
+---
+
+## Uninstallation
+
+### 1. Remove `cctl` Binary & Sudoers Entry
+`cctl install` places the binary in `/usr/local/bin/cctl` and configures a passwordless sudo rule in `/etc/sudoers.d/cctl` for auto-elevation. To remove both:
+
+```bash
+# Remove installed binary
+sudo rm -f /usr/local/bin/cctl
+
+# Remove passwordless sudo rule
+sudo rm -f /etc/sudoers.d/cctl
+```
+
+### 2. Remove Kernel Drivers
+
+#### Method A: Automated (Recommended)
+Use the driver installation script to cleanly unload modules and deregister DKMS:
+
+```bash
+sudo ./drivers/driverinstall.sh --uninstall
+# or if cctl is still installed:
+sudo cctl drivers-install   # select the uninstall option
+```
+
+#### Method B: Manual Uninstallation
+To remove the driver stack manually without using the script:
+
+1. **Unload active kernel modules** (in reverse dependency order):
+   ```bash
+   sudo modprobe -r clevo_acpi
+   sudo modprobe -r tuxedo_io
+   sudo modprobe -r tuxedo_keyboard
+   ```
+
+2. **Unregister and remove DKMS module**:
+   ```bash
+   sudo dkms remove tuxedo-drivers/1.0 --all
+   sudo rm -rf /var/lib/dkms/tuxedo-drivers
+   ```
+
+3. **Remove driver source files and modprobe options**:
+   ```bash
+   sudo rm -rf /usr/src/tuxedo-drivers-1.0
+   sudo rm -f /etc/modprobe.d/tuxedo_keyboard.conf
+   ```
+
+4. **Update module dependency cache**:
+   ```bash
+   sudo depmod -a
+   ```
 
 ---
 

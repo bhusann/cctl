@@ -2,6 +2,9 @@
 cctl
 cctl-nvidia
 experimental
+testpuremodes
+setup_test_sudoers.sh
+remove_test_sudoers.sh
 legacygpu.ko
 *.o
 

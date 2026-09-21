@@ -31,14 +31,16 @@
 #include <limits.h>
 #include <pwd.h>
 #include <sys/types.h>
+#include <signal.h>
+#include <sys/file.h>
 
-#define CCTL_VERSION      "2.8"
+#define CCTL_VERSION      "3.0"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
-#define CCTL_MICROVERSION 100003
+#define CCTL_MICROVERSION 100004
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -735,7 +737,7 @@ static int fan_set_duty(int fan_idx, int percent)
  *
  * cpuperf (perf_cpu):
  *   GPU=3(turbo), turbo=ON, governor=performance, EPP=performance,
- *   display=auto, RAPL PL2=70W
+ *   display=auto (no RAPL change)
  *
  * balanced:
  *   GPU=3(turbo), turbo=ON, governor=powersave, EPP=balance_performance,
@@ -743,11 +745,15 @@ static int fan_set_duty(int fan_idx, int percent)
  *
  * powersave:
  *   GPU=1(quiet), turbo=OFF, governor=powersave, EPP=balance_power,
- *   display=40Hz
+ *   display=auto, OEM defaults (PL1=15W, PL2=30W, GPU 70W)
  *
- * eco (powersave_ultra):
- *   GPU=0(quiet), turbo=OFF, governor=powersave, EPP=power,
- *   display=40Hz, RAPL PL1=9W PL2=10W
+ * eco:
+ *   GPU=0(silent), turbo=OFF, governor=powersave, EPP=power,
+ *   display=auto, RAPL PL1=9W PL2=10W
+ *
+ * Fan behavior note:
+ *   max, cpuperf, and balanced automatically switch fans to AUTO unless
+ *   --nosafe is passed, preventing silent fan lock from causing thermal throttling.
  */
 
 static int profile_max(int with_rapl)
@@ -763,12 +769,12 @@ static int profile_max(int with_rapl)
 
 static int profile_cpuperf(int with_rapl)
 {
+    (void)with_rapl;
     printf("Applying: Performance CPU Only\n");
     set_gpu_profile(3);
     set_turbo(1);
     set_governor("performance");
     set_epp("performance");
-    if (with_rapl) set_rapl_limits(-1, 70);
     return 0;
 }
 
@@ -1761,6 +1767,433 @@ static void kbd_show_presets(void)
 }
 
 /* ========================================================================
+ * KEYBOARD EFFECTS (kbe)
+ * ======================================================================== */
+
+#define KBE_LOCK_PATH   "/run/cctl_kbe.lock"
+#define KBE_STATE_PATH  "/run/cctl_kbe.state"
+
+static volatile sig_atomic_t g_kbe_running = 1;
+
+static void kbe_sig_handler(int sig)
+{
+    (void)sig;
+    g_kbe_running = 0;
+}
+
+static const uint8_t kbe_breathe_lut[128] = {
+      8,   8,   8,   8,   8,   8,   8,   8,   8,   9,   9,   9,  10,  10,  11,  12,
+     13,  15,  16,  18,  20,  23,  25,  28,  32,  35,  39,  43,  48,  53,  58,  64,
+     70,  76,  82,  89,  96, 103, 111, 118, 126, 134, 142, 150, 157, 165, 173, 181,
+    188, 195, 202, 209, 215, 221, 227, 232, 237, 241, 244, 248, 250, 252, 254, 255,
+    255, 255, 254, 252, 250, 248, 244, 241, 237, 232, 227, 221, 215, 209, 202, 195,
+    188, 181, 173, 165, 157, 150, 142, 134, 126, 118, 111, 103,  96,  89,  82,  76,
+     70,  64,  58,  53,  48,  43,  39,  35,  32,  28,  25,  23,  20,  18,  16,  15,
+     13,  12,  11,  10,  10,   9,   9,   9,   8,   8,   8,   8,   8,   8,   8,   8
+};
+
+static void kbe_sleep_ms(int ms)
+{
+    while (ms > 0 && g_kbe_running) {
+        int chunk = ms > 25 ? 25 : ms;
+        usleep((useconds_t)chunk * 1000);
+        ms -= chunk;
+    }
+}
+
+static void kbe_hue_to_rgb(int hue, int brightness, int *r, int *g, int *b)
+{
+    hue = ((hue % 360) + 360) % 360;
+    int sector = hue / 60;
+    int rem = hue % 60;
+    int inc = (rem * 255) / 60;
+    int dec = 255 - inc;
+    int r1 = 0, g1 = 0, b1 = 0;
+
+    switch (sector) {
+        case 0: r1 = 255; g1 = inc; b1 = 0;   break;
+        case 1: r1 = dec; g1 = 255; b1 = 0;   break;
+        case 2: r1 = 0;   g1 = 255; b1 = inc; break;
+        case 3: r1 = 0;   g1 = dec; b1 = 255; break;
+        case 4: r1 = inc; g1 = 0;   b1 = 255; break;
+        default: r1 = 255; g1 = 0;  b1 = dec; break;
+    }
+
+    if (brightness < 255) {
+        if (brightness < 0) brightness = 0;
+        r1 = (r1 * brightness) / 255;
+        g1 = (g1 * brightness) / 255;
+        b1 = (b1 * brightness) / 255;
+    }
+
+    *r = r1;
+    *g = g1;
+    *b = b1;
+}
+
+static inline void kbe_write_frame(int fd_col, int r, int g, int b)
+{
+    if (fd_col < 0) return;
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%d %d %d", r, g, b);
+    if (len > 0) {
+        lseek(fd_col, 0, SEEK_SET);
+        ssize_t w = write(fd_col, buf, (size_t)len);
+        (void)w;
+    }
+}
+
+static inline void kbe_write_bri(int fd_bri, int bri)
+{
+    if (fd_bri < 0) return;
+    char buf[16];
+    int len = snprintf(buf, sizeof(buf), "%d", bri);
+    if (len > 0) {
+        lseek(fd_bri, 0, SEEK_SET);
+        ssize_t w = write(fd_bri, buf, (size_t)len);
+        (void)w;
+    }
+}
+
+static int kbd_get_color(int *r, int *g, int *b)
+{
+    char buf[64];
+    if (read_sysfs_str(KBD_PATH "/multi_intensity", buf, sizeof(buf)) < 0)
+        return -1;
+    if (sscanf(buf, "%d %d %d", r, g, b) != 3)
+        return -1;
+    return 0;
+}
+
+static int kbd_get_raw_brightness(int *bri)
+{
+    long val = read_sysfs_long(KBD_PATH "/brightness", -1);
+    if (val < 0) return -1;
+    *bri = (int)val;
+    return 0;
+}
+
+static int kbe_read_state(pid_t *pid, char *effect, size_t effect_sz, int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
+{
+    FILE *fp = fopen(KBE_STATE_PATH, "r");
+    if (!fp) return -1;
+    char line[128];
+    long p = -1;
+    if (!fgets(line, sizeof(line), fp) || sscanf(line, "%ld", &p) != 1 || p <= 1) {
+        fclose(fp);
+        return -1;
+    }
+    if (pid) *pid = (pid_t)p;
+    if (!fgets(line, sizeof(line), fp)) {
+        fclose(fp);
+        return -1;
+    }
+    for (char *c = line; *c; c++) {
+        if (*c == '\n' || *c == '\r') *c = '\0';
+    }
+    if (effect && effect_sz > 0) {
+        strncpy(effect, line, effect_sz - 1);
+        effect[effect_sz - 1] = '\0';
+    }
+    if (fgets(line, sizeof(line), fp)) {
+        int r = 255, g = 255, b = 255, bri = 255;
+        if (sscanf(line, "%d %d %d %d", &r, &g, &b, &bri) >= 3) {
+            if (orig_r) *orig_r = r;
+            if (orig_g) *orig_g = g;
+            if (orig_b) *orig_b = b;
+            if (orig_bri) *orig_bri = bri;
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz, int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
+{
+    pid_t p = 0;
+    if (kbe_read_state(&p, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri) < 0)
+        return 0;
+    if (kill(p, 0) == 0 || errno == EPERM) {
+        if (pid) *pid = p;
+        return 1;
+    }
+    if (errno == ESRCH && geteuid() == 0) {
+        unlink(KBE_STATE_PATH);
+    }
+    return 0;
+}
+
+static int kbe_stop(int quiet)
+{
+    pid_t pid = 0;
+    char effect[32] = {0};
+    int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
+
+    if (!kbe_is_running(&pid, effect, sizeof(effect), &orig_r, &orig_g, &orig_b, &orig_bri)) {
+        if (!quiet)
+            printf("No active keyboard effect is currently running.\n");
+        return 0;
+    }
+
+    kill(pid, SIGTERM);
+
+    int exited = 0;
+    for (int i = 0; i < 30; i++) {
+        usleep(20000);
+        if (kill(pid, 0) != 0 && errno == ESRCH) {
+            exited = 1;
+            break;
+        }
+    }
+
+    if (!exited) {
+        kill(pid, SIGKILL);
+        usleep(20000);
+    }
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d %d %d", orig_r, orig_g, orig_b);
+    write_sysfs(KBD_PATH "/multi_intensity", buf);
+    snprintf(buf, sizeof(buf), "%d", orig_bri);
+    write_sysfs(KBD_PATH "/brightness", buf);
+
+    unlink(KBE_STATE_PATH);
+    unlink(KBE_LOCK_PATH);
+
+    if (!quiet)
+        printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", effect, (int)pid);
+
+    return 0;
+}
+
+static int kbe_candle_step(int *flicker_val)
+{
+    int target = 160 + (rand() % 95);
+    if ((rand() % 15) == 0)
+        target = 90;
+    *flicker_val = (*flicker_val * 6 + target * 4) / 10;
+    return *flicker_val;
+}
+
+static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int orig_b, int orig_bri)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = kbe_sig_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+
+    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0644);
+    if (lock_fd < 0) exit(1);
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+        close(lock_fd);
+        exit(1);
+    }
+
+    FILE *fp = fopen(KBE_STATE_PATH, "w");
+    if (!fp) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        exit(1);
+    }
+    fprintf(fp, "%d\n%s\n%d %d %d %d\n", (int)getpid(), effect, orig_r, orig_g, orig_b, orig_bri);
+    fclose(fp);
+    chmod(KBE_STATE_PATH, 0644);
+
+    int fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
+    int fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
+
+    if (orig_bri <= 0) {
+        kbe_write_bri(fd_bri, 255);
+    }
+
+    int base_r = orig_r;
+    int base_g = orig_g;
+    int base_b = orig_b;
+    if (base_r == 0 && base_g == 0 && base_b == 0) {
+        base_r = 0;
+        base_g = 255;
+        base_b = 255;
+    }
+
+    int mode = 0;
+    if (strcmp(effect, "breathe") == 0 || strcmp(effect, "breath") == 0) {
+        mode = 1;
+    } else if (strcmp(effect, "breathe-cycle") == 0 || strcmp(effect, "breathe+colorchange") == 0 ||
+               strcmp(effect, "breathe_cycle") == 0 || strcmp(effect, "breathecycle") == 0) {
+        mode = 2;
+    } else if (strcmp(effect, "cycle") == 0 || strcmp(effect, "rainbow") == 0 ||
+               strcmp(effect, "spectrum") == 0 || strcmp(effect, "slow-cycle") == 0 ||
+               strcmp(effect, "slow_colorchanging") == 0) {
+        mode = 3;
+    } else if (strcmp(effect, "flash") == 0 || strcmp(effect, "strobe") == 0) {
+        mode = 4;
+    } else if (strcmp(effect, "flash-cycle") == 0 || strcmp(effect, "flash+colorchange") == 0 ||
+               strcmp(effect, "flash_cycle") == 0 || strcmp(effect, "flashcycle") == 0) {
+        mode = 5;
+    } else if (strcmp(effect, "candle") == 0 || strcmp(effect, "flicker") == 0) {
+        mode = 6;
+        if (orig_r == 255 && orig_g == 255 && orig_b == 255) {
+            base_r = 255;
+            base_g = 140;
+            base_b = 20;
+        }
+    } else if (strcmp(effect, "pulse") == 0 || strcmp(effect, "heartbeat") == 0) {
+        mode = 7;
+    }
+
+    int step = 0;
+    int flash_hue = 0;
+    int candle_val = 200;
+
+    srand((unsigned int)(time(NULL) ^ getpid()));
+
+    while (g_kbe_running) {
+        switch (mode) {
+            case 1: {
+                int bri = (int)kbe_breathe_lut[step % 128];
+                int r = (base_r * bri) / 255;
+                int g = (base_g * bri) / 255;
+                int b = (base_b * bri) / 255;
+                kbe_write_frame(fd_col, r, g, b);
+                kbe_sleep_ms(25);
+                step++;
+                break;
+            }
+            case 2: {
+                int bri = (int)kbe_breathe_lut[step % 128];
+                int hue = (step / 2) % 360;
+                int r, g, b;
+                kbe_hue_to_rgb(hue, bri, &r, &g, &b);
+                kbe_write_frame(fd_col, r, g, b);
+                kbe_sleep_ms(25);
+                step++;
+                break;
+            }
+            case 3: {
+                int hue = step % 360;
+                int r, g, b;
+                kbe_hue_to_rgb(hue, 255, &r, &g, &b);
+                kbe_write_frame(fd_col, r, g, b);
+                kbe_sleep_ms(25);
+                step++;
+                break;
+            }
+            case 4: {
+                for (int i = 0; i < 3 && g_kbe_running; i++) {
+                    kbe_write_frame(fd_col, base_r, base_g, base_b);
+                    kbe_sleep_ms(70);
+                    if (!g_kbe_running) break;
+                    kbe_write_frame(fd_col, 0, 0, 0);
+                    kbe_sleep_ms(i == 2 ? 750 : 70);
+                }
+                break;
+            }
+            case 5: {
+                int fr, fg, fb;
+                kbe_hue_to_rgb(flash_hue, 255, &fr, &fg, &fb);
+                flash_hue = (flash_hue + 55) % 360;
+                for (int i = 0; i < 3 && g_kbe_running; i++) {
+                    kbe_write_frame(fd_col, fr, fg, fb);
+                    kbe_sleep_ms(70);
+                    if (!g_kbe_running) break;
+                    kbe_write_frame(fd_col, 0, 0, 0);
+                    kbe_sleep_ms(i == 2 ? 750 : 70);
+                }
+                break;
+            }
+            case 6: {
+                int val = kbe_candle_step(&candle_val);
+                int r = (base_r * val) / 255;
+                int g = (base_g * val) / 255;
+                int b = (base_b * val) / 255;
+                kbe_write_frame(fd_col, r, g, b);
+                kbe_sleep_ms(35 + (rand() % 35));
+                break;
+            }
+            case 7: {
+                static const uint8_t pulse_wave[] = {
+                    30, 90, 180, 255, 230, 160, 100, 60, 40,
+                    90, 170, 230, 190, 130, 80, 40, 20, 10, 0
+                };
+                for (size_t i = 0; i < sizeof(pulse_wave) && g_kbe_running; i++) {
+                    int val = pulse_wave[i];
+                    int r = (base_r * val) / 255;
+                    int g = (base_g * val) / 255;
+                    int b = (base_b * val) / 255;
+                    kbe_write_frame(fd_col, r, g, b);
+                    kbe_sleep_ms(22);
+                }
+                kbe_sleep_ms(700);
+                break;
+            }
+            default:
+                g_kbe_running = 0;
+                break;
+        }
+    }
+
+    kbe_write_bri(fd_bri, orig_bri);
+    kbe_write_frame(fd_col, orig_r, orig_g, orig_b);
+
+    if (fd_col >= 0) close(fd_col);
+    if (fd_bri >= 0) close(fd_bri);
+
+    unlink(KBE_STATE_PATH);
+    flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+    unlink(KBE_LOCK_PATH);
+}
+
+static int kbe_start(const char *effect)
+{
+    if (access(KBD_PATH "/multi_intensity", F_OK) != 0) {
+        fprintf(stderr, "Error: Keyboard backlight interface not found (is tuxedo_keyboard loaded?)\n");
+        return 1;
+    }
+
+    pid_t old_pid = 0;
+    char old_effect[32] = {0};
+    int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
+    int had_running = kbe_is_running(&old_pid, old_effect, sizeof(old_effect), &orig_r, &orig_g, &orig_b, &orig_bri);
+
+    if (had_running) {
+        kbe_stop(1);
+    } else {
+        if (kbd_get_color(&orig_r, &orig_g, &orig_b) < 0) {
+            orig_r = 255; orig_g = 255; orig_b = 255;
+        }
+        if (kbd_get_raw_brightness(&orig_bri) < 0) {
+            orig_bri = 255;
+        }
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "Error: Failed to spawn background effect daemon\n");
+        return 1;
+    }
+
+    if (pid > 0) {
+        printf("Started keyboard effect '%s' [PID %d]\n", effect, (int)pid);
+        return 0;
+    }
+
+    setsid();
+    int null_fd = open("/dev/null", O_RDWR);
+    if (null_fd >= 0) {
+        dup2(null_fd, STDIN_FILENO);
+        dup2(null_fd, STDOUT_FILENO);
+        dup2(null_fd, STDERR_FILENO);
+        if (null_fd > 2) close(null_fd);
+    }
+
+    kbe_daemon_worker(effect, orig_r, orig_g, orig_b, orig_bri);
+    exit(0);
+}
+
+/* ========================================================================
  * EC RAM (for fan telemetry)
  * ======================================================================== */
 
@@ -1944,8 +2377,6 @@ static int read_cpu_temp(void)
 /* ========================================================================
  * CPU MONITOR
  * ======================================================================== */
-
-#include <signal.h>
 
 static volatile int cpumonitor_running = 1;
 static void cpumonitor_sigint(int sig) { (void)sig; cpumonitor_running = 0; }
@@ -2209,13 +2640,13 @@ static void print_usage(const char *prog)
 
     /* ── Profiles ──────────────────────────────────────────────────────── */
     printf("  %sPROFILES%s\n", C_YLW, C_RST);
-    printf("    %sset%s   <profile> [--nosafe] Apply a preset %s(changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %ssetR%s  <profile> [--nosafe] Apply a preset + custom pre configured CPU TDP change %s(changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sset%s   <profile> [--nosafe] Apply preset %s(EC defaults + table values below)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %ssetR%s  <profile> [--nosafe] Apply preset %s(EC defaults + preconfigured CPU TDP override)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("      %s(max, cpuperf, balanced set fans to auto; bypass with --nosafe)%s\n\n", C_DIM, C_RST);
     printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)%s\n", C_BLD, C_RST);
     printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────%s\n", C_DIM, C_RST);
     printf("      %smax%s         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W\n", C_RED, C_RST);
-    printf("      %scpuperf%s     ON     performance  performance        45/115W + GPU 70W               PL2 70W\n", C_YLW, C_RST);
+    printf("      %scpuperf%s     ON     performance  performance        45/115W + GPU 70W               %s(no RAPL change)%s\n", C_YLW, C_RST, C_DIM, C_RST);
     printf("      %sbalanced%s    ON     powersave    balance_performance 45/115W + GPU 70W              PL1 35 / PL2 40W\n", C_GRN, C_RST);
     printf("      %spowersave%s   OFF    powersave    balance_power      15/30W  + GPU 70W               %s(no RAPL change)%s\n", C_CYN_BLD, C_RST, C_DIM, C_RST);
     printf("      %seco%s         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W\n\n", C_DIM, C_RST);
@@ -2224,14 +2655,20 @@ static void print_usage(const char *prog)
     printf("  %sKEYBOARD%s\n", C_MAG, C_RST);
     printf("    %skbc%s   <R G B | #hex | preset> Set keyboard color %s(no arg: list presets)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %skbb%s   <pct>              Set brightness %s(0-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %skbe%s   [effect|stop]      Keyboard backlight effects %s(no arg: show status)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfn%s    [lock|unlock]      Toggle/set Fn Lock %s(Fn key behavior)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Fan ────────────────────────────────────────────────────────────── */
     printf("  %sFAN%s\n", C_YLW, C_RST);
     printf("    %sfan%s   auto|max           Set both fans %s(EC-controlled / full)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfan%s   silent [--nosafe]  Quiet mode %s(forces eco profile first; bypass with --nosafe)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   <pct>              Set both fans to duty %s(21-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   cpu|gpu <pct>      Set individual fan duty %s(21-100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   <pct> --nosafe     Set both fans to duty %s(21-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   cpu|gpu <pct> --nosafe Set individual fan duty %s(21-100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+
+    /* ── GPU MUX ───────────────────────────────────────────────────────── */
+    printf("  %sGPU MUX%s %s(UEFI NVRAM, reboot required to apply)%s\n", C_MAG, C_RST, C_DIM, C_RST);
+    printf("    %smux%s                      Show current MUX mode %s(MSHybrid / dGPU)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %smux%s    switch            Toggle to the other mode %s(reboot to apply)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Privacy ────────────────────────────────────────────────────────── */
     printf("  %sPRIVACY%s\n", C_CYN, C_RST);
@@ -2268,15 +2705,8 @@ static void print_usage(const char *prog)
     if (has_display_support()) {
         printf("  %sDISPLAY%s %s(only X11 session is supported, needs xrandr)%s\n", C_BLU, C_RST, C_DIM, C_RST);
         printf("    %srr%s    [rate]             List/set refresh rate %s(1=high, 2=low)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-        printf("    %sscale%s <value>            GPU-side scaling\n", C_BLD, C_RST);
-        printf("      %sfactor: 0.01-1.0 (e.g. 0.5=half, 0.75=1080p on 1440p)%s\n", C_DIM, C_RST);
-        printf("      %sresolution: WxH (e.g. 1920x1080)  |  off/reset: back to native%s\n\n", C_DIM, C_RST);
+        printf("    %sscale%s <factor|WxH|off>   GPU-side scaling %s(no arg: explain in detail)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
     }
-
-    /* ── GPU MUX ───────────────────────────────────────────────────────── */
-    printf("  %sGPU MUX%s %s(UEFI NVRAM, reboot required to apply)%s\n", C_MAG, C_RST, C_DIM, C_RST);
-    printf("    %smux%s                      Show current MUX mode %s(MSHybrid / dGPU)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %smux%s    switch            Toggle to the other mode %s(reboot to apply)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Profile Individual Overrides ───────────────────────────────────── */
     printf("  %sPROFILE INDIVIDUAL OVERRIDES%s\n", C_YLW, C_RST);
@@ -3343,18 +3773,37 @@ static int scale_reset(void)
     return 0;
 }
 
+static void scale_show_details(void)
+{
+    printf("Usage: cctl scale <factor | resolution | off>\n\n");
+    printf("GPU-side scaling renders the desktop/games at a lower internal resolution\n"
+           "and stretches it up to native panel resolution using hardware GPU scaler,\n"
+           "boosting performance or enlarging UI with zero CPU overhead.\n\n");
+
+    struct display_info info;
+    if (has_display_support() && query_display_info(&info) == 0 && info.resolution[0]) {
+        printf("Current Display:\n");
+        printf("  Output: %s  |  Native Resolution: %s  |  Current Rate: %sHz\n\n",
+               info.output, info.resolution, info.current_rate);
+    }
+
+    printf("Options:\n");
+    printf("  <factor>        Fraction between 0.01 and 1.0 (e.g. 0.75 for 75%%, 0.5 for 50%%)\n");
+    printf("  <resolution>    Explicit WIDTHxHEIGHT (e.g. 1920x1080, 1600x900, 1280x720)\n");
+    printf("  off | reset     Restore native 1:1 display resolution\n\n");
+
+    printf("Examples:\n");
+    printf("  cctl scale 0.75         Render at 75%% resolution (1080p equivalent on 1440p panel)\n");
+    printf("  cctl scale 1920x1080    Render at explicit 1920x1080 resolution\n");
+    printf("  cctl scale 0.5          Render at 50%% resolution (large UI / maximum fps)\n");
+    printf("  cctl scale off          Reset back to native display resolution\n");
+}
+
 static int cmd_scale(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: scale <factor|resolution>\n");
-        fprintf(stderr, "       scale off\n");
-        fprintf(stderr, "\n  GPU-side scaling: render at lower resolution and stretch to native.\n");
-        fprintf(stderr, "  Examples:\n");
-        fprintf(stderr, "    cctl scale 0.75         75%% — same as 1920x1080\n");
-        fprintf(stderr, "    cctl scale 1920x1080    explicit resolution\n");
-        fprintf(stderr, "    cctl scale 0.5          50%% — big UI\n");
-        fprintf(stderr, "    cctl scale off          back to native\n");
-        return 1;
+        scale_show_details();
+        return 0;
     }
 
     const char *arg = argv[2];
@@ -3521,6 +3970,10 @@ static int cmd_fan(int argc, char **argv)
             fprintf(stderr, "Error: Invalid duty percentage '%s'\n", val_str);
             return 1;
         }
+        if (!nosafe) {
+            fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n", pct);
+            return 1;
+        }
         rc = fan_set_duty(FAN_CPU, pct);
     } else if (strcmp(mode, "gpu") == 0) {
         if (!val_str) {
@@ -3532,17 +3985,25 @@ static int cmd_fan(int argc, char **argv)
             fprintf(stderr, "Error: Invalid duty percentage '%s'\n", val_str);
             return 1;
         }
+        if (!nosafe) {
+            fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n", pct);
+            return 1;
+        }
         rc = fan_set_duty(FAN_GPU, pct);
     } else {
         /* Try as a plain number — apply to both fans */
         int pct;
         if (safe_atoi(mode, &pct) >= 0 && pct >= 21 && pct <= 100) {
+            if (!nosafe) {
+                fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n", pct);
+                return 1;
+            }
             printf("Setting both fans to %d%%...\n", pct);
             if (fan_set_duty(FAN_CPU, pct) < 0) rc = -1;
             if (fan_set_duty(FAN_GPU, pct) < 0) rc = -1;
         } else {
             fprintf(stderr, "Error: Unknown fan mode '%s'\n", mode);
-            fprintf(stderr, "Valid modes: auto, max, silent, cpu <pct>, gpu <pct>, or just <pct> for both\n");
+            fprintf(stderr, "Valid modes: auto, max, silent, cpu <pct> --nosafe, gpu <pct> --nosafe, or <pct> --nosafe\n");
             return 1;
         }
     }
@@ -3709,6 +4170,7 @@ static int cmd_kbc(int argc, char **argv)
 
     if (geteuid() != 0)
         self_elevate(argc, argv);
+    kbe_stop(1);
     /* If 3 numeric args → RGB mode */
     if (argc >= 5) {
         int r, g, b;
@@ -3735,9 +4197,67 @@ static int cmd_kbb(int argc, char **argv)
         fprintf(stderr, "Error: Invalid brightness value '%s'\n", argv[2]);
         return 1;
     }
+    kbe_stop(1);
     int rc = kbd_set_brightness(pct);
     if (rc == 0) printf("Done.\n");
     return rc;
+}
+
+static int cmd_kbe(int argc, char **argv)
+{
+    if (argc < 3 || strcmp(argv[2], "status") == 0) {
+        pid_t pid = 0;
+        char effect[32] = {0};
+        int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
+        if (kbe_is_running(&pid, effect, sizeof(effect), &orig_r, &orig_g, &orig_b, &orig_bri)) {
+            printf("Keyboard Backlight Effect:\n");
+            printf("  Status:              %s%s%s (active, PID %d)\n", C_GRN, effect, C_RST, (int)pid);
+            printf("  Original Color:      RGB(%d, %d, %d)\n", orig_r, orig_g, orig_b);
+            int bri_pct = (orig_bri * 100 + 127) / 255;
+            printf("  Original Brightness: %d%% (raw %d)\n\n", bri_pct, orig_bri);
+            printf("To stop effect:        cctl kbe stop\n");
+        } else {
+            printf("Keyboard Backlight Effect:\n");
+            printf("  Status:              %snone%s (stopped)\n\n", C_DIM, C_RST);
+            printf("Available Effects:\n");
+            printf("  %-16s %s\n", "breathe", "Smooth fade in/out (uses current color)");
+            printf("  %-16s %s\n", "breathe-cycle", "Smooth breathe shifting through colors");
+            printf("  %-16s %s\n", "cycle", "Smooth continuous rainbow cycle");
+            printf("  %-16s %s\n", "flash", "Strobe flash bursts (uses current color)");
+            printf("  %-16s %s\n", "flash-cycle", "Strobe flash bursts cycling colors");
+            printf("  %-16s %s\n", "candle", "Realistic flickering candle flame");
+            printf("  %-16s %s\n\n", "pulse", "Heartbeat double-pulse (uses current color)");
+            printf("Usage: cctl kbe <effect>  |  cctl kbe stop\n");
+        }
+        return 0;
+    }
+
+    if (geteuid() != 0) {
+        self_elevate(argc, argv);
+    }
+
+    const char *sub = argv[2];
+    if (strcmp(sub, "stop") == 0 || strcmp(sub, "off") == 0) {
+        return kbe_stop(0);
+    }
+
+    if (strcmp(sub, "breathe") != 0 && strcmp(sub, "breath") != 0 &&
+        strcmp(sub, "breathe-cycle") != 0 && strcmp(sub, "breathe+colorchange") != 0 &&
+        strcmp(sub, "breathe_cycle") != 0 && strcmp(sub, "breathecycle") != 0 &&
+        strcmp(sub, "cycle") != 0 && strcmp(sub, "rainbow") != 0 &&
+        strcmp(sub, "spectrum") != 0 && strcmp(sub, "slow-cycle") != 0 &&
+        strcmp(sub, "slow_colorchanging") != 0 &&
+        strcmp(sub, "flash") != 0 && strcmp(sub, "strobe") != 0 &&
+        strcmp(sub, "flash-cycle") != 0 && strcmp(sub, "flash+colorchange") != 0 &&
+        strcmp(sub, "flash_cycle") != 0 && strcmp(sub, "flashcycle") != 0 &&
+        strcmp(sub, "candle") != 0 && strcmp(sub, "flicker") != 0 &&
+        strcmp(sub, "pulse") != 0 && strcmp(sub, "heartbeat") != 0) {
+        fprintf(stderr, "Error: Unknown keyboard effect '%s'\n", sub);
+        fprintf(stderr, "Available effects: breathe, breathe-cycle, cycle, flash, flash-cycle, candle, pulse\n");
+        return 1;
+    }
+
+    return kbe_start(sub);
 }
 
 static int cmd_webcam(int argc, char **argv)
@@ -4057,6 +4577,7 @@ static const struct command commands[] = {
     { "rapl",    1, cmd_rapl },
     { "kbc",     0, cmd_kbc },
     { "kbb",     1, cmd_kbb },
+    { "kbe",     0, cmd_kbe },
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
