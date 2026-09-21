@@ -178,13 +178,13 @@ Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
 |---|---|---|
 | `pacman` | Arch, Manjaro, EndeavourOS, CachyOS, Garuda | ✅ Arch, CachyOS |
 | `apt` | Debian, Ubuntu, Mint, Pop!_OS, Zorin | — |
-| `dnf` | Fedora, RHEL, Rocky, Alma | — |
+| `dnf` | Fedora (standard Workstation/Spins), RHEL, Rocky, Alma | — |
 | `zypper` | openSUSE Tumbleweed/Leap | — |
 | `xbps` | Void Linux | — |
 | `emerge` | Gentoo | — |
 | `eopkg` | Solus | — |
 
-On immutable distros (Bazzite, Silverblue, etc.) the installer explains that DKMS won't persist across image updates and directs you to your distro's documentation. On unrecognized distros, it points to the driver source at `drivers/` for manual installation.
+> **Immutable / Atomic OS note:** Atomic and immutable editions of Fedora (Silverblue, Kinoite, Atomic Desktops, Bazzite, etc. using `rpm-ostree`) are **not supported** because the root filesystem is read-only and DKMS modules cannot persist across image updates. Only standard, non-atomic Fedora (Workstation, KDE Spin, etc. using regular `dnf`) is supported. On unrecognized distros, the installer points to the driver source at `drivers/` for manual installation.
 
 ---
 
