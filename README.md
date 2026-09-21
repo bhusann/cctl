@@ -14,8 +14,8 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
 
 ### Supported Configurations
 * **Series:** Colorful Evol P15 series
-* **GPUs:** NVIDIA GeForce RTX 4060 Mobile or RTX 4050 Mobile (both 100W and 140W variants supported)
-* **CPUs:** Intel Core i7-13620H, i5-12500H, i7-12650H, and i5-12450H
+* **GPUs:** NVIDIA GeForce RTX 40 Series Mobile
+* **CPUs:** Intel CPUs
 * **Keyboard:** Single-zone RGB keyboard (tested)
 
 > **Note:** Built specifically for Colorful Evol P15 series laptops. Other laptop models or other Clevo/TUXEDO variants may have different EC register layouts, fan byte orders, or GPU profile slots — use at your own risk.
@@ -44,6 +44,7 @@ cctl status                # view all current settings
 ## Power Profiles
 
 `set <profile> [--nosafe]` applies a preset (changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults).
+
 `setR <profile> [--nosafe]` applies a preset + custom pre-configured CPU TDP change (changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL).
 
 ```
@@ -56,7 +57,7 @@ powersave   OFF    powersave    balance_power      15/30W  + GPU 70W            
 eco         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W
 ```
 
-> **Note on Fan Safety Defaults & Hardware Protection**: The Clevo Embedded Controller (EC) prioritizes manual fan modes over automatic thermal curves. If fans were previously set to `silent`, the EC keeps fan speeds strictly suppressed even when CPU and GPU temperatures spike under heavy load. Applying high-performance profiles (`max` at 90W CPU / 100W GPU, `cpuperf`, or `balanced`) or enabling `turbo on` while the cooling fans remain locked to silent will quickly lead to dangerous overheating, severe thermal throttling, and potential hardware stress. To ensure hardware safety, `cctl` automatically resets both fans to **`AUTO`** before activating these high-TDP profiles or enabling turbo boost. If you explicitly want to bypass this protection and keep your current fan state, pass the `--nosafe` flag (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`).
+> **Fan Safety Defaults**: If fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat. To prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass this and keep your current fan state.
 >
 > **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
 
@@ -68,10 +69,10 @@ eco         OFF    powersave    power              15/30W  + GPU 70W            
 ```bash
 cctl kbc <color>                # Set keyboard color: R G B (0-255), #hex, or preset name
 cctl kbb <pct>                  # Brightness (0-100%)
-cctl fn lock|unlock             # Fn Lock toggle (Fn key behavior)
+cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/unlock)
 ```
 
-Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `off` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow`
+Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
 
 ### Fan Control
 ```bash
@@ -108,24 +109,14 @@ cctl mux                        # Show current MUX mode (MSHybrid / dGPU) & pend
 cctl mux switch                 # Toggle MUX mode (stages in UEFI NVRAM, reboot to apply)
 ```
 
-> **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B), unknown value refusal, and battery protection (refuses on battery < 10% without AC).
+> **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
 
 ### NVIDIA GPU
 ```bash
-# Available in all builds:
 cctl nvidia power [on|off]              # Hardware D0/D3cold control; no arg shows state
 cctl nvidia clock <min,max> | reset     # Lock/unlock GPU clocks (auto persistence)
 cctl nvidia memclock <min,max> | reset  # Lock/unlock memory clocks (auto persistence)
-
-# Requires make cctl-nvidia:
-cctl nvidia <on|off>                    # Persistent boot toggle (blacklist + initramfs)
-cctl nvidia load                        # Load compute modules (nvidia, nvidia_uvm)
-cctl nvidia loadgame                    # Load all modules (+ modeset, drm)
-cctl nvidia unload                      # Unload all modules + power off (D3cold)
-cctl nvidia status                      # Telemetry, loaded modules, active GPU PIDs
 ```
-
-> ⚠️ **`nvidia off`** permanently blacklists the driver and rebuilds initramfs. Use `nvidia unload` for session-only GPU power off.
 
 ### Display
 > **Note:** Display commands rely on `xrandr` and are only supported on native **X11** sessions. They are **not** supported under Wayland or XWayland. `cctl` automatically checks for an active X11 session with `xrandr`: if not present, the `DISPLAY` section is hidden from `cctl --help` and the refresh rate is omitted from `cctl status`.
@@ -152,8 +143,6 @@ cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 
 ```bash
 make                # Standard build (profiles, fans, display, battery, nvidia clock/power)
-make cctl-nvidia    # Full build with NVIDIA module management (on/off/load/unload/status)
-make drivers        # Install kernel drivers via DKMS (runs driverinstall.sh --install)
 make test-drivers   # Compile kernel drivers locally in-tree for testing (no install)
 ```
 
@@ -228,13 +217,6 @@ Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
     * For **Fixed White (`force_backlight_type=1`)**: A `white:kbd_backlight` directory is exposed for brightness level control.
 
     > **Note:** `cctl`'s command implementation currently only supports **1-zone RGB** (using type 6). If your hardware uses 3-zone RGB or per-key RGB, you can manage the zones directly through their respective `/sys/class/leds` folders or adapt `cctl`'s source code (`cctl.c`) to control individual zones.
-
-- **Xorg Holding GPU on Hotplug** — When using `nvidia loadgame` under Xorg, it may grab the hotplugged card, preventing `nvidia unload`. Fix by adding to `/etc/X11/xorg.conf.d/10-no-gpu-hotplug.conf`:
-  ```
-  Section "ServerFlags"
-      Option "AutoAddGPU" "false"
-  EndSection
-  ```
 
 - **GPU Display MUX via UEFI NVRAM (Insyde H2O)** — The laptop features a physical display multiplexer with two BIOS modes:
   - `MSHybrid` (panel driven by Intel iGPU; NVIDIA dGPU provides render offload).

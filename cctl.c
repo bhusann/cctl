@@ -38,7 +38,7 @@
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
-#define CCTL_MICROVERSION 100002
+#define CCTL_MICROVERSION 100003
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -304,14 +304,6 @@ static int mux_switch(void)
         return 1;
     }
 
-    /* Preflight: battery check — refuse if on battery below 10% */
-    long bat_cap = read_sysfs_long("/sys/class/power_supply/BAT0/capacity", 100);
-    long ac_online = read_sysfs_long("/sys/class/power_supply/AC0/online", 1);
-    if (ac_online != 1 && bat_cap < 10) {
-        fprintf(stderr, "Error: Battery at %ld%% with no AC — plug in or charge above 10%%.\n", bat_cap);
-        return 1;
-    }
-
     /* Read the full blob */
     int fd = open(MUX_VAR_PATH, O_RDONLY);
     if (fd < 0) {
@@ -429,6 +421,24 @@ static int set_fnlock(int enabled)
     }
     printf("  Fn Lock: %s\n", enabled ? "ON" : "OFF");
     return 0;
+}
+
+static int get_fnlock(void)
+{
+    char buf[16];
+    if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) < 0)
+        return -1;
+    return atoi(buf) ? 1 : 0;
+}
+
+static int fnlock_toggle(void)
+{
+    int cur = get_fnlock();
+    if (cur < 0) {
+        fprintf(stderr, "Error: Fn Lock not available (tuxedo_keyboard not loaded?)\n");
+        return -1;
+    }
+    return set_fnlock(!cur);
 }
 
 /* ========================================================================
@@ -1585,6 +1595,15 @@ static int bat_set(int start, int end)
 
 #define KBD_PATH "/sys/class/leds/rgb:kbd_backlight"
 
+static int kbd_get_brightness(void)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "%s/brightness", KBD_PATH);
+    long raw = read_sysfs_long(path, -1);
+    if (raw < 0) return -1;
+    return (int)((raw * 100 + 127) / 255);
+}
+
 static int kbd_set_color(int r, int g, int b)
 {
     if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
@@ -1601,7 +1620,11 @@ static int kbd_set_color(int r, int g, int b)
         fprintf(stderr, "Error: Failed to set keyboard color (is tuxedo_keyboard loaded?)\n");
         return -1;
     }
-    printf("  Keyboard color: RGB(%d, %d, %d)\n", r, g, b);
+    int bri = kbd_get_brightness();
+    if (bri >= 0)
+        printf("  Keyboard color: RGB(%d, %d, %d)  [brightness: %d%%]\n", r, g, b, bri);
+    else
+        printf("  Keyboard color: RGB(%d, %d, %d)\n", r, g, b);
     return 0;
 }
 
@@ -1648,7 +1671,6 @@ static const struct kbd_preset kbd_presets[] = {
     { "magenta",    "ff00ff" },
     { "maroon",     "800000" },
     { "navy",       "000080" },
-    { "off",        "000000" },
     { "olive",      "808000" },
     { "orange",     "ff8800" },
     { "pink",       "ff1493" },
@@ -1661,6 +1683,7 @@ static const struct kbd_preset kbd_presets[] = {
     { "violet",     "ee82ee" },
     { "white",      "ffffff" },
     { "yellow",     "ffff00" },
+    { "off",        "000000" },
     { NULL, NULL }
 };
 
@@ -1721,6 +1744,20 @@ static int kbd_set_preset(const char *name)
     for (const struct kbd_preset *p = kbd_presets; p->name; p++)
         fprintf(stderr, "  %s (#%s)\n", p->name, p->hex);
     return -1;
+}
+
+static void kbd_show_presets(void)
+{
+    printf("Usage: cctl kbc <R G B | #hex | preset>\n");
+    printf("  Examples: cctl kbc 255 0 128  |  cctl kbc #ff0080  |  cctl kbc cyan\n\n");
+    printf("Available Presets:\n");
+    int col = 0;
+    for (const struct kbd_preset *p = kbd_presets; p->name; p++) {
+        printf("  %-11s (#%s)", p->name, p->hex);
+        col++;
+        if (col % 3 == 0) printf("\n");
+    }
+    if (col % 3 != 0) printf("\n");
 }
 
 /* ========================================================================
@@ -2172,8 +2209,8 @@ static void print_usage(const char *prog)
 
     /* ── Profiles ──────────────────────────────────────────────────────── */
     printf("  %sPROFILES%s\n", C_YLW, C_RST);
-    printf("    %sset%s   <profile> [--nosafe] Apply a preset %s(changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %ssetR%s  <profile> [--nosafe] Apply a preset + custom pre configured CPU TDP change %s(changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sset%s   <profile> [--nosafe] Apply a preset %s(changes turbo, governor, EPP and CPU & GPU TDP according to laptop EC defaults)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %ssetR%s  <profile> [--nosafe] Apply a preset + custom pre configured CPU TDP change %s(changes turbo, governor, EPP and only GPU TDP according to laptop EC defaults, CPU TDP according to SetR table values using RAPL)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("      %s(max, cpuperf, balanced set fans to auto; bypass with --nosafe)%s\n\n", C_DIM, C_RST);
     printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)%s\n", C_BLD, C_RST);
     printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────%s\n", C_DIM, C_RST);
@@ -2185,13 +2222,9 @@ static void print_usage(const char *prog)
 
     /* ── Keyboard ───────────────────────────────────────────────────────── */
     printf("  %sKEYBOARD%s\n", C_MAG, C_RST);
-    printf("    %skbc%s   <color>            Set keyboard color\n", C_BLD, C_RST);
-    printf("      %sFormat: R G B (0-255, e.g. 255 0 128) | #hex (e.g. #ff0080) | preset name (e.g. cyan)%s\n", C_DIM, C_RST);
-    printf("      %spresets: blue chocolate coral cyan gold gray green indigo lime\n"
-           "      magenta maroon navy off olive orange pink purple red salmon\n"
-           "      silver teal turquoise violet white yellow%s\n", C_DIM, C_RST);
+    printf("    %skbc%s   <R G B | #hex | preset> Set keyboard color %s(no arg: list presets)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %skbb%s   <pct>              Set brightness %s(0-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfn%s    <lock|unlock>      Fn Lock toggle %s(Fn key behavior)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfn%s    [lock|unlock]      Toggle/set Fn Lock %s(Fn key behavior)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Fan ────────────────────────────────────────────────────────────── */
     printf("  %sFAN%s\n", C_YLW, C_RST);
@@ -2258,8 +2291,8 @@ static void print_usage(const char *prog)
         printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
         printf("    • %sset/setR%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
         printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    Fix: run %scctl drivers-install%s (or %smake drivers%s)\n\n",
-               C_BLD, C_RST, C_BLD, C_RST);
+        printf("    Fix: run %scctl drivers-install%s\n\n",
+               C_BLD, C_RST);
     }
 
     /* Install hint — only shown when not installed system-wide */
@@ -3124,7 +3157,7 @@ static int nvidia_parse_clock_range(const char *str, int *min, int *max)
 #ifdef CCTL_NVIDIA
 #define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|power|clock|memclock}"
 #else
-#define NVIDIA_USAGE_STR "nvidia {power|clock|memclock} (module commands require make cctl-nvidia)"
+#define NVIDIA_USAGE_STR "nvidia {power|clock|memclock} (module commands require make experimental)"
 #endif
 
 static int cmd_nvidia(int argc, char **argv)
@@ -3137,11 +3170,11 @@ static int cmd_nvidia(int argc, char **argv)
     const char *action = argv[2];
 
 #ifndef CCTL_NVIDIA
-    /* Module/GPU-toggle commands are only compiled into the NVIDIA build. */
+    /* Module/GPU-toggle commands are only compiled into the experimental build. */
     if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
         strcmp(action, "load") == 0 || strcmp(action, "loadgame") == 0 ||
         strcmp(action, "unload") == 0 || strcmp(action, "status") == 0) {
-        fprintf(stderr, "Error: 'nvidia %s' requires a build with NVIDIA support (make cctl-nvidia).\n", action);
+        fprintf(stderr, "Error: 'nvidia %s' requires experimental build (make experimental).\n", action);
         return 1;
     }
 #endif
@@ -3558,20 +3591,21 @@ static int cmd_turbo(int argc, char **argv)
 
 static int cmd_fnlock(int argc, char **argv)
 {
-    if (argc < 3) {
-        fprintf(stderr, "Error: Missing fn action (lock/unlock)\n");
-        return 1;
+    int rc;
+    if (argc >= 3) {
+        if (strcmp(argv[2], "lock") == 0 || strcmp(argv[2], "on") == 0)
+            rc = set_fnlock(1);
+        else if (strcmp(argv[2], "unlock") == 0 || strcmp(argv[2], "off") == 0)
+            rc = set_fnlock(0);
+        else if (strcmp(argv[2], "toggle") == 0)
+            rc = fnlock_toggle();
+        else {
+            fprintf(stderr, "Error: Invalid fn action '%s' (use lock, unlock, on, off, or omit arg to toggle)\n", argv[2]);
+            return 1;
+        }
+    } else {
+        rc = fnlock_toggle();
     }
-    int enabled;
-    if (strcmp(argv[2], "lock") == 0)
-        enabled = 1;
-    else if (strcmp(argv[2], "unlock") == 0)
-        enabled = 0;
-    else {
-        fprintf(stderr, "Error: Invalid fn action '%s' (use lock or unlock)\n", argv[2]);
-        return 1;
-    }
-    int rc = set_fnlock(enabled);
     if (rc == 0) printf("Done.\n");
     return rc;
 }
@@ -3669,12 +3703,12 @@ static int cmd_rapl(int argc, char **argv)
 static int cmd_kbc(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: kbc <R G B | #hex | preset>\n");
-        fprintf(stderr, "  kbc 255 0 128      RGB values (0-255)\n");
-        fprintf(stderr, "  kbc #ff0080        hex color\n");
-        fprintf(stderr, "  kbc cyan           preset name\n");
-        return 1;
+        kbd_show_presets();
+        return 0;
     }
+
+    if (geteuid() != 0)
+        self_elevate(argc, argv);
     /* If 3 numeric args → RGB mode */
     if (argc >= 5) {
         int r, g, b;
@@ -4021,7 +4055,7 @@ static const struct command commands[] = {
     { "gov",     1, cmd_gov },
     { "epp",     1, cmd_epp },
     { "rapl",    1, cmd_rapl },
-    { "kbc",     1, cmd_kbc },
+    { "kbc",     0, cmd_kbc },
     { "kbb",     1, cmd_kbb },
     { "webcam",  1, cmd_webcam },
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */

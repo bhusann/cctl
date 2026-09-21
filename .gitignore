@@ -1,6 +1,7 @@
 # Binaries
 cctl
 cctl-nvidia
+experimental
 legacygpu.ko
 *.o
 
