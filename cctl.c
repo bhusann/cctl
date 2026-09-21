@@ -1441,7 +1441,13 @@ static void show_status(void)
     if (read_fan_telemetry(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm) == 0) {
         printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
         printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n", "CPU Fan:", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
-        printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n", "GPU Fan:", C_CYN, gpu_pct, C_RST, C_CYN, gpu_rpm, C_RST);
+        if (gpu_pct == 0 && gpu_rpm == 0) {
+            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s  %s(GPU in D3cold state)%s\n",
+                   "GPU Fan:", C_DIM, gpu_pct, C_RST, C_DIM, gpu_rpm, C_RST, C_DIM, C_RST);
+        } else {
+            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n",
+                   "GPU Fan:", C_CYN, gpu_pct, C_RST, C_CYN, gpu_rpm, C_RST);
+        }
     } else {
         printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
         printf("  %-14s %sN/A (ec_sys or tuxedo_io not available)%s\n", "Fans:", C_DIM, C_RST);
@@ -2087,7 +2093,12 @@ static int cpumonitor(void)
         printf("\n%s--- [ FANS ] ---%s\n", C_YLW, C_RST);
         if (has_fans) {
             printf("CPU Fan: %s%3d%% duty  %4d RPM%s\n", C_CYN, cpu_pct, cpu_rpm, C_RST);
-            printf("GPU Fan: %s%3d%% duty  %4d RPM%s\n", C_CYN, gpu_pct, gpu_rpm, C_RST);
+            if (gpu_pct == 0 && gpu_rpm == 0) {
+                printf("GPU Fan: %s%3d%% duty  %4d RPM%s  %s(GPU in D3cold state)%s\n",
+                       C_DIM, gpu_pct, gpu_rpm, C_RST, C_DIM, C_RST);
+            } else {
+                printf("GPU Fan: %s%3d%% duty  %4d RPM%s\n", C_CYN, gpu_pct, gpu_rpm, C_RST);
+            }
         } else {
             printf("Fan telemetry: %sN/A (ec_sys not loaded)%s\n", C_DIM, C_RST);
         }
