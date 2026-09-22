@@ -195,7 +195,7 @@ The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is 
 3. download `drivers.tar.gz` from the mirror repo (curl/wget) into a private temp dir — on failure it tells you exactly where to place a manual copy
 4. offline / download failed: accepts the full path to a `drivers.tar.gz` you already have (checked in place first; staged to `/tmp` only if valid)
 
-Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file.
+Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file. `cctl update` itself is all-or-nothing: it stages and verifies **both** release assets (binary + tarball) in tmp first and places them only when both pass — if the tarball fetch or hash check fails, **nothing** is installed.
 
 ```bash
 sudo ./cctl drivers-manage

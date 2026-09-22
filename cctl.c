@@ -40,7 +40,9 @@
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
-#define CCTL_MICROVERSION 100016
+#ifndef CCTL_MICROVERSION
+#define CCTL_MICROVERSION 100017
+#endif
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -215,7 +217,10 @@ static int safe_atoi(const char *str, int *out)
     char *end;
     errno = 0;
     long val = strtol(str, &end, 10);
-    if (errno != 0 || *end != '\0' || val < INT_MIN || val > INT_MAX)
+    if (errno != 0 || end == str || val < INT_MIN || val > INT_MAX)
+        return -1;
+    while (*end == '\n' || *end == '\r') end++; /* fgets keeps the newline */
+    if (*end != '\0')
         return -1;
     *out = (int)val;
     return 0;
@@ -5646,8 +5651,12 @@ cleanup:
  * binary to be swapped between verification and install.
  * ======================================================================== */
 
+#ifndef UPDATE_ASSET_URL
 #define UPDATE_ASSET_URL   "https://github.com/bhusann/cctl/releases/latest/download/cctl"
+#endif
+#ifndef UPDATE_DRIVERS_URL
 #define UPDATE_DRIVERS_URL "https://github.com/bhusann/cctl/releases/latest/download/drivers.tar.gz"
+#endif
 #define UPDATE_RELEASES    "https://github.com/bhusann/cctl/releases"
 
 static int cmd_update(int argc, char **argv)
@@ -5723,6 +5732,38 @@ static int cmd_update(int argc, char **argv)
         return 0;
     }
 
+    /* ── All-or-nothing staging ─────────────────────────────────────────
+     * Both assets must be downloaded AND verified into tmpdir before a
+     * single byte is placed anywhere: a failed tarball fetch or hash gate
+     * aborts the whole update (binary stays, cache stays). */
+    printf("Fetching %s for the offline cache...\n", DRIVERS_TARBALL);
+    char dtar[PATH_MAX];
+    char dsha[65] = {0};
+    snprintf(dtar, sizeof(dtar), "%s/%s", tmpdir, DRIVERS_TARBALL);
+    if (download_file(UPDATE_DRIVERS_URL, dtar) != 0) {
+        fprintf(stderr,
+            "Error: update aborted — could not download %s (offline?).\n"
+            "       Nothing was installed: cctl stays at v%s (build %d) and\n"
+            "       %s was left unchanged. Both assets must be staged and\n"
+            "       verified before either is placed — retry 'cctl update'.\n",
+            DRIVERS_TARBALL, CCTL_VERSION, CCTL_MICROVERSION, DRIVERS_CACHE_FILE);
+        remove_tree(tmpdir);
+        return 1;
+    }
+    if (file_sha256(dtar, dsha) != 0 || strcmp(dsha, DRIVERS_SHA256) != 0) {
+        fprintf(stderr,
+            "Error: update aborted — downloaded %s failed its sha256 check.\n"
+            "       expected %s\n"
+            "       got      %s\n"
+            "       Nothing was installed: cctl stays at v%s (build %d) and\n"
+            "       %s was left unchanged.\n",
+            DRIVERS_TARBALL, DRIVERS_SHA256,
+            dsha[0] ? dsha : "unreadable",
+            CCTL_VERSION, CCTL_MICROVERSION, DRIVERS_CACHE_FILE);
+        remove_tree(tmpdir);
+        return 1;
+    }
+
     if (rel[0])
         printf("Update available: %s (build %d) — installed: v%s (build %d)\n",
                rel, remote_ver, CCTL_VERSION, CCTL_MICROVERSION);
@@ -5730,32 +5771,31 @@ static int cmd_update(int argc, char **argv)
         printf("Update available: build %d — installed: build %d\n",
                remote_ver, CCTL_MICROVERSION);
 
+    /* ── Commit phase ── both assets staged + verified above. Cache goes
+     * first: if its placement fails, nothing else has moved and the whole
+     * update reruns cleanly next time; the binary install goes last. */
+    if (cache_store(dtar) != 0) {
+        fprintf(stderr,
+            "Error: update aborted — could not refresh %s.\n"
+            "       The new binary was NOT installed (all-or-nothing):\n"
+            "       cctl stays at v%s (build %d). Retry 'cctl update'.\n",
+            DRIVERS_CACHE_FILE, CCTL_VERSION, CCTL_MICROVERSION);
+        remove_tree(tmpdir);
+        return 1;
+    }
     char *const args[] = { "install", "-m", "755", dest, "/usr/local/bin/cctl", NULL };
     if (run_cmd("install", args) != 0) {
-        fprintf(stderr, "Error: failed to install the updated binary.\n");
+        fprintf(stderr,
+            "Error: failed to install the updated binary.\n"
+            "       (The driver cache was already refreshed — harmless: a\n"
+            "       verified cache with the old binary works, and rerunning\n"
+            "       'cctl update' converges.)\n");
         remove_tree(tmpdir);
         return 1;
     }
     printf("Updated /usr/local/bin/cctl → %s (build %d).\n",
            rel[0] ? rel : "new release", remote_ver);
-
-    /* A release updates BOTH assets: refresh the persistent drivers cache
-     * unconditionally — freshly verified bytes always replace the copy
-     * there, same sha or not (only a failed hash gate leaves it alone). */
-    printf("Fetching %s for the offline cache...\n", DRIVERS_TARBALL);
-    {
-        char dtar[PATH_MAX];
-        char dsha[65] = {0};
-        snprintf(dtar, sizeof(dtar), "%s/%s", tmpdir, DRIVERS_TARBALL);
-        if (download_file(UPDATE_DRIVERS_URL, dtar) != 0)
-            fprintf(stderr, "Warning: could not download %s — %s left unchanged.\n",
-                    DRIVERS_TARBALL, DRIVERS_CACHE_FILE);
-        else if (file_sha256(dtar, dsha) != 0 || strcmp(dsha, DRIVERS_SHA256) != 0)
-            fprintf(stderr, "Warning: downloaded %s failed its sha256 check — %s left unchanged.\n",
-                    DRIVERS_TARBALL, DRIVERS_CACHE_FILE);
-        else if (cache_store(dtar) == 0)
-            printf("Offline cache refreshed: %s\n", DRIVERS_CACHE_FILE);
-    }
+    printf("Offline cache refreshed: %s\n", DRIVERS_CACHE_FILE);
 
     if (access("/etc/sudoers.d/cctl", R_OK) != 0)
         printf("Note: no sudoers rule found — run 'cctl install' to set up passwordless sudo.\n");
@@ -5878,6 +5918,13 @@ int main(int argc, char **argv)
 
     if (strcmp(argv[1], "--microversion") == 0) {
         printf("%d\n", CCTL_MICROVERSION);
+        return 0;
+    }
+
+    /* Hidden diagnostic (like --microversion: no help, no README) —
+     * prints the sha256 baked into this binary for driver verification. */
+    if (strcmp(argv[1], "--shasecret") == 0) {
+        printf("%s\n", DRIVERS_SHA256);
         return 0;
     }
 
