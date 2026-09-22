@@ -40,7 +40,7 @@
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
-#define CCTL_MICROVERSION 100015
+#define CCTL_MICROVERSION 100016
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -235,7 +235,9 @@ static int safe_atoi(const char *str, int *out)
  * /tmp is world-writable: unlink any pre-existing file first and create
  * with O_EXCL|O_NOFOLLOW + 0600 so nobody can plant a symlink or a fake
  * mode file ahead of us. */
+#ifndef MODE_FILE
 #define MODE_FILE "/tmp/cctl.mode"
+#endif
 
 static int mode_write(const char *profile, const char *method)
 {
@@ -3388,8 +3390,10 @@ static void print_usage(const char *prog)
 
     /* ── System ─────────────────────────────────────────────────────────── */
     printf("  %sSYSTEM%s\n", C_CYN_BLD, C_RST);
-    printf("    %sinstall%s [--force]        Install/upgrade system-wide + passwordless sudo\n", C_BLD, C_RST);
-    printf("    %sdrivers-install%s         Install kernel drivers %s(auto-fetch or offline; sha256-verified)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    /* install is only worth advertising from a not-yet-installed copy */
+    if (!is_installed_systemwide())
+        printf("    %sinstall%s [--force]        Install/upgrade system-wide + passwordless sudo\n", C_BLD, C_RST);
+    printf("    %sdrivers-manage%s          Install, reinstall, or uninstall kernel drivers %s(auto-fetch or offline; sha256-verified)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %supdate%s                  Update cctl from GitHub releases\n\n", C_BLD, C_RST);
 
     /* Driver hint — only shown when the TUXEDO/Clevo stack is not loaded */
@@ -3398,7 +3402,7 @@ static void print_usage(const char *prog)
         printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
         printf("    • %sset/setR%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
         printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    Fix: run %scctl drivers-install%s\n\n",
+        printf("    Fix: run %scctl drivers-manage%s\n\n",
                C_BLD, C_RST);
     }
 
@@ -5266,7 +5270,7 @@ static int cmd_install(int argc, char **argv)
 }
 
 /* ========================================================================
- * DRIVERS INSTALL — source resolution: local file → download → manual path
+ * DRIVERS MANAGE — source resolution: cache → local file → download → manual path
  * ========================================================================
  * Order (never searches $HOME, never accepts a folder):
  *   1. drivers.tar.gz sitting next to the running cctl binary — sha256
@@ -5290,6 +5294,17 @@ static int cmd_install(int argc, char **argv)
  * bump CCTL_MICROVERSION, release a new cctl binary. (The driver sources
  * themselves live only in the mirror repo, not in this checkout.) */
 #define DRIVERS_SHA256      "ca6cb6d2bcc7abb8168e16c76ca42220bc957e611f718ee678c6be4d593dd4c2"
+
+/* Persistent driver cache: survives reboots so reinstall/uninstall works
+ * offline with no tarball beside the binary and no typed path. /var/lib
+ * (not /var/cache) — FHS marks it as state that must persist, not as
+ * re-creatable cache that system cleaners may purge. Root-owned. */
+#ifndef DRIVERS_CACHE_DIR
+#define DRIVERS_CACHE_DIR   "/var/lib/cctl"
+#endif
+#ifndef DRIVERS_CACHE_FILE
+#define DRIVERS_CACHE_FILE  DRIVERS_CACHE_DIR "/drivers.tar.gz"
+#endif
 
 /* Directory containing the running binary. Returns 0 and fills out. */
 static int binary_dir(char *out, size_t sz)
@@ -5393,13 +5408,56 @@ static int verify_drivers_sha(const char *path, const char *src_desc, int announ
     return 0;
 }
 
+/* Atomically publish verified driver bytes to the persistent cache
+ * (copy to ".new", fsync-free rename over the target). Non-fatal by
+ * design: prints why and returns -1; callers continue without it. */
+static int cache_store(const char *verified_file)
+{
+    if (mkdir(DRIVERS_CACHE_DIR, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "Note: cannot create %s: %s\n", DRIVERS_CACHE_DIR, strerror(errno));
+        return -1;
+    }
+    char tmp[PATH_MAX];
+    snprintf(tmp, sizeof(tmp), "%s/.new", DRIVERS_CACHE_DIR);
+    char *const cp_args[] = { "cp", "--", (char *)verified_file, tmp, NULL };
+    if (run_cmd("cp", cp_args) != 0) {
+        unlink(tmp);
+        fprintf(stderr, "Note: cannot copy %s into %s\n", verified_file, DRIVERS_CACHE_DIR);
+        return -1;
+    }
+    if (chmod(tmp, 0644) != 0 || rename(tmp, DRIVERS_CACHE_FILE) != 0) {
+        fprintf(stderr, "Note: cannot publish %s: %s\n", DRIVERS_CACHE_FILE, strerror(errno));
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+/* Step 0 of drivers-manage: a hash-matching cache entry wins outright.
+ * Returns 1 (out filled) on hit; 0 on absent-or-stale — a stale entry is
+ * reported once and never used, only replaced after the next verified
+ * acquisition. */
+static int cache_lookup(char *out, size_t sz)
+{
+    char sha[65] = {0};
+    if (access(DRIVERS_CACHE_FILE, R_OK) != 0)
+        return 0;
+    if (file_sha256(DRIVERS_CACHE_FILE, sha) == 0 && strcmp(sha, DRIVERS_SHA256) == 0) {
+        snprintf(out, sz, "%s", DRIVERS_CACHE_FILE);
+        return 1;
+    }
+    printf("Note: %s is outdated or corrupt — fetching a verified replacement.\n",
+           DRIVERS_CACHE_FILE);
+    return 0;
+}
+
 static int cmd_drivers_install(int argc, char **argv)
 {
     /* No file arguments, ever — cctl locates/downloads the archive itself
      * and verifies its baked-in sha256, so nothing user-named is trusted
      * except via the explicitly-prompted offline path (also verified). */
     if (argc != 2) {
-        fprintf(stderr, "Error: 'cctl drivers-install' does not accept file arguments.\n"
+        fprintf(stderr, "Error: 'cctl drivers-manage' does not accept file arguments.\n"
                         "       It finds or downloads %s automatically.\n",
                 DRIVERS_TARBALL);
         return 1;
@@ -5413,17 +5471,40 @@ static int cmd_drivers_install(int argc, char **argv)
     char tarball[PATH_MAX + 32] = {0}; /* staged copy — always inside tmpdir */
     char src[PATH_MAX + 32] = {0};     /* verified source outside tmp (local/offline) */
     int staged_by_download = 0;
+    int src_is_cache = 0;
     int rc = 1;
 
-    /* 1. Local first: drivers.tar.gz beside the cctl binary — sha256-checked
-     *    ON THE SPOT, before anything is staged: a bad local file is
-     *    rejected right where it sits (never copied, never downloaded). */
+    /* 0. Persistent cache first: /var/lib/cctl/drivers.tar.gz — survives
+     *    reboots, so reinstall/uninstall works fully offline. Only a copy
+     *    matching the baked hash is used; a stale one is reported and
+     *    replaced after the next verified acquisition. */
+    if (cache_lookup(src, sizeof(src))) {
+        src_is_cache = 1;
+        printf("Using cached %s\n  from %s\n", DRIVERS_TARBALL, DRIVERS_CACHE_DIR);
+    }
+
+    /* 1. Local: drivers.tar.gz beside the cctl binary — sha256-checked
+     *    ON THE SPOT before anything is staged. A mismatch does NOT abort:
+     *    the outdated/corrupt copy is called out ("do not use it") and the
+     *    flow continues with the download, which also reseeds the cache. */
     char bindir[PATH_MAX] = {0};
-    if (binary_dir(bindir, sizeof(bindir)) == 0) {
+    if (binary_dir(bindir, sizeof(bindir)) != 0)
+        bindir[0] = '\0';
+    if (!src[0] && bindir[0]) {
         snprintf(src, sizeof(src), "%s/%s", bindir, DRIVERS_TARBALL);
         if (access(src, R_OK) == 0) {
-            if (verify_drivers_sha(src, "local drivers.tar.gz", 0) != 0)
-                goto cleanup; /* rejected in place */
+            char lsha[65] = {0};
+            if (file_sha256(src, lsha) != 0 || strcmp(lsha, DRIVERS_SHA256) != 0) {
+                fprintf(stderr,
+                    "Warning: %s beside the cctl binary is outdated or corrupt.\n"
+                    "         Do NOT use that copy: %s\n"
+                    "         expected %s\n"
+                    "         got      %s\n"
+                    "         Fetching a verified copy instead.\n",
+                    DRIVERS_TARBALL, src, DRIVERS_SHA256,
+                    lsha[0] ? lsha : "unreadable");
+                src[0] = '\0';
+            }
         } else {
             src[0] = '\0';
         }
@@ -5451,13 +5532,13 @@ static int cmd_drivers_install(int argc, char **argv)
                 "Error: could not provide %s.\n"
                 "%s\n"
                 "Do ONE of the following:\n"
-                "  1. Re-run 'cctl drivers-install' with an internet connection\n"
+                "  1. Re-run 'cctl drivers-manage' with an internet connection\n"
                 "     (it then downloads automatically).\n"
                 "  2. Download %s manually from\n"
                 "       %s\n"
                 "     and place it in this folder:\n"
                 "       %s\n"
-                "     then re-run 'cctl drivers-install'.\n"
+                "     then re-run 'cctl drivers-manage'.\n"
                 "  3. Or enter the full path to a %s you already have.\n",
                 DRIVERS_TARBALL,
                 can_download
@@ -5517,6 +5598,12 @@ static int cmd_drivers_install(int argc, char **argv)
             goto cleanup;
     }
 
+    /* Publish the verified staged bytes to the persistent cache so a later
+     * reinstall/uninstall needs no network. Skipped when the cache itself
+     * was the source; failure is non-fatal (cache_store reports why). */
+    if (!src_is_cache)
+        (void)cache_store(tarball);
+
     /* Extract into the private temp dir and run the verified installer. */
     {
         char *const tar_args[] = { "tar", "-xzf", tarball, "-C", tmpdir, NULL };
@@ -5559,8 +5646,9 @@ cleanup:
  * binary to be swapped between verification and install.
  * ======================================================================== */
 
-#define UPDATE_ASSET_URL "https://github.com/bhusann/cctl/releases/latest/download/cctl"
-#define UPDATE_RELEASES  "https://github.com/bhusann/cctl/releases"
+#define UPDATE_ASSET_URL   "https://github.com/bhusann/cctl/releases/latest/download/cctl"
+#define UPDATE_DRIVERS_URL "https://github.com/bhusann/cctl/releases/latest/download/drivers.tar.gz"
+#define UPDATE_RELEASES    "https://github.com/bhusann/cctl/releases"
 
 static int cmd_update(int argc, char **argv)
 {
@@ -5650,6 +5738,25 @@ static int cmd_update(int argc, char **argv)
     }
     printf("Updated /usr/local/bin/cctl → %s (build %d).\n",
            rel[0] ? rel : "new release", remote_ver);
+
+    /* A release updates BOTH assets: refresh the persistent drivers cache
+     * unconditionally — freshly verified bytes always replace the copy
+     * there, same sha or not (only a failed hash gate leaves it alone). */
+    printf("Fetching %s for the offline cache...\n", DRIVERS_TARBALL);
+    {
+        char dtar[PATH_MAX];
+        char dsha[65] = {0};
+        snprintf(dtar, sizeof(dtar), "%s/%s", tmpdir, DRIVERS_TARBALL);
+        if (download_file(UPDATE_DRIVERS_URL, dtar) != 0)
+            fprintf(stderr, "Warning: could not download %s — %s left unchanged.\n",
+                    DRIVERS_TARBALL, DRIVERS_CACHE_FILE);
+        else if (file_sha256(dtar, dsha) != 0 || strcmp(dsha, DRIVERS_SHA256) != 0)
+            fprintf(stderr, "Warning: downloaded %s failed its sha256 check — %s left unchanged.\n",
+                    DRIVERS_TARBALL, DRIVERS_CACHE_FILE);
+        else if (cache_store(dtar) == 0)
+            printf("Offline cache refreshed: %s\n", DRIVERS_CACHE_FILE);
+    }
+
     if (access("/etc/sudoers.d/cctl", R_OK) != 0)
         printf("Note: no sudoers rule found — run 'cctl install' to set up passwordless sudo.\n");
 
@@ -5711,7 +5818,7 @@ static const struct command commands[] = {
     { "install", 0, cmd_install },
     { "update",  0, cmd_update },
     { "mux",     0, cmd_mux },      /* root required for switch, checked in handler */
-    { "drivers-install", 0, cmd_drivers_install },
+    { "drivers-manage", 0, cmd_drivers_install },
 
 };
 

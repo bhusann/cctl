@@ -31,7 +31,7 @@ Pre-built binaries and driver sources are available on the [Releases](https://gi
 sudo ./cctl install
 
 # 2. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery)
-sudo ./cctl drivers-install
+sudo ./cctl drivers-manage
 
 # 3. Ready to use immediately (privileged commands auto-elevate seamlessly, no manual sudo or aliases needed):
 cctl set balanced          # apply a power profile (auto-elevates via sudo)
@@ -140,7 +140,7 @@ cctl bat max                    # Standard: charge to 100%, resume at 95%
 ```bash
 cctl status                     # Print all current settings (profiles, GPU MUX, telemetry)
 cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
-cctl update                     # Update cctl itself from the latest GitHub release
+cctl update                     # Update cctl + refresh the offline driver cache
 cctl --version                  # Print version and exit (also -V)
 ```
 
@@ -188,16 +188,17 @@ The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is 
 
 **Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball (fetched straight from the mirror — never rebuilt; the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`).
 
-`sudo cctl drivers-install` resolves the sources itself, trying in this order:
+`sudo cctl drivers-manage` resolves the sources itself, trying in this order:
 
-1. `drivers.tar.gz` next to the cctl binary — sha256-checked on the spot (a bad file is rejected immediately, before anything is copied)
-2. download `drivers.tar.gz` from the mirror repo (curl/wget) into a private temp dir — on failure it tells you exactly where to place a manual copy
-3. offline / download failed: accepts the full path to a `drivers.tar.gz` you already have (checked in place first; staged to `/tmp` only if valid)
+1. the persistent cache **`/var/lib/cctl/drivers.tar.gz`** — automatically seeded after every successful acquisition and refreshed by `cctl update`. A copy here matching the baked sha256 means a fully **offline** reinstall: no beside-binary file, no download, no path prompt. A stale/corrupt cache entry is reported and ignored — it is never used, only replaced once any source yields verified bytes
+2. `drivers.tar.gz` next to the cctl binary — sha256-checked on the spot; an outdated or corrupt copy is called out with a warning (**do not use it**) and the flow continues with the download, which also reseeds the cache
+3. download `drivers.tar.gz` from the mirror repo (curl/wget) into a private temp dir — on failure it tells you exactly where to place a manual copy
+4. offline / download failed: accepts the full path to a `drivers.tar.gz` you already have (checked in place first; staged to `/tmp` only if valid)
 
-Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused.
+Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file.
 
 ```bash
-sudo ./cctl drivers-install
+sudo ./cctl drivers-manage
 ```
 
 Direct install/uninstall (bypass cctl) — the script lives in the mirror repo:
@@ -238,6 +239,11 @@ sudo rm -f /usr/local/bin/cctl
 
 # Remove passwordless sudo rule (+ backup)
 sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak
+
+# Optional: remove the persistent driver cache. Kept by default on purpose —
+# it is what makes `cctl drivers-manage` able to reinstall/uninstall the
+# drivers later with no internet, no tarball beside the binary, no prompt.
+sudo rm -rf /var/lib/cctl
 ```
 
 ### 2. Remove Kernel Drivers
@@ -249,7 +255,7 @@ Use the driver installation script to cleanly unload modules and deregister DKMS
 git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
 sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --uninstall
 # or if cctl is still installed:
-sudo cctl drivers-install   # select the uninstall option
+sudo cctl drivers-manage   # select the uninstall option
 ```
 
 #### Method B: Manual Uninstallation
