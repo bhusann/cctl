@@ -34,7 +34,7 @@
 #include <signal.h>
 #include <sys/file.h>
 
-#define CCTL_VERSION      "3.1"
+#define CCTL_VERSION      "3.3"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
