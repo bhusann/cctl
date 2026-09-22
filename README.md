@@ -24,20 +24,23 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
 
 ## Quick Start
 
-Pre-built binaries and driver sources are available on the [Releases](https://github.com/bhusann/cctl/releases) page.
-
 ```bash
-# 1. Install cctl system-wide (installs to /usr/local/bin, sets up passwordless sudo & auto-elevation)
+# 1. Download the pre-built binary from the Releases page
+curl -fsSL -o cctl https://github.com/bhusann/cctl/releases/latest/download/cctl && chmod +x cctl
+
+# 2. Install cctl system-wide (installs to /usr/local/bin, sets up passwordless sudo & auto-elevation)
 sudo ./cctl install
 
-# 2. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery)
-sudo ./cctl drivers-manage
+# 3. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery)
+cctl drivers-manage
 
-# 3. Ready to use immediately (privileged commands auto-elevate seamlessly, no manual sudo or aliases needed):
+# 4. Ready to use immediately (privileged commands auto-elevate seamlessly, no manual sudo or aliases needed):
 cctl set balanced          # apply a power profile (auto-elevates via sudo)
 cctl fan auto              # set fans to automatic (auto-elevates via sudo)
 cctl status                # view all current settings
 ```
+
+Pre-built `cctl` and `drivers.tar.gz` assets are also available on the [Releases](https://github.com/bhusann/cctl/releases) page for manual download.
 
 ---
 
@@ -188,7 +191,7 @@ The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is 
 
 **Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball (fetched straight from the mirror — never rebuilt; the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`).
 
-`sudo cctl drivers-manage` resolves the sources itself, trying in this order:
+`cctl drivers-manage` (auto-elevates) resolves the sources itself, trying in this order:
 
 1. the persistent cache **`/var/lib/cctl/drivers.tar.gz`** — automatically seeded after every successful acquisition and refreshed by `cctl update`. A copy here matching the baked sha256 means a fully **offline** reinstall: no beside-binary file, no download, no path prompt. A stale/corrupt cache entry is reported and ignored — it is never used, only replaced once any source yields verified bytes
 2. `drivers.tar.gz` next to the cctl binary — sha256-checked on the spot; an outdated or corrupt copy is called out with a warning (**do not use it**) and the flow continues with the download, which also reseeds the cache
@@ -198,7 +201,7 @@ The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is 
 Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file. `cctl update` itself is all-or-nothing: it stages and verifies **both** release assets (binary + tarball) in tmp first and places them only when both pass — if the tarball fetch or hash check fails, **nothing** is installed.
 
 ```bash
-sudo ./cctl drivers-manage
+cctl drivers-manage
 ```
 
 Direct install/uninstall (bypass cctl) — the script lives in the mirror repo:

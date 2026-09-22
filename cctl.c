@@ -41,7 +41,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100017
+#define CCTL_MICROVERSION 100018
 #endif
 
 /* ========================================================================
@@ -3395,11 +3395,16 @@ static void print_usage(const char *prog)
 
     /* ── System ─────────────────────────────────────────────────────────── */
     printf("  %sSYSTEM%s\n", C_CYN_BLD, C_RST);
-    /* install is only worth advertising from a not-yet-installed copy */
+    /* State-dependent advertising: an uninstalled copy tells you how to
+     * install; the installed binary tells you how to update. The hidden
+     * one still works if invoked — this is help visibility only. */
     if (!is_installed_systemwide())
         printf("    %sinstall%s [--force]        Install/upgrade system-wide + passwordless sudo\n", C_BLD, C_RST);
     printf("    %sdrivers-manage%s          Install, reinstall, or uninstall kernel drivers %s(auto-fetch or offline; sha256-verified)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %supdate%s                  Update cctl from GitHub releases\n\n", C_BLD, C_RST);
+    if (is_installed_systemwide())
+        printf("    %supdate%s                  Update cctl from GitHub releases\n\n", C_BLD, C_RST);
+    else
+        printf("\n"); /* keep the section's blank line without the update entry */
 
     /* Driver hint — only shown when the TUXEDO/Clevo stack is not loaded */
     if (!drivers_loaded()) {
@@ -5140,7 +5145,7 @@ static int cmd_install(int argc, char **argv)
 {
     int force = (argc >= 3 && strcmp(argv[2], "--force") == 0);
     if (argc > 3 || (argc == 3 && !force)) {
-        fprintf(stderr, "Error: 'cctl install' does not accept file arguments.\n");
+        fprintf(stderr, "Error: 'cctl install' does not accept arguments.\n");
         return 1;
     }
 
@@ -5462,7 +5467,7 @@ static int cmd_drivers_install(int argc, char **argv)
      * and verifies its baked-in sha256, so nothing user-named is trusted
      * except via the explicitly-prompted offline path (also verified). */
     if (argc != 2) {
-        fprintf(stderr, "Error: 'cctl drivers-manage' does not accept file arguments.\n"
+        fprintf(stderr, "Error: 'cctl drivers-manage' does not accept arguments.\n"
                         "       It finds or downloads %s automatically.\n",
                 DRIVERS_TARBALL);
         return 1;
