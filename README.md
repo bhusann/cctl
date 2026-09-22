@@ -24,12 +24,11 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
 
 ## Quick Start
 
-```bash
-# 1. Download the pre-built binary from the Releases page
-curl -fsSL -o cctl https://github.com/bhusann/cctl/releases/latest/download/cctl && chmod +x cctl
+1. Download the pre-built `cctl` binary from the **[Releases page](https://github.com/bhusann/cctl/releases)**.
 
-# 2. Install cctl system-wide (installs to /usr/local/bin, sets up passwordless sudo & auto-elevation)
-sudo ./cctl install
+```bash
+# 2. Make it executable and install cctl system-wide (installs to /usr/local/bin, sets up passwordless sudo & auto-elevation)
+chmod +x ./cctl && sudo ./cctl install
 
 # 3. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery)
 cctl drivers-manage
@@ -39,8 +38,6 @@ cctl set balanced          # apply a power profile (auto-elevates via sudo)
 cctl fan auto              # set fans to automatic (auto-elevates via sudo)
 cctl status                # view all current settings
 ```
-
-Pre-built `cctl` and `drivers.tar.gz` assets are also available on the [Releases](https://github.com/bhusann/cctl/releases) page for manual download.
 
 ---
 
@@ -80,20 +77,12 @@ powersave   OFF    powersave    balance_power      15/30W  + GPU 70W            
 eco         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W
 ```
 
-> **Fan Safety Defaults & Safety Disclaimer**: If fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat. To prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass this and keep your current fan state. Setting manual fan duty (`cctl fan <pct> --nosafe` or `cctl fan cpu|gpu <pct> --nosafe`) strictly requires `--nosafe`.
+> **Fan Safety Defaults & Safety Disclaimer**: `--nosafe` is a flag that bypasses cctl's fan safety and keeps your current fan state instead of letting cctl change it. The safety exists because if fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat — so to prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass that reset. Setting manual fan duty (`cctl fan <pct> --nosafe` or `cctl fan cpu|gpu <pct> --nosafe`) strictly requires `--nosafe`.
 >
 > ⚠️ **Safety Notice & Disclaimer**: Safety defaults (running without `--nosafe`) are strongly recommended for daily use to protect your hardware. The `--nosafe` flag is intended strictly for experimenting or one-time use for a specific purpose — **not for daily or regular use**. Overriding safety mechanisms can lead to severe overheating, thermal throttling, or hardware stress; the author is not responsible for any damage or instability caused by using this flag.
 >
 > **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
->
-> **Profile Change Visual Indicator**: Whenever switching profiles (`cctl set` or `cctl setR`), the keyboard backlight performs a snappy 375ms breathing pulse in the profile's signature color to provide instant visual feedback without blocking the shell, then immediately restores your previous state:
-> * **`max`**: Red (`#ff0000`)
-> * **`cpuperf`**: Orange (`#ff6e00`)
-> * **`balanced`**: Violet (`#c832ff`)
-> * **`powersave`**: Green (`#00ff00`)
-> * **`eco`**: Light Blue (`#50b4ff`)
->
-> *Non-destructive state handling*: If the keyboard was set to a solid color (or off), it returns to that exact color and brightness. If a background animation was active (such as `fire` or `aurora`), the pulse temporarily overrides it and automatically resumes your animation afterward without losing your original solid state.
+
 
 ---
 
@@ -103,31 +92,15 @@ eco         OFF    powersave    power              15/30W  + GPU 70W            
 ```bash
 cctl kbc <color>                # Set keyboard color: R G B (0-255), #RRGGBB, or preset name
 cctl kbb <pct>                  # Brightness (0-100%)
-cctl kbe <effect>               # Start background keyboard effect
-cctl kbe stop                   # Stop active effect and restore original color & brightness
-cctl kbe                        # Show active effect status or list available effects
+cctl kbe [effect|stop]          # Start an effect, stop & restore original color/brightness, or show status & list effects
 cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/unlock)
 ```
 
-Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
+Color presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
 
-**Keyboard Effects (`kbe`)**: Runs background animations on single-zone RGB keyboards without holding the terminal. Before starting, it records your current keyboard color and brightness; when stopped (`cctl kbe stop`), it restores the keyboard to that exact original state. Single-color effects automatically use your current keyboard color:
-* `breathe` — Smooth fade in/out breathing (uses current color)
-* `breathe-cycle` — Smooth breathing while cycling through the spectrum
-* `cycle` — Smooth continuous rainbow color cycle
-* `flash` — Strobe flash bursts (uses current color)
-* `flash-cycle` — Strobe flash bursts changing color on each burst
-* `candle` — Realistic flickering candlelight flame
-* `pulse` — Heartbeat double-pulse rhythm (uses current color)
-* `pulse-cycle` — Heartbeat double-pulse rhythm cycling through colors
-* `police` — Alternating emergency red & blue strobe bursts
-* `fire` — Dynamic warm campfire flame with turbulent embers
-* `aurora` — Hypnotic Northern Lights emerald, cyan, and violet drift
-* `storm` — Dark moody sky with sudden electric lightning strikes
-* `starlight` — Deep midnight sky with gentle twinkling star shimmers
-* `temp` — Live CPU thermal heatmap (cyan $\to$ green $\to$ yellow $\to$ red, pulses $>90^\circ\text{C}$)
+Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `fire` `aurora` `storm` `starlight` `temp`
 
-*Manual Status Check*: Run `cctl kbe` to view the active effect, PID, and preserved base state (it re-elevates automatically — the `/run/cctl_kbe.state` file is root-only; `sudo cat` it directly if you prefer).
+*Manual Status Check*: Run `cctl kbe` to view the current active effect.
 
 ### Fan Control
 ```bash
@@ -138,14 +111,14 @@ cctl fan cpu|gpu <pct> --nosafe # Set individual fan duty (requires --nosafe)
 ```
 
 ### GPU MUX Switching
-Toggle the internal display hardware multiplexer between **MSHybrid** (panel driven by iGPU, both GPUs enumerated) and **dGPU** (panel driven directly by NVIDIA discrete GPU, iGPU removed from PCI display class).
+Switches between **MSHybrid** (iGPU + dGPU) and **dGPU** (NVIDIA GPU only). A reboot is required to apply the change.
 
 ```bash
 cctl mux                        # Show current MUX mode (MSHybrid / dGPU) & pending status
 cctl mux switch                 # Toggle MUX mode (stages in UEFI NVRAM, reboot to apply)
 ```
 
-> **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
+> **X11 quirk:** After switching to **dGPU** mode the display may come up at **40 Hz instead of 165** — run `cctl rr 165` to set it back. *(X11 sessions only.)*
 
 ### Privacy
 ```bash
@@ -176,9 +149,9 @@ cctl nvidia memclock <min,max> | reset  # Lock/unlock memory clocks (auto persis
 ```
 
 ### Display
-> **Note:** Display commands rely on `xrandr` and are only supported on native **X11** sessions. They are **not** supported under Wayland or XWayland. `cctl` automatically checks for an active X11 session with `xrandr`: if not present, the `DISPLAY` section is hidden from `cctl --help` and the refresh rate is omitted from `cctl status`.
+> **Note:** Display commands need a native **X11** session — if your desktop doesn't support one (e.g. Wayland), the `DISPLAY` section is hidden from `cctl --help` and the refresh rate from `cctl status`.
 >
-> Displays only support their specific predefined hardware/EDID refresh rates — arbitrary in-between refresh rates cannot be set. Run `cctl rr` without arguments to list all available/supported refresh rates for your screen, and choose only from those listed.
+> Only the display panel's preconfigured refresh rates are supported — run `cctl rr` to list the valid ones for your screen and pick from that list.
 
 ```bash
 cctl rr                         # List all supported refresh rates
@@ -194,7 +167,7 @@ cctl epp <preference>           # performance, balance_performance, balance_powe
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 ```
 >
-> **RAPL limits:** PL2 ≤ 115 W always. PL1 ≤ 45 W — with one exception: up to **90 W PL1 while max mode is active** (recorded by the last `cctl set max` / `cctl setR max`; shown as `Mode:` in `cctl status`, `EC default` when no profile has been applied yet).
+> **RAPL limits:** PL2 ≤ 115 W always. PL1 ≤ 45 W — up to **90 W while max mode is active**.
 
 ---
 
@@ -210,22 +183,9 @@ make                # Standard build (profiles, fans, display, battery, nvidia c
 
 The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is required for fan control, keyboard backlight, battery thresholds, and EC GPU profile slots. The installer handles DKMS registration, build, and modprobe config.
 
-**Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball (fetched straight from the mirror — never rebuilt; the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`).
+**Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball.
 
-`cctl drivers-manage` (auto-elevates) resolves the sources itself, trying in this order:
-
-1. the persistent cache **`/var/lib/cctl/drivers.tar.gz`** — automatically seeded after every successful acquisition and refreshed by `cctl update`. A copy here matching the baked sha256 means a fully **offline** reinstall: no beside-binary file, no download, no path prompt. A stale/corrupt cache entry is reported and ignored — it is never used, only replaced once any source yields verified bytes
-2. `drivers.tar.gz` next to the cctl binary — sha256-checked on the spot; an outdated or corrupt copy is called out with a warning (**do not use it**) and the flow continues with the download, which also reseeds the cache
-3. download `drivers.tar.gz` from the mirror repo (curl/wget) into a private temp dir — on failure it tells you exactly where to place a manual copy
-4. offline / download failed: accepts the full path to a `drivers.tar.gz` you already have (checked in place first; staged to `/tmp` only if valid)
-
-Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file. `cctl update` itself is all-or-nothing: it stages and verifies **both** release assets (binary + tarball) in tmp first and places them only when both pass — if the tarball fetch or hash check fails, **nothing** is installed.
-
-```bash
-cctl drivers-manage
-```
-
-Direct install/uninstall (bypass cctl) — the script lives in the mirror repo:
+Install or uninstall directly with the script (it lives in the mirror repo):
 
 ```bash
 git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
@@ -254,8 +214,17 @@ Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
 
 ## Uninstallation
 
-### 1. Remove `cctl` Binary & Sudoers Entry
-`cctl install` places the binary in `/usr/local/bin/cctl` and configures a passwordless sudo rule in `/etc/sudoers.d/cctl` for auto-elevation (validated with `visudo -c` on install; the previous rule is backed up as `/etc/sudoers.d/cctl.bak`). To remove them:
+Drivers first, then the cctl binary — in that order, so cctl is still around for the clean driver removal.
+
+### Automated Uninstallation (Recommended)
+
+1. **Kernel drivers** — `sudo cctl drivers-manage` and select the uninstall option (it cleanly unloads the modules and deregisters DKMS):
+
+```bash
+sudo cctl drivers-manage   # select the uninstall option
+```
+
+2. **cctl binary & sudoers** — `cctl install` places the binary in `/usr/local/bin/cctl` and configures a passwordless sudo rule in `/etc/sudoers.d/cctl` for auto-elevation (validated with `visudo -c` on install; the previous rule is backed up as `/etc/sudoers.d/cctl.bak`). To remove them:
 
 ```bash
 # Remove installed binary
@@ -270,20 +239,18 @@ sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak
 sudo rm -rf /var/lib/cctl
 ```
 
-### 2. Remove Kernel Drivers
+### Manual Uninstallation
 
-#### Method A: Automated (Recommended)
-Use the driver installation script to cleanly unload modules and deregister DKMS:
+Same order — unload and remove the drivers first, then the cctl binary itself.
+
+Run the mirror's script directly (works without cctl):
 
 ```bash
 git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
 sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --uninstall
-# or if cctl is still installed:
-sudo cctl drivers-manage   # select the uninstall option
 ```
 
-#### Method B: Manual Uninstallation
-To remove the driver stack manually without using the script:
+Or do it step by step:
 
 1. **Unload active kernel modules** (in reverse dependency order):
    ```bash
@@ -309,11 +276,24 @@ To remove the driver stack manually without using the script:
    sudo depmod -a
    ```
 
+5. **cctl binary & sudoers**:
+   ```bash
+   # Remove installed binary
+   sudo rm -f /usr/local/bin/cctl
+
+   # Remove passwordless sudo rule (+ backup)
+   sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak
+
+   # Optional: remove the persistent driver cache
+   sudo rm -rf /var/lib/cctl
+   ```
+
 ---
 
-## Hardware Quirks & Developer Notes
+## Developer Notes
 
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
+- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while max mode is active: recorded by the last `cctl set max` / `cctl setR max`; shown as `Mode:` in `cctl status`, and `EC default` when no profile has been applied yet.
 
 - **EC Fan Byte Order** — Clevo's EC expects reversed byte order depending on command context. Auto-restore uses `{0xFF, fan_idx}`, duty cycle uses `{fan_idx, duty}`.
 
@@ -356,6 +336,16 @@ To remove the driver stack manually without using the script:
   - `MSHybrid` (panel driven by Intel iGPU; NVIDIA dGPU provides render offload).
   - `dGPU` (panel wired directly to NVIDIA GeForce RTX card; Intel iGPU is unmapped from PCI display class).
   - The hardware MUX state cannot be flipped on-the-fly inside an active OS session (ACPI `_DSM` methods on this Insyde board hang the display subsystem). Instead, switching is staged via the UEFI NVRAM variable `Setup-a04a27f4-df00-4d42-b552-39511302113d` at file offset 430 (`0x03` = MSHybrid, `0x02` = dGPU). The new mode is latched during POST upon reboot.
+  - **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
+- **dGPU mode boots at 40 Hz (X11)** — Happens on warm *and* cold boots, so it is not EC state. The panel's EDID is identical in both MUX modes: the base block's first (preferred) DTD is 2560x1440 @ **40 Hz**, while the 165 Hz timing lives in the DisplayID extension. The nvidia X driver takes the base-block preferred timing as the initial mode (boots 40); modesetting over i915 in MSHybrid prefers the DisplayID timing (boots 165). Not a capability problem — xrandr lists both rates in dGPU mode. Fix: `cctl rr 165` (user-facing note in the GPU MUX section).
+- **Keyboard effect state (`kbe`)** — Run `cctl kbe` to view the active effect, PID, and preserved base state (it re-elevates automatically — the `/run/cctl_kbe.state` file is root-only; `sudo cat` it directly if you prefer).
+- **Release tarball provenance** — The `drivers.tar.gz` attached to releases is fetched straight from the mirror — never rebuilt — and the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`.
+- **drivers-manage source order** — how `cctl drivers-manage` finds `drivers.tar.gz` (first match wins):
+  1. persistent cache **`/var/lib/cctl/drivers.tar.gz`** — sha-verified; enables fully offline reinstall; stale/corrupt entries are reported, ignored, and replaced on the next verified acquisition
+  2. `drivers.tar.gz` beside the cctl binary — sha-checked on the spot; a stale copy is warned about and skipped
+  3. download from the mirror into a private temp dir — on failure it names the folder for a manual copy
+  4. full path to a `drivers.tar.gz` you already have — checked in place first; staged only if valid
+- **drivers-manage verification & update atomicity** — Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file. `cctl update` itself is all-or-nothing: it stages and verifies **both** release assets (binary + tarball) in tmp first and places them only when both pass — if the tarball fetch or hash check fails, **nothing** is installed.
 
 ---
 
