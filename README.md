@@ -119,6 +119,7 @@ Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime`
 * `flash-cycle` — Strobe flash bursts changing color on each burst
 * `candle` — Realistic flickering candlelight flame
 * `pulse` — Heartbeat double-pulse rhythm (uses current color)
+* `pulse-cycle` — Heartbeat double-pulse rhythm cycling through colors
 * `police` — Alternating emergency red & blue strobe bursts
 * `fire` — Dynamic warm campfire flame with turbulent embers
 * `aurora` — Hypnotic Northern Lights emerald, cyan, and violet drift

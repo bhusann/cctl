@@ -41,7 +41,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100018
+#define CCTL_MICROVERSION 100019
 #endif
 
 /* ========================================================================
@@ -2375,6 +2375,10 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
         }
     } else if (strcmp(effect, "pulse") == 0 || strcmp(effect, "heartbeat") == 0) {
         mode = 7;
+    } else if (strcmp(effect, "pulse-cycle") == 0 || strcmp(effect, "pulse+colorchange") == 0 ||
+               strcmp(effect, "pulse_cycle") == 0 || strcmp(effect, "pulsecycle") == 0 ||
+               strcmp(effect, "heartbeat-cycle") == 0) {
+        mode = 14;
     } else if (strcmp(effect, "police") == 0 || strcmp(effect, "siren") == 0 ||
                strcmp(effect, "cop") == 0 || strcmp(effect, "emergency") == 0) {
         mode = 8;
@@ -2397,6 +2401,7 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
 
     int step = 0;
     int flash_hue = 0;
+    int pulse_hue = 0;
     int candle_val = 200;
     int fire_hue = 20, fire_bri = 200;
     int star_twinkle_steps = 0, star_peak_white = 220;
@@ -2637,6 +2642,22 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
                 kbe_write_frame(fd_col, out_r, out_g, out_b);
                 kbe_sleep_ms(30);
                 step++;
+                break;
+            }
+            case 14: { /* pulse-cycle: same heartbeat wave, hue +55 per beat */
+                static const uint8_t pulse_wave[] = {
+                    30, 90, 180, 255, 230, 160, 100, 60, 40,
+                    90, 170, 230, 190, 130, 80, 40, 20, 10, 0
+                };
+                int pr, pg, pb;
+                kbe_hue_to_rgb(pulse_hue, 255, &pr, &pg, &pb);
+                pulse_hue = (pulse_hue + 55) % 360;
+                for (size_t i = 0; i < sizeof(pulse_wave) && g_kbe_running; i++) {
+                    int val = pulse_wave[i];
+                    kbe_write_frame(fd_col, (pr * val) / 255, (pg * val) / 255, (pb * val) / 255);
+                    kbe_sleep_ms(22);
+                }
+                kbe_sleep_ms(700);
                 break;
             }
             default:
@@ -4980,6 +5001,7 @@ static int cmd_kbe(int argc, char **argv)
             printf("  %-16s %s\n", "flash-cycle", "Strobe flash bursts cycling colors");
             printf("  %-16s %s\n", "candle", "Realistic flickering candle flame");
             printf("  %-16s %s\n", "pulse", "Heartbeat double-pulse (uses current color)");
+            printf("  %-16s %s\n", "pulse-cycle", "Heartbeat double-pulse cycling colors");
             printf("  %-16s %s\n", "police", "Emergency red and blue alternating strobe");
             printf("  %-16s %s\n", "fire", "Dynamic warm flickering campfire flames");
             printf("  %-16s %s\n", "aurora", "Northern Lights emerald, cyan, and violet drift");
@@ -5011,6 +5033,9 @@ static int cmd_kbe(int argc, char **argv)
         strcmp(sub, "flash_cycle") != 0 && strcmp(sub, "flashcycle") != 0 &&
         strcmp(sub, "candle") != 0 && strcmp(sub, "flicker") != 0 &&
         strcmp(sub, "pulse") != 0 && strcmp(sub, "heartbeat") != 0 &&
+        strcmp(sub, "pulse-cycle") != 0 && strcmp(sub, "pulse+colorchange") != 0 &&
+        strcmp(sub, "pulse_cycle") != 0 && strcmp(sub, "pulsecycle") != 0 &&
+        strcmp(sub, "heartbeat-cycle") != 0 &&
         strcmp(sub, "police") != 0 && strcmp(sub, "siren") != 0 &&
         strcmp(sub, "cop") != 0 && strcmp(sub, "emergency") != 0 &&
         strcmp(sub, "fire") != 0 && strcmp(sub, "flame") != 0 &&
@@ -5024,7 +5049,7 @@ static int cmd_kbe(int argc, char **argv)
         strcmp(sub, "temp") != 0 && strcmp(sub, "temperature") != 0 &&
         strcmp(sub, "thermal") != 0 && strcmp(sub, "heatmap") != 0) {
         fprintf(stderr, "Error: Unknown keyboard effect '%s'\n", sub);
-        fprintf(stderr, "Available effects: breathe, breathe-cycle, cycle, flash, flash-cycle, candle, pulse, police, fire, aurora, storm, starlight, temp\n");
+        fprintf(stderr, "Available effects: breathe, breathe-cycle, cycle, flash, flash-cycle, candle, pulse, pulse-cycle, police, fire, aurora, storm, starlight, temp\n");
         return 1;
     }
 
