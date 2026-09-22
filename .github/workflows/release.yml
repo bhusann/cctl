@@ -23,17 +23,27 @@ jobs:
       - name: Build cctl binary (no-NVIDIA)
         run: make cctl
 
-      - name: Package drivers source tarball
+      # Attach the FINISHED tarball exactly as it exists in the mirror repo
+      # (never rebuilt here) — see
+      # https://github.com/bhusann/tuxedo-drivers-cctl-mirror
+      - name: Fetch drivers.tar.gz from the mirror repo
         run: |
-          tar -czf cctl-drivers.tar.gz \
-            --exclude='*.o' --exclude='*.ko' --exclude='*.mod.c' --exclude='*.cmd' \
-            --exclude='modules.order' --exclude='Module.symvers' --exclude='*.markers' \
-            --exclude='.tmp_versions' --exclude='build' --exclude='usr' --exclude='.tmp_*' \
-            drivers
+          curl -fsSL --connect-timeout 10 -o drivers.tar.gz \
+            https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/drivers.tar.gz
+          # Refuse to publish a tarball the cctl binary would reject: the
+          # download must match the sha256 baked into cctl.c.
+          expected=$(sed -n 's/^#define DRIVERS_SHA256[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p' cctl.c)
+          actual=$(sha256sum drivers.tar.gz | cut -d' ' -f1)
+          echo "baked:  $expected"
+          echo "mirror: $actual"
+          if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            echo "::error::mirror drivers.tar.gz does not match DRIVERS_SHA256 in cctl.c"
+            exit 1
+          fi
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             cctl
-            cctl-drivers.tar.gz
+            drivers.tar.gz

@@ -5,27 +5,10 @@ experimental
 testpuremodes
 setup_test_sudoers.sh
 remove_test_sudoers.sh
-legacygpu.ko
 *.o
 
 # Backups
 *.bak
-
-# Kernel version marker
-.kernel_version
-
-# Kernel module build artifacts (drivers/)
-drivers/**/*.ko
-drivers/**/*.ko.cmd
-drivers/**/*.ko
-drivers/**/*.ko.cmd
-drivers/**/*.mod
-drivers/**/*.mod.c
-drivers/**/*.mod.o
-drivers/**/*.mod.o.cmd
-drivers/**/modules.order
-drivers/**/.*.cmd
-drivers/**/.module-common*
 
 # Editor/OS junk
 *~

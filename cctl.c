@@ -34,13 +34,13 @@
 #include <signal.h>
 #include <sys/file.h>
 
-#define CCTL_VERSION      "3.0"
+#define CCTL_VERSION      "3.1"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
-#define CCTL_MICROVERSION 100005
+#define CCTL_MICROVERSION 100015
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -110,6 +110,7 @@ static int nvidia_is_loaded(void);
 #endif
 static int bat_read_start(void);
 static int bat_read_end(void);
+static int command_exists(const char *cmd);
 
 /* ========================================================================
  * EC PORT I/O
@@ -221,6 +222,68 @@ static int safe_atoi(const char *str, int *out)
 }
 
 /* ========================================================================
+ * ACTIVE PROFILE MODE (/tmp/cctl.mode)
+ * ========================================================================
+ * `cctl set` / `cctl setR` record the active profile (line 1) and how it
+ * was applied (line 2: set | setR). `cctl status` displays it, and the
+ * RAPL PL1 ceiling consults it (90W unlocked only while mode == max,
+ * matching the EC max profile's power budget). GPU watts are deliberately
+ * NEVER read for this — the mode file is the single source of truth.
+ * /tmp is cleared on reboot, so a missing file simply means "EC default"
+ * (no profile applied since boot).
+ *
+ * /tmp is world-writable: unlink any pre-existing file first and create
+ * with O_EXCL|O_NOFOLLOW + 0600 so nobody can plant a symlink or a fake
+ * mode file ahead of us. */
+#define MODE_FILE "/tmp/cctl.mode"
+
+static int mode_write(const char *profile, const char *method)
+{
+    unlink(MODE_FILE);
+    int fd = open(MODE_FILE, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (fd < 0) return -1;
+    char buf[64];
+    int len = snprintf(buf, sizeof(buf), "%s\n%s\n", profile, method);
+    ssize_t w = write(fd, buf, (size_t)len);
+    close(fd);
+    if (w != len) { unlink(MODE_FILE); return -1; }
+    return 0;
+}
+
+/* Returns 0 and fills profile/method when a valid mode file exists,
+ * -1 otherwise (no file / empty / corrupt). */
+static int mode_read(char *profile, size_t psz, char *method, size_t msz)
+{
+    if (psz == 0 || msz == 0) return -1;
+    profile[0] = '\0';
+    method[0] = '\0';
+    FILE *fp = fopen(MODE_FILE, "r");
+    if (!fp) return -1;
+    char line[64];
+    if (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        snprintf(profile, psz, "%.*s", (int)psz - 1, line);
+    }
+    if (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        snprintf(method, msz, "%.*s", (int)msz - 1, line);
+    }
+    fclose(fp);
+    return profile[0] ? 0 : -1;
+}
+
+/* RAPL PL1 ceiling in watts: 45 normally; 90 only while the recorded
+ * active mode is "max" (EC max profile = 90/115W CPU + 100W GPU budget). */
+static int rapl_pl1_ceiling(void)
+{
+    char profile[32] = {0}, method[16] = {0};
+    if (mode_read(profile, sizeof(profile), method, sizeof(method)) == 0 &&
+        strcmp(profile, "max") == 0)
+        return 90;
+    return 45;
+}
+
+/* ========================================================================
  * GPU MUX SWITCHING (UEFI NVRAM)
  * ========================================================================
  * Board: COLORFUL P15 23 (Insyde H2O BIOS).
@@ -291,6 +354,36 @@ static void mux_show(void)
         printf("  %-14s %s%s%s\n", "GPU MUX:", col, mux_mode_str(nvram), C_RST);
 }
 
+/* AC adapter / battery state for the NVRAM-write power guard.
+ * Returns 1 = external power connected, 0 = running on battery,
+ * -1 = no mains device found (unknown → guard stays off). */
+static int ac_online(void)
+{
+    DIR *d = opendir("/sys/class/power_supply");
+    if (!d) return -1;
+    struct dirent *ent;
+    char path[512], type[32];
+    int found = -1;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        snprintf(path, sizeof(path), "/sys/class/power_supply/%s/type", ent->d_name);
+        if (read_sysfs_str(path, type, sizeof(type)) < 0) continue;
+        if (strncmp(type, "Mains", 5) != 0) continue;
+        snprintf(path, sizeof(path), "/sys/class/power_supply/%s/online", ent->d_name);
+        found = (read_sysfs_long(path, -1) > 0) ? 1 : 0;
+        if (found == 1) break; /* multiple mains devices: any one online wins */
+    }
+    closedir(d);
+    return found;
+}
+
+/* Battery charge percent, or -1 when no battery is present/readable. */
+static int battery_pct(void)
+{
+    long v = read_sysfs_long("/sys/class/power_supply/BAT0/capacity", -1);
+    return (v >= 0 && v <= 100) ? (int)v : -1;
+}
+
 /* Toggle the MUX to the opposite mode.  Returns 0 on success, 1 on error. */
 static int mux_switch(void)
 {
@@ -304,6 +397,20 @@ static int mux_switch(void)
     if (geteuid() != 0) {
         fprintf(stderr, "Error: MUX switch requires root (sudo cctl mux switch)\n");
         return 1;
+    }
+
+    /* Power guard: committing a 1204-byte NVRAM variable while the battery
+     * is nearly empty with no AC risks losing power mid-write and leaving
+     * the Setup variable corrupted. (Deliberately a C-comment-only check —
+     * not documented in the README, per project decision.) */
+    if (ac_online() == 0) {
+        int pct = battery_pct();
+        if (pct >= 0 && pct < 10) {
+            fprintf(stderr,
+                    "Error: battery is less than 10%% and AC is not connected.\n"
+                    "       Connect AC to use this.\n");
+            return 1;
+        }
     }
 
     /* Read the full blob */
@@ -495,6 +602,13 @@ static int set_epp(const char *val)
  * RAPL POWER LIMITS
  * ======================================================================== */
 
+/* RAPL ceilings (watts): PL2 hard max 115W (OEM platform limit); PL1 hard
+ * max 45W — raised to 90W ONLY while mode == max (see rapl_pl1_ceiling(),
+ * fed by /tmp/cctl.mode; GPU wattage is never read for this). */
+#define RAPL_PL1_MAX_WATTS      45
+#define RAPL_PL1_MAX_WATTS_MAX  90
+#define RAPL_PL2_MAX_WATTS     115
+
 /* Read a RAPL sysfs file and return value in watts, or -1 on failure */
 static long read_rapl_watts(const char *path)
 {
@@ -520,6 +634,16 @@ static int read_rapl_current(int *pl1, int *pl2)
 /* Set RAPL power limits. Pass pl1_w <= 0 to skip PL1. */
 static int set_rapl_limits(int pl1_w, int pl2_w)
 {
+    /* Defense in depth: enforce the same ceilings as cmd_rapl even if a
+     * caller bypasses it (negative still means "skip"). */
+    int pl1_cap = rapl_pl1_ceiling();
+    if (pl1_w > pl1_cap || pl2_w > RAPL_PL2_MAX_WATTS) {
+        fprintf(stderr, "Error: RAPL out of range (PL1 max %dW%s, PL2 max %dW)\n",
+                pl1_cap, pl1_cap > RAPL_PL1_MAX_WATTS ? " in max mode" : "",
+                RAPL_PL2_MAX_WATTS);
+        return -1;
+    }
+
     int old_pl1 = -1, old_pl2 = -1;
     read_rapl_current(&old_pl1, &old_pl2);
 
@@ -903,6 +1027,42 @@ static char *find_webcam_usb_id(void)
     return result;
 }
 
+/* Enumerate a USB device's interface names (contain ':'), e.g. "1-8:1.0".
+ * Stores up to max entries into ifnames. Returns count, or -1 if the
+ * device directory is unreadable. */
+static int webcam_list_interfaces(const char *dev_id, char ifnames[][256], int max)
+{
+    char dirpath[512];
+    snprintf(dirpath, sizeof(dirpath), "/sys/bus/usb/devices/%s", dev_id);
+    DIR *d = opendir(dirpath);
+    if (!d) return -1;
+
+    int cnt = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL && cnt < max) {
+        if (!strchr(ent->d_name, ':'))
+            continue; /* regular attributes, not interfaces */
+        snprintf(ifnames[cnt], sizeof(ifnames[cnt]), "%s", ent->d_name);
+        cnt++;
+    }
+    closedir(d);
+    return cnt;
+}
+
+/* 1 if this interface is currently claimed by driver `drv` (e.g. "uvcvideo"). */
+static int iface_driver_is(const char *dev_id, const char *ifname, const char *drv)
+{
+    char link[540], target[512];
+    snprintf(link, sizeof(link), "/sys/bus/usb/devices/%s/%s/driver",
+             dev_id, ifname);
+    ssize_t n = readlink(link, target, sizeof(target) - 1);
+    if (n <= 0) return 0;
+    target[n] = '\0';
+    const char *base = strrchr(target, '/');
+    base = base ? base + 1 : target;
+    return strcmp(base, drv) == 0;
+}
+
 static int is_webcam_enabled(void)
 {
     /* Try tuxedo_io first */
@@ -910,15 +1070,23 @@ static int is_webcam_enabled(void)
     if (val >= 0)
         return val;
 
-    /* Fallback: check USB driver binding */
+    /* Fallback: "on" = at least one camera interface claimed by uvcvideo.
+     * The device-level driver link exists either way and says nothing about
+     * whether the camera is actually usable. */
     char *usb_id = find_webcam_usb_id();
     if (!usb_id) return -1;
 
-    char path[256];
-    snprintf(path, sizeof(path), "/sys/bus/usb/devices/%s/driver", usb_id);
-    int enabled = (access(path, F_OK) == 0);
+    char ifnames[8][256];
+    int cnt = webcam_list_interfaces(usb_id, ifnames, 8);
+    int enabled = 0;
+    for (int i = 0; cnt > 0 && i < cnt; i++) {
+        if (iface_driver_is(usb_id, ifnames[i], "uvcvideo")) {
+            enabled = 1;
+            break;
+        }
+    }
     free(usb_id);
-    return enabled;
+    return (cnt < 0) ? -1 : enabled;
 }
 
 static int webcam_set(int enabled)
@@ -931,43 +1099,63 @@ static int webcam_set(int enabled)
         }
     }
 
-    /* Fallback: USB bind/unbind */
+    /* Fallback: unbind/bind the camera's INTERFACES on uvcvideo.
+     * Writing the device name to drivers/usb/{bind,unbind} was a silent
+     * no-op: that is the generic USB *device* driver — the interfaces stay
+     * claimed by uvcvideo and the camera keeps streaming either way.
+     * The disable switch is unbinding e.g. "1-8:1.0" from uvcvideo. */
     char *usb_id = find_webcam_usb_id();
     if (!usb_id) {
         fprintf(stderr, "Error: No webcam USB device found\n");
         return -1;
     }
 
-    char path[256];
-    snprintf(path, sizeof(path), "/sys/bus/usb/devices/%s/driver", usb_id);
-    int currently_enabled = (access(path, F_OK) == 0);
-
-    if (enabled == currently_enabled) {
-        printf("  Webcam: already %s\n", enabled ? "ON" : "OFF");
-        free(usb_id);
-        return 0;
-    }
-
-    if (enabled)
-        snprintf(path, sizeof(path), "/sys/bus/usb/drivers/usb/bind");
-    else
-        snprintf(path, sizeof(path), "/sys/bus/usb/drivers/usb/unbind");
-
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) {
-        fprintf(stderr, "Error: Failed to open %s: %s\n", path, strerror(errno));
+    char ifnames[8][256];
+    int cnt = webcam_list_interfaces(usb_id, ifnames, 8);
+    if (cnt <= 0) {
+        fprintf(stderr, "Error: Webcam USB device exposes no interfaces\n");
         free(usb_id);
         return -1;
     }
-    ssize_t n = write(fd, usb_id, strlen(usb_id));
-    close(fd);
+
+    int bound[8] = {0};
+    int currently_enabled = 0;
+    for (int i = 0; i < cnt; i++) {
+        bound[i] = iface_driver_is(usb_id, ifnames[i], "uvcvideo");
+        if (bound[i]) currently_enabled = 1;
+    }
     free(usb_id);
 
-    /* Unbind may return short write because the USB device vanishes mid-write.
-       If the fd was opened successfully, assume the operation succeeded. */
-    if (n < 0) {
+    if (enabled == currently_enabled) {
+        printf("  Webcam: already %s\n", enabled ? "ON" : "OFF");
+        return 0;
+    }
+
+    char op_path[160];
+    snprintf(op_path, sizeof(op_path), "/sys/bus/usb/drivers/uvcvideo/%s",
+             enabled ? "bind" : "unbind");
+    int fd = open(op_path, O_WRONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Error: Failed to open %s: %s\n", op_path, strerror(errno));
+        if (errno == ENOENT)
+            fprintf(stderr, "       (uvcvideo kernel module not loaded?)\n");
+        return -1;
+    }
+
+    int attempted = 0, done = 0, last_err = 0;
+    for (int i = 0; i < cnt; i++) {
+        if (enabled == bound[i]) continue; /* already in the wanted state */
+        attempted++;
+        if (write(fd, ifnames[i], strlen(ifnames[i])) < 0)
+            last_err = errno;
+        else
+            done++;
+    }
+    close(fd);
+
+    if (attempted > 0 && done == 0) {
         fprintf(stderr, "Error: Failed to %s webcam: %s\n",
-                enabled ? "bind" : "unbind", strerror(errno));
+                enabled ? "bind" : "unbind", strerror(last_err));
         return -1;
     }
 
@@ -1009,8 +1197,13 @@ static int mic_find_card(void)
     return card;
 }
 
+/* Returns 1 = capture on, 0 = off, -1 = unknown (amixer missing or failed).
+ * Never guesses: reporting a disabled/unknown mic as ON in `cctl status`
+ * would silently mislead the privacy use-case. */
 static int mic_is_enabled(void)
 {
+    if (!command_exists("amixer")) return -1;
+
     int card = mic_find_card();
     char cmd[128];
     if (card >= 0)
@@ -1018,10 +1211,10 @@ static int mic_is_enabled(void)
     else
         snprintf(cmd, sizeof(cmd), "amixer sget Capture 2>/dev/null");
     FILE *fp = popen(cmd, "r");
-    if (!fp) return 1; /* assume enabled if amixer fails */
+    if (!fp) return -1;
 
     char line[256];
-    int enabled = 1;
+    int enabled = -1;
     while (fgets(line, sizeof(line), fp)) {
         if (strstr(line, "Front Left:")) {
             if (strstr(line, "[on]")) enabled = 1;
@@ -1035,6 +1228,10 @@ static int mic_is_enabled(void)
 
 static int mic_set(int enabled)
 {
+    if (!command_exists("amixer")) {
+        fprintf(stderr, "Error: amixer not found (install alsa-utils)\n");
+        return -1;
+    }
     const char *verb = enabled ? "cap" : "nocap";
     int card = mic_find_card();
     char cmd[256];
@@ -1055,7 +1252,13 @@ static int mic_set(int enabled)
 
 static int mic_toggle(void)
 {
-    return mic_set(!mic_is_enabled());
+    int current = mic_is_enabled();
+    if (current < 0) {
+        fprintf(stderr, "Error: Cannot determine microphone state (amixer missing or failed)\n");
+        fprintf(stderr, "Set it explicitly: cctl mic on  |  cctl mic off\n");
+        return -1;
+    }
+    return mic_set(!current);
 }
 
 /* ========================================================================
@@ -1073,10 +1276,11 @@ struct display_info {
 
 static int query_display_info(struct display_info *info)
 {
+    /* No fabricated fallbacks: every field must come from a real xrandr
+     * parse. The old hardcoded defaults (eDP-1 / 2560x1440 / 60.00) made
+     * `status`/`rr` show and act on invented values whenever parsing found
+     * nothing — most visibly under XWayland. */
     memset(info, 0, sizeof(*info));
-    strcpy(info->output, "eDP-1");
-    strcpy(info->resolution, "2560x1440");
-    strcpy(info->current_rate, "60.00");
 
     FILE *fp = popen("xrandr --current 2>/dev/null", "r");
     if (!fp) return -1;
@@ -1159,7 +1363,10 @@ static int query_display_info(struct display_info *info)
         }
     }
     pclose(fp);
-    return found_output ? 0 : -1;
+    /* Success requires BOTH the connected output AND its active mode —
+     * a bare "connected" line with no parsed rate is treated as failure
+     * so callers never display a half-invented screen state. */
+    return (found_output && info->current_rate[0] != '\0') ? 0 : -1;
 }
 
 static int command_exists(const char *cmd)
@@ -1185,11 +1392,14 @@ static int command_exists(const char *cmd)
     return 0;
 }
 
-/* Fast check: DISPLAY is set and xrandr binary exists in PATH */
+/* Fast check: native X11 only — DISPLAY set AND xrandr present AND not a
+ * Wayland session (WAYLAND_DISPLAY stays set when Xwayland provides a fake
+ * DISPLAY, which is how the README's "X11 only" rule is actually honored). */
 static int has_display_support(void)
 {
     const char *disp = getenv("DISPLAY");
     if (!disp || !*disp) return 0;
+    if (getenv("WAYLAND_DISPLAY")) return 0;
     return command_exists("xrandr");
 }
 
@@ -1310,6 +1520,17 @@ static void show_status(void)
 
     printf("%s=== System Status ===%s\n\n", C_YLW, C_RST);
 
+    /* Active profile mode — recorded by `cctl set`/`setR` in /tmp/cctl.mode,
+     * cleared on reboot (missing file = EC default, nothing applied). */
+    {
+        char m_prof[32] = {0}, m_how[16] = {0};
+        if (mode_read(m_prof, sizeof(m_prof), m_how, sizeof(m_how)) == 0)
+            printf("  %-14s %s%s%s %s(%s)%s\n", "Mode:",
+                   C_CYN, m_prof, C_RST, C_DIM, m_how, C_RST);
+        else
+            printf("  %-14s %sEC default%s\n", "Mode:", C_DIM, C_RST);
+    }
+
     /* Turbo */
     if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0) {
         int val = atoi(buf);
@@ -1358,7 +1579,10 @@ static void show_status(void)
 
     /* Microphone */
     int mic = mic_is_enabled();
-    printf("  %-14s %s%s%s\n", "Microphone:", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
+    if (mic < 0)
+        printf("  %-14s %sN/A (amixer not available)%s\n", "Microphone:", C_DIM, C_RST);
+    else
+        printf("  %-14s %s%s%s\n", "Microphone:", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
 
     /* Fn Lock */
     if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
@@ -1376,16 +1600,20 @@ static void show_status(void)
         long full     = read_sysfs_long("/sys/class/power_supply/BAT0/charge_full", -1);
         long full_dsn = read_sysfs_long("/sys/class/power_supply/BAT0/charge_full_design", -1);
         long now      = read_sysfs_long("/sys/class/power_supply/BAT0/charge_now", -1);
-        long current  = read_sysfs_long("/sys/class/power_supply/BAT0/current_now", -1);
+        long current  = read_sysfs_long("/sys/class/power_supply/BAT0/current_now", LONG_MIN);
         long cycles   = read_sysfs_long("/sys/class/power_supply/BAT0/cycle_count", -1);
         long volt     = read_sysfs_long("/sys/class/power_supply/BAT0/voltage_now", -1);
         int bat_start = bat_read_start();
         int bat_end   = bat_read_end();
 
-        printf("  %-14s %ld%% %s", "Battery:", cap, bat_status);
-        if (bat_start > 0 && bat_end > 0)
-            printf("  [threshold: %d%%→%d%%]", bat_start, bat_end);
-        printf("\n");
+        if (cap < 0) {
+            printf("  %-14s %sN/A (no battery)%s\n", "Battery:", C_DIM, C_RST);
+        } else {
+            printf("  %-14s %ld%% %s", "Battery:", cap, bat_status);
+            if (bat_start > 0 && bat_end > 0)
+                printf("  [threshold: %d%%→%d%%]", bat_start, bat_end);
+            printf("\n");
+        }
 
         if (full > 0 && full_dsn > 0) {
             int health = (int)((full * 100L) / full_dsn);
@@ -1395,9 +1623,9 @@ static void show_status(void)
         }
         if (cycles > 0)
             printf("  %-14s %s%ld%s\n", "Cycles:", C_CYN, cycles, C_RST);
-        if (now > 0)
+        if (now > 0 && full > 0)
             printf("  %-14s %ld mAh / %ld mAh\n", "Charge:", now / 1000, full / 1000);
-        if (current != 0) {
+        if (current != LONG_MIN && current != 0) {
             long ma = current / 1000; /* microamps → milliamps */
             printf("  %-14s %s%+ld mA%s\n", "Rate:", current > 0 ? C_RED : C_GRN, ma, C_RST);
         }
@@ -1696,6 +1924,8 @@ static const struct kbd_preset kbd_presets[] = {
 static int hex_to_rgb(const char *hex, int *r, int *g, int *b)
 {
     if (strlen(hex) != 6) return -1;
+    for (int i = 0; i < 6; i++)
+        if (!isxdigit((unsigned char)hex[i])) return -1;
     char buf[3] = {0};
     buf[0] = hex[0]; buf[1] = hex[1];
     *r = (int)strtol(buf, NULL, 16);
@@ -1711,7 +1941,13 @@ static int kbd_set_preset(const char *name)
     // Check if it is direct hex format: "#RRGGBB" or "RRGGBB"
     const char *hex_ptr = NULL;
     if (name[0] == '#' && strlen(name) == 7) {
-        hex_ptr = name + 1;
+        int is_hex = 1;
+        for (int j = 1; j < 7; j++) {
+            if (!isxdigit((unsigned char)name[j])) { is_hex = 0; break; }
+        }
+        if (is_hex) hex_ptr = name + 1;
+        /* malformed '#...' falls through to preset lookup → clean
+         * "Unknown preset '#zz0000'" error instead of silent garbage RGB */
     } else if (strlen(name) == 6) {
         int is_hex = 1;
         for (int j = 0; j < 6; j++) {
@@ -1873,19 +2109,57 @@ static int kbd_get_raw_brightness(int *bri)
     return 0;
 }
 
-static int kbe_read_state_ex(pid_t *pid, char *effect, size_t effect_sz,
+/* Kernel-assigned process start time (field 22 of /proc/<pid>/stat).
+ * The (pid, starttime) pair uniquely identifies one process instance for
+ * the life of the boot: unlike the PID it can never be recycled, and
+ * unlike the process name (comm/argv0) it cannot be chosen or forged by
+ * whatever process happens to hold that PID. Returns -1 if unreadable. */
+static long proc_starttime(pid_t pid)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    char buf[512];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    buf[n] = '\0';
+    /* comm sits inside parentheses and may contain spaces/parens, so parse
+     * from the LAST ')' onward. Fields after that: state(3), ppid(4), ...
+     * starttime is field 22 → the 19th token after the paren. */
+    char *rp = strrchr(buf, ')');
+    if (!rp || !rp[1]) return -1;
+    char *p = rp + 1;
+    int field = 3;
+    while (*p == ' ') p++;
+    while (field < 22 && *p) {
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+        field++;
+    }
+    if (field != 22 || !*p) return -1;
+    return strtol(p, NULL, 10);
+}
+
+/* State file line 1: "<pid> <starttime>" (starttime optional for
+ * compatibility with files from older builds → -1 = unknown/not checked). */
+static int kbe_read_state_ex(pid_t *pid, long *starttime, char *effect, size_t effect_sz,
                              int *orig_r, int *orig_g, int *orig_b, int *orig_bri,
                              char *resume_effect, size_t resume_sz)
 {
+    if (starttime) *starttime = -1;
     FILE *fp = fopen(KBE_STATE_PATH, "r");
     if (!fp) return -1;
     char line[128];
-    long p = -1;
-    if (!fgets(line, sizeof(line), fp) || sscanf(line, "%ld", &p) != 1 || p <= 1) {
+    long p = -1, st = -1;
+    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return -1; }
+    if (sscanf(line, "%ld %ld", &p, &st) < 1 || p <= 1) {
         fclose(fp);
         return -1;
     }
     if (pid) *pid = (pid_t)p;
+    if (starttime) *starttime = st;
     if (!fgets(line, sizeof(line), fp)) {
         fclose(fp);
         return -1;
@@ -1925,16 +2199,26 @@ static int kbe_read_state_ex(pid_t *pid, char *effect, size_t effect_sz,
 static inline int kbe_read_state(pid_t *pid, char *effect, size_t effect_sz,
                                  int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
 {
-    return kbe_read_state_ex(pid, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, NULL, 0);
+    return kbe_read_state_ex(pid, NULL, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, NULL, 0);
 }
 
 static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz, int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
 {
     pid_t p = 0;
+    long st = -1;
     char resume_ef[32] = {0};
-    if (kbe_read_state_ex(&p, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, resume_ef, sizeof(resume_ef)) < 0)
+    if (kbe_read_state_ex(&p, &st, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, resume_ef, sizeof(resume_ef)) < 0)
         return 0;
-    if (kill(p, 0) == 0 || errno == EPERM) {
+
+    int alive = (kill(p, 0) == 0 || errno == EPERM);
+    /* PID-reuse guard: the recorded start time must still match. If the
+     * daemon died hard (SIGKILL/OOM), its state file survives in /run until
+     * reboot and the PID may now belong to an unrelated process — the old
+     * code would have SIGTERM'd that innocent process as root. */
+    if (alive && st > 0 && proc_starttime(p) != st)
+        alive = 0;
+
+    if (alive) {
         if (pid) *pid = p;
         if (effect && strcmp(effect, "pulse-profile") == 0) {
             if (resume_ef[0] != '\0') {
@@ -1945,7 +2229,9 @@ static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz, int *orig_
         }
         return 1;
     }
-    if (errno == ESRCH && geteuid() == 0) {
+
+    /* Stale state file (daemon gone, or PID recycled): clean up when able. */
+    if (geteuid() == 0) {
         unlink(KBE_STATE_PATH);
     }
     return 0;
@@ -2012,9 +2298,21 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
-    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0644);
+    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0600);
     if (lock_fd < 0) exit(1);
-    if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+    /* Retry instead of give-up: the previous daemon was SIGTERM'd just
+     * before this worker was forked (profile pulse) or stopped (kbe start),
+     * and under load it may still be finishing its keyboard-restore exit
+     * path. The old LOCK_NB-once behavior silently lost the profile-change
+     * pulse entirely in that window. ~1.5s max wait. */
+    int kbe_locked = 0;
+    for (int i = 0; i < 75 && !kbe_locked; i++) {
+        if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0)
+            kbe_locked = 1;
+        else
+            usleep(20000);
+    }
+    if (!kbe_locked) {
         close(lock_fd);
         exit(1);
     }
@@ -2025,9 +2323,10 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
         close(lock_fd);
         exit(1);
     }
-    fprintf(fp, "%d\n%s\n%d %d %d %d\n", (int)getpid(), effect, orig_r, orig_g, orig_b, orig_bri);
+    chmod(KBE_STATE_PATH, 0600); /* PID + saved state: root-only */
+    fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n", (int)getpid(),
+            proc_starttime(getpid()), effect, orig_r, orig_g, orig_b, orig_bri);
     fclose(fp);
-    chmod(KBE_STATE_PATH, 0644);
 
     int fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
     int fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
@@ -2409,9 +2708,21 @@ static void kbe_profile_pulse_worker(int pr, int pg, int pb,
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
-    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0644);
+    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0600);
     if (lock_fd < 0) exit(1);
-    if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+    /* Retry instead of give-up: the previous daemon was SIGTERM'd just
+     * before this worker was forked (profile pulse) or stopped (kbe start),
+     * and under load it may still be finishing its keyboard-restore exit
+     * path. The old LOCK_NB-once behavior silently lost the profile-change
+     * pulse entirely in that window. ~1.5s max wait. */
+    int kbe_locked = 0;
+    for (int i = 0; i < 75 && !kbe_locked; i++) {
+        if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0)
+            kbe_locked = 1;
+        else
+            usleep(20000);
+    }
+    if (!kbe_locked) {
         close(lock_fd);
         exit(1);
     }
@@ -2422,11 +2733,12 @@ static void kbe_profile_pulse_worker(int pr, int pg, int pb,
         close(lock_fd);
         exit(1);
     }
-    fprintf(fp, "%d\npulse-profile\n%d %d %d %d\n%s\n",
-            (int)getpid(), orig_r, orig_g, orig_b, orig_bri,
+    chmod(KBE_STATE_PATH, 0600); /* PID + saved state: root-only */
+    fprintf(fp, "%d %ld\npulse-profile\n%d %d %d %d\n%s\n",
+            (int)getpid(), proc_starttime(getpid()),
+            orig_r, orig_g, orig_b, orig_bri,
             (resume_effect && *resume_effect) ? resume_effect : "none");
     fclose(fp);
-    chmod(KBE_STATE_PATH, 0644);
 
     int fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
     int fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
@@ -2507,11 +2819,15 @@ static void kbe_profile_pulse(const char *profile)
     char resume_effect[32] = {0};
     int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
 
-    int had_running = kbe_read_state_ex(&old_pid, running_effect, sizeof(running_effect),
+    long old_st = -1;
+    int had_running = kbe_read_state_ex(&old_pid, &old_st, running_effect, sizeof(running_effect),
                                         &orig_r, &orig_g, &orig_b, &orig_bri,
                                         resume_effect, sizeof(resume_effect));
 
-    if (had_running == 0 && (kill(old_pid, 0) == 0 || errno == EPERM)) {
+    /* Same PID-reuse guard as kbe_is_running: only signal the previous
+     * daemon if its recorded start time still matches this PID. */
+    if (had_running == 0 && (kill(old_pid, 0) == 0 || errno == EPERM) &&
+        (old_st < 0 || proc_starttime(old_pid) == old_st)) {
         if (strcmp(running_effect, "pulse-profile") != 0) {
             strncpy(resume_effect, running_effect, sizeof(resume_effect) - 1);
             resume_effect[sizeof(resume_effect) - 1] = '\0';
@@ -2998,7 +3314,7 @@ static void print_usage(const char *prog)
     printf("    %sset%s   <profile> [--nosafe] Apply preset %s(EC defaults + table values below)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %ssetR%s  <profile> [--nosafe] Apply preset %s(EC defaults + preconfigured CPU TDP override)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("      %s(max, cpuperf, balanced set fans to auto; bypass with --nosafe)%s\n\n", C_DIM, C_RST);
-    printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)%s\n", C_BLD, C_RST);
+    printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP override (setR only)%s\n", C_BLD, C_RST);
     printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────%s\n", C_DIM, C_RST);
     printf("      %smax%s         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W\n", C_RED, C_RST);
     printf("      %scpuperf%s     ON     performance  performance        45/115W + GPU 70W               %s(no RAPL change)%s\n", C_YLW, C_RST, C_DIM, C_RST);
@@ -3034,7 +3350,7 @@ static void print_usage(const char *prog)
     printf("  %sBATTERY%s\n", C_GRN, C_RST);
     printf("    %sbat%s                      Show current thresholds\n",       C_BLD, C_RST);
     printf("    %sbat%s    <start> <stop>    Set charge thresholds %s(custom)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sbat max%s                  standard mode %s(change to max - 100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sbat max%s                  standard mode %s(charge to 100%%, resume at 95%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── Info ───────────────────────────────────────────────────────────── */
     printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
@@ -3069,6 +3385,12 @@ static void print_usage(const char *prog)
     printf("    %sgov%s    <governor>        CPU governor %s(powersave, performance)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+
+    /* ── System ─────────────────────────────────────────────────────────── */
+    printf("  %sSYSTEM%s\n", C_CYN_BLD, C_RST);
+    printf("    %sinstall%s [--force]        Install/upgrade system-wide + passwordless sudo\n", C_BLD, C_RST);
+    printf("    %sdrivers-install%s         Install kernel drivers %s(auto-fetch or offline; sha256-verified)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %supdate%s                  Update cctl from GitHub releases\n\n", C_BLD, C_RST);
 
     /* Driver hint — only shown when the TUXEDO/Clevo stack is not loaded */
     if (!drivers_loaded()) {
@@ -3942,7 +4264,7 @@ static int nvidia_parse_clock_range(const char *str, int *min, int *max)
 #ifdef CCTL_NVIDIA
 #define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|power|clock|memclock}"
 #else
-#define NVIDIA_USAGE_STR "nvidia {power|clock|memclock} (module commands require make experimental)"
+#define NVIDIA_USAGE_STR "nvidia {power|clock|memclock}"
 #endif
 
 static int cmd_nvidia(int argc, char **argv)
@@ -3955,11 +4277,14 @@ static int cmd_nvidia(int argc, char **argv)
     const char *action = argv[2];
 
 #ifndef CCTL_NVIDIA
-    /* Module/GPU-toggle commands are only compiled into the experimental build. */
+    /* Module/GPU-toggle commands exist only in the private build. In this
+     * build they are treated as ordinary unknown actions — the private
+     * build's name must never appear in public output. */
     if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
         strcmp(action, "load") == 0 || strcmp(action, "loadgame") == 0 ||
         strcmp(action, "unload") == 0 || strcmp(action, "status") == 0) {
-        fprintf(stderr, "Error: 'nvidia %s' requires experimental build (make experimental).\n", action);
+        fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
+        fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
         return 1;
     }
 #endif
@@ -4238,6 +4563,10 @@ static int cmd_set(int argc, char **argv)
             nosafe = 1;
         else if (!profile)
             profile = argv[i];
+        else {
+            fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[i]);
+            return 1;
+        }
     }
 
     if (!profile) {
@@ -4245,6 +4574,17 @@ static int cmd_set(int argc, char **argv)
         fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
         return 1;
     }
+
+    /* Validate before recording: only the five known profiles ever reach
+     * /tmp/cctl.mode (cctl status and the RAPL PL1 ceiling read it). */
+    if (strcmp(profile, "max") != 0 && strcmp(profile, "cpuperf") != 0 &&
+        strcmp(profile, "balanced") != 0 && strcmp(profile, "powersave") != 0 &&
+        strcmp(profile, "eco") != 0) {
+        fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
+        fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
+        return 1;
+    }
+
     int rc = 0;
 
     if (strcmp(profile, "max") == 0) {
@@ -4277,6 +4617,11 @@ static int cmd_set(int argc, char **argv)
 
     ec_release_ports();
     if (rc == 0) {
+        /* Record active mode + how it was applied (set vs setR) — only once
+         * the profile actually landed, so `status` and the RAPL ceiling
+         * never report a mode that failed to apply. */
+        if (mode_write(profile, with_rapl ? "setR" : "set") < 0)
+            fprintf(stderr, "Warning: could not record active mode in %s\n", MODE_FILE);
         kbe_profile_pulse(profile);
         printf("Done.\n");
     }
@@ -4470,40 +4815,64 @@ static int cmd_rapl(int argc, char **argv)
         fprintf(stderr, "Error: Usage: rapl <pl1_watts> <pl2_watts>\n");
         fprintf(stderr, "       rapl skip <pl2>      (set PL2 only)\n");
         fprintf(stderr, "       rapl <pl1> skip      (set PL1 only)\n");
+        fprintf(stderr, "       rapl <pl2>           (one value = PL2 only)\n");
+        fprintf(stderr, "  Limits: PL1 1-%dW (up to %dW while Mode is max), PL2 1-%dW\n",
+                RAPL_PL1_MAX_WATTS, RAPL_PL1_MAX_WATTS_MAX, RAPL_PL2_MAX_WATTS);
         return 1;
     }
 
     int pl1 = 0, pl2 = 0;
     int skip_pl1 = 0, skip_pl2 = 0;
+    int pl1_cap = rapl_pl1_ceiling(); /* 45W; 90W only while mode == max */
 
-    /* Parse PL1 */
-    if (strcmp(argv[2], "skip") == 0) {
-        skip_pl1 = 1;
-    } else {
-        if (safe_atoi(argv[2], &pl1) < 0 || pl1 < 1) {
-            fprintf(stderr, "Error: Invalid PL1 value '%s' (use a wattage ≥ 1 or 'skip')\n", argv[2]);
+    /* A single argument is PL2-only (`cctl rapl 110`), so the PL1 ceiling
+     * must not be applied to it. Two arguments parse as PL1 then PL2;
+     * "skip" omits one side. */
+    if (argc < 4) {
+        if (strcmp(argv[2], "skip") == 0) {
+            fprintf(stderr, "Error: Nothing to set — give a PL2 wattage\n");
             return 1;
         }
-    }
+        if (safe_atoi(argv[2], &pl2) < 0 || pl2 < 1 || pl2 > RAPL_PL2_MAX_WATTS) {
+            fprintf(stderr, "Error: Invalid PL2 value '%s' (use a wattage 1-%d)\n",
+                    argv[2], RAPL_PL2_MAX_WATTS);
+            return 1;
+        }
+        skip_pl1 = 1;
+    } else {
+        /* Parse PL1 */
+        if (strcmp(argv[2], "skip") == 0) {
+            skip_pl1 = 1;
+        } else {
+            if (safe_atoi(argv[2], &pl1) < 0 || pl1 < 1) {
+                fprintf(stderr, "Error: Invalid PL1 value '%s' (use a wattage 1-%d or 'skip')\n",
+                        argv[2], pl1_cap);
+                return 1;
+            }
+            if (pl1 > pl1_cap) {
+                fprintf(stderr, "Error: PL1 %dW exceeds the %dW limit for the current mode\n",
+                        pl1, pl1_cap);
+                if (pl1_cap == RAPL_PL1_MAX_WATTS)
+                    fprintf(stderr, "       90W PL1 unlocks only while 'cctl set max' is active "
+                                    "(see Mode in 'cctl status')\n");
+                return 1;
+            }
+        }
 
-    /* Parse PL2 */
-    if (argc >= 4) {
+        /* Parse PL2 */
         if (strcmp(argv[3], "skip") == 0) {
             skip_pl2 = 1;
         } else {
             if (safe_atoi(argv[3], &pl2) < 0 || pl2 < 1) {
-                fprintf(stderr, "Error: Invalid PL2 value '%s' (use a wattage ≥ 1 or 'skip')\n", argv[3]);
+                fprintf(stderr, "Error: Invalid PL2 value '%s' (use a wattage 1-%d or 'skip')\n",
+                        argv[3], RAPL_PL2_MAX_WATTS);
                 return 1;
             }
-        }
-    } else {
-        /* Only one arg given: interpret as PL2, skip PL1 */
-        skip_pl1 = 1;
-        pl2 = pl1;
-        pl1 = 0;
-        if (pl2 < 1) {
-            fprintf(stderr, "Error: Power limit must be >= 1 watt\n");
-            return 1;
+            if (pl2 > RAPL_PL2_MAX_WATTS) {
+                fprintf(stderr, "Error: PL2 %dW exceeds the %dW platform limit\n",
+                        pl2, RAPL_PL2_MAX_WATTS);
+                return 1;
+            }
         }
     }
 
@@ -4564,6 +4933,13 @@ static int cmd_kbb(int argc, char **argv)
 static int cmd_kbe(int argc, char **argv)
 {
     if (argc < 3 || strcmp(argv[2], "status") == 0) {
+        /* State file is root-only (0600): if it exists but we can't read
+         * it, re-run elevated so `cctl kbe` status stays correct for plain
+         * users too (seamless via the NOPASSWD rule when installed).
+         * No file at all → plain "none", no elevation. */
+        if (geteuid() != 0 && access(KBE_STATE_PATH, F_OK) == 0 &&
+            access(KBE_STATE_PATH, R_OK) != 0)
+            self_elevate(argc, argv);
         pid_t pid = 0;
         char effect[32] = {0};
         int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
@@ -4688,8 +5064,10 @@ static int cmd_bat(int argc, char **argv)
         return 0;
     }
 
-    /* "max", "off", or "default" → widest range (charge to max) */
-    if (strcmp(argv[2], "max") == 0 || strcmp(argv[2], "off") == 0 || strcmp(argv[2], "default") == 0) {
+    /* "max" → widest usable range (95%→100% top-up; the driver rejects 0,
+     * so thresholds cannot actually be turned off — the old off/default
+     * aliases implied an impossible "off" and were removed). */
+    if (strcmp(argv[2], "max") == 0) {
         if (geteuid() != 0)
             self_elevate(argc, argv);
         int rc = bat_set(0, 0);
@@ -4731,6 +5109,24 @@ static int get_installed_microversion(void)
     return ver;
 }
 
+/* Username safe to embed in a sudoers rule: ^[A-Za-z_][A-Za-z0-9_-]*$.
+ * The username is written verbatim into /etc/sudoers.d/cctl — a stray
+ * space, newline or metacharacter would produce an unparseable rule and
+ * lock sudo out system-wide, so refuse anything outside this set.
+ * Uppercase is allowed (legal on Linux); the security property comes from
+ * excluding whitespace and every metacharacter, not from case. */
+static int sudoers_user_is_safe(const char *s)
+{
+    if (!s || !*s) return 0;
+    if (!(isalpha((unsigned char)s[0]) || s[0] == '_')) return 0;
+    for (const char *p = s + 1; *p; p++) {
+        if (!(isalpha((unsigned char)*p) || isdigit((unsigned char)*p) ||
+              *p == '_' || *p == '-'))
+            return 0;
+    }
+    return 1;
+}
+
 static int cmd_install(int argc, char **argv)
 {
     int force = (argc >= 3 && strcmp(argv[2], "--force") == 0);
@@ -4739,7 +5135,10 @@ static int cmd_install(int argc, char **argv)
         return 1;
     }
 
-    /* main() already verified EUID==0 (needs_root). */
+    /* needs_root=0 in the command table: main() does NOT pre-elevate.
+     * The readlink/microversion checks below run unprivileged;
+     * self_elevate() re-execs us as root only after they pass — do not
+     * assume EUID==0 at this point. */
     char src[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", src, sizeof(src) - 1);
     if (n <= 0) {
@@ -4785,16 +5184,80 @@ static int cmd_install(int argc, char **argv)
         user = (pw && pw->pw_name) ? pw->pw_name : "root";
     }
 
-    /* 3. Write sudoers.d/cctl granting passwordless sudo */
-    const char *sudoers = "/etc/sudoers.d/cctl";
-    FILE *fp = fopen(sudoers, "w");
-    if (!fp) {
-        perror("Error: cannot open sudoers file for writing");
+    /* 3. Write sudoers.d/cctl granting passwordless sudo.
+     *    Order matters:
+     *      a) validate the username charset before it goes near the file,
+     *      b) back up the existing rule (cctl.bak — sudo's includedir skips
+     *         names containing '.', so the backup can never be auto-loaded),
+     *      c) write the new rule to a 0440 temp file,
+     *      d) validate it with `visudo -c -f`,
+     *      e) rename it into place ONLY if it parses cleanly.
+     *    A rejected rule never replaces a working one, and sudo can never
+     *    be locked out by a bad install. */
+    if (!sudoers_user_is_safe(user)) {
+        fprintf(stderr, "Error: username '%s' is not safe to write into sudoers.\n", user);
+        fprintf(stderr, "       Allowed: first character [A-Za-z_], then [A-Za-z0-9_-].\n");
+        fprintf(stderr, "       Create the rule manually with mode 0440:\n");
+        fprintf(stderr, "         echo '<user> ALL=(ALL) NOPASSWD: /usr/local/bin/cctl' "
+                        "| sudo EDITOR=tee visudo -f /etc/sudoers.d/cctl\n");
         return 1;
     }
-    fprintf(fp, "%s ALL=(ALL) NOPASSWD: /usr/local/bin/cctl\n", user);
-    fclose(fp);
-    chmod(sudoers, 0440);
+
+    const char *sudoers     = "/etc/sudoers.d/cctl";
+    const char *sudoers_tmp = "/etc/sudoers.d/.cctl.tmp";
+    const char *sudoers_bak = "/etc/sudoers.d/cctl.bak";
+
+    if (access(sudoers, R_OK) == 0) {
+        char *const bak_args[] = { "/bin/cp", "-p",
+                                   (char *)sudoers, (char *)sudoers_bak, NULL };
+        if (run_cmd("/bin/cp", bak_args) != 0)
+            fprintf(stderr, "Warning: could not back up existing sudoers rule to %s\n",
+                    sudoers_bak);
+    }
+
+    unlink(sudoers_tmp); /* stale temp from an earlier failed run */
+    int sfd = open(sudoers_tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0440);
+    if (sfd < 0) {
+        perror("Error: cannot create sudoers temp file");
+        return 1;
+    }
+    char rule[320];
+    int rule_len = snprintf(rule, sizeof(rule),
+                            "%s ALL=(ALL) NOPASSWD: /usr/local/bin/cctl\n", user);
+    ssize_t w = write(sfd, rule, (size_t)rule_len);
+    int close_rc = close(sfd);
+    if (w != rule_len || close_rc != 0) {
+        perror("Error: cannot write sudoers temp file");
+        unlink(sudoers_tmp);
+        return 1;
+    }
+
+    const char *visudo_path = NULL;
+    if (access("/usr/sbin/visudo", X_OK) == 0)     visudo_path = "/usr/sbin/visudo";
+    else if (access("/usr/bin/visudo", X_OK) == 0) visudo_path = "/usr/bin/visudo";
+    else if (access("/sbin/visudo", X_OK) == 0)    visudo_path = "/sbin/visudo";
+
+    if (visudo_path) {
+        char *const v_args[] = { "visudo", "-c", "-f",
+                                 (char *)sudoers_tmp, NULL };
+        if (run_cmd(visudo_path, v_args) != 0) {
+            fprintf(stderr,
+                    "Error: visudo rejected the generated sudoers rule — "
+                    "keeping the existing one.\n");
+            unlink(sudoers_tmp);
+            return 1;
+        }
+    } else {
+        fprintf(stderr,
+                "Warning: visudo not found — installing rule without syntax validation.\n");
+    }
+
+    if (rename(sudoers_tmp, sudoers) != 0) {
+        perror("Error: cannot move sudoers rule into place");
+        unlink(sudoers_tmp);
+        return 1;
+    }
+    chmod(sudoers, 0440); /* rename preserves 0440; enforce explicitly anyway */
     printf("Sudoers:  %s (passwordless sudo for %s)\n", sudoers, user);
 
     printf("\nDone. cctl is installed to /usr/local/bin/cctl and configured with passwordless sudo.\n");
@@ -4802,112 +5265,395 @@ static int cmd_install(int argc, char **argv)
     return 0;
 }
 
+/* ========================================================================
+ * DRIVERS INSTALL — source resolution: local file → download → manual path
+ * ========================================================================
+ * Order (never searches $HOME, never accepts a folder):
+ *   1. drivers.tar.gz sitting next to the running cctl binary — sha256
+ *      checked on the spot and rejected in place if it does not match,
+ *   2. else download it from the mirror repo into a private temp dir
+ *      using curl or wget (a failed download is reported explicitly,
+ *      with the exact folder a manual copy belongs in),
+ *   3. offline (or download failed): accept the full path to a copy —
+ *      also checked in place first; staged into /tmp only if valid.
+ * Whatever passes, the staged bytes are re-verified against the hash
+ * baked into this binary before a single byte is extracted.
+ * ======================================================================== */
+
+#define DRIVERS_TARBALL     "drivers.tar.gz"
+#define DRIVERS_MIRROR_RAW  "https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/drivers.tar.gz"
+#define DRIVERS_MIRROR_REPO "https://github.com/bhusann/tuxedo-drivers-cctl-mirror"
+/* SHA256 of drivers.tar.gz from the mirror repo, baked in at build time so
+ * cctl only ever installs exactly these driver sources — a re-tarred or
+ * swapped file with any other name/content is rejected. When the MIRROR's
+ * drivers/ tree changes: re-tar deterministically, update THIS constant,
+ * bump CCTL_MICROVERSION, release a new cctl binary. (The driver sources
+ * themselves live only in the mirror repo, not in this checkout.) */
+#define DRIVERS_SHA256      "ca6cb6d2bcc7abb8168e16c76ca42220bc957e611f718ee678c6be4d593dd4c2"
+
+/* Directory containing the running binary. Returns 0 and fills out. */
+static int binary_dir(char *out, size_t sz)
+{
+    char path[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (n <= 0) return -1;
+    path[n] = '\0';
+    char *slash = strrchr(path, '/');
+    if (!slash) return -1;
+    *slash = '\0';
+    if (strlen(path) + 1 > sz) return -1;
+    snprintf(out, sz, "%s", path);
+    return 0;
+}
+
+/* Lowercase hex sha256 of a file, via exec of sha256sum with an argv array
+ * (no shell → no quoting problems with odd paths). 0 = success. */
+static int file_sha256(const char *path, char out[65])
+{
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return -1;
+    pid_t pid = fork();
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+        char *const args[] = { "sha256sum", (char *)path, NULL };
+        execvp("sha256sum", args);
+        _exit(127);
+    }
+    close(pipefd[1]);
+    char buf[256] = {0};
+    ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
+    close(pipefd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (n < 64 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+    for (int i = 0; i < 64; i++) {
+        if (!isxdigit((unsigned char)buf[i])) return -1;
+        out[i] = (char)tolower((unsigned char)buf[i]);
+    }
+    out[64] = '\0';
+    return 0;
+}
+
+/* Download url → dest via curl (preferred) or wget. 0 = success. */
+static int download_file(const char *url, const char *dest)
+{
+    if (command_exists("curl")) {
+        char *const args[] = { "curl", "-fsSL", "--connect-timeout", "10",
+                               "--max-time", "300", "-o", (char *)dest,
+                               (char *)url, NULL };
+        if (run_cmd("curl", args) == 0) return 0;
+    }
+    if (command_exists("wget")) {
+        char *const args[] = { "wget", "-q", "--timeout=10", "-O",
+                               (char *)dest, (char *)url, NULL };
+        if (run_cmd("wget", args) == 0) return 0;
+    }
+    return -1;
+}
+
+/* rm -rf via argv array (paths may contain spaces — never a shell string).
+ * Refuses anything outside our own /tmp/cctl-* temp-dir namespace. */
+static void remove_tree(const char *path)
+{
+    if (!path || strncmp(path, "/tmp/cctl-", 10) != 0) return;
+    char *const args[] = { "rm", "-rf", (char *)path, NULL };
+    int r = run_cmd("rm", args);
+    (void)r;
+}
+
+/* Verify a drivers.tar.gz against the hash baked into this binary.
+ * 0 = match. Prints the reason on failure; prints the short confirmation
+ * only when announce_ok (the pre-staging early checks stay quiet so the
+ * single "sha256 verified" line refers to the bytes actually extracted). */
+static int verify_drivers_sha(const char *path, const char *src_desc, int announce_ok)
+{
+    char sha[65];
+    if (file_sha256(path, sha) != 0) {
+        fprintf(stderr, "Error: cannot compute sha256 of %s (is sha256sum installed?)\n",
+                path);
+        return -1;
+    }
+    if (strcmp(sha, DRIVERS_SHA256) != 0) {
+        fprintf(stderr,
+            "Error: %s checksum mismatch — refusing to install.\n"
+            "  source:   %s\n"
+            "  expected: %s\n"
+            "  got:      %s\n"
+            "The file is corrupt, spoofed, or built from different sources.\n",
+            src_desc, path, DRIVERS_SHA256, sha);
+        return -1;
+    }
+    if (announce_ok)
+        printf("  sha256 verified: %.16s...\n", sha);
+    return 0;
+}
+
 static int cmd_drivers_install(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-
-    /* Resolve the user's home (honor SUDO_USER when run via sudo) */
-    const char *home = getenv("HOME");
-    const char *sudo_user = getenv("SUDO_USER");
-    if (sudo_user && *sudo_user) {
-        struct passwd *pw = getpwnam(sudo_user);
-        if (pw && pw->pw_dir) home = pw->pw_dir;
-    }
-    if (!home || !*home) home = ".";
-
-    /* Find cctl-drivers.tar.gz somewhere under the user's home */
-    char find_cmd[PATH_MAX + 64];
-    snprintf(find_cmd, sizeof(find_cmd),
-             "find '%s' -name cctl-drivers.tar.gz 2>/dev/null", home);
-
-    FILE *fp = popen(find_cmd, "r");
-    if (!fp) {
-        fprintf(stderr, "Error: failed to search for drivers archive\n");
+    /* No file arguments, ever — cctl locates/downloads the archive itself
+     * and verifies its baked-in sha256, so nothing user-named is trusted
+     * except via the explicitly-prompted offline path (also verified). */
+    if (argc != 2) {
+        fprintf(stderr, "Error: 'cctl drivers-install' does not accept file arguments.\n"
+                        "       It finds or downloads %s automatically.\n",
+                DRIVERS_TARBALL);
         return 1;
     }
-    char archive[PATH_MAX] = {0};
-    if (fgets(archive, sizeof(archive), fp))
-        archive[strcspn(archive, "\n")] = '\0';
-    pclose(fp);
 
-    if (archive[0] == '\0') {
-        fprintf(stderr, "cctl-drivers.tar.gz not found under %s.\n", home);
-        for (;;) {
-            char path[PATH_MAX];
-            printf("Enter the full path to cctl-drivers.tar.gz (or press Enter to abort): ");
+    if (geteuid() != 0)
+        self_elevate(argc, argv);
+
+    char tmpbase[] = "/tmp/cctl-drivers.XXXXXX";
+    char *tmpdir = NULL;
+    char tarball[PATH_MAX + 32] = {0}; /* staged copy — always inside tmpdir */
+    char src[PATH_MAX + 32] = {0};     /* verified source outside tmp (local/offline) */
+    int staged_by_download = 0;
+    int rc = 1;
+
+    /* 1. Local first: drivers.tar.gz beside the cctl binary — sha256-checked
+     *    ON THE SPOT, before anything is staged: a bad local file is
+     *    rejected right where it sits (never copied, never downloaded). */
+    char bindir[PATH_MAX] = {0};
+    if (binary_dir(bindir, sizeof(bindir)) == 0) {
+        snprintf(src, sizeof(src), "%s/%s", bindir, DRIVERS_TARBALL);
+        if (access(src, R_OK) == 0) {
+            if (verify_drivers_sha(src, "local drivers.tar.gz", 0) != 0)
+                goto cleanup; /* rejected in place */
+        } else {
+            src[0] = '\0';
+        }
+    }
+
+    if (!src[0]) {
+        /* 2. Not local → fetch the mirror straight into a private temp dir. */
+        int can_download = (command_exists("curl") || command_exists("wget"));
+        if (can_download) {
+            tmpdir = mkdtemp(tmpbase);
+            if (!tmpdir)
+                perror("Warning: mkdtemp failed");
+            else {
+                snprintf(tarball, sizeof(tarball), "%s/%s", tmpdir, DRIVERS_TARBALL);
+                printf("Fetching %s\n  from %s\n", DRIVERS_TARBALL, DRIVERS_MIRROR_RAW);
+                if (download_file(DRIVERS_MIRROR_RAW, tarball) == 0)
+                    staged_by_download = 1;
+            }
+        }
+
+        if (!staged_by_download) {
+            /* 3. Download failed (or impossible): say so plainly and offer
+             *    the two manual ways to continue. */
+            fprintf(stderr,
+                "Error: could not provide %s.\n"
+                "%s\n"
+                "Do ONE of the following:\n"
+                "  1. Re-run 'cctl drivers-install' with an internet connection\n"
+                "     (it then downloads automatically).\n"
+                "  2. Download %s manually from\n"
+                "       %s\n"
+                "     and place it in this folder:\n"
+                "       %s\n"
+                "     then re-run 'cctl drivers-install'.\n"
+                "  3. Or enter the full path to a %s you already have.\n",
+                DRIVERS_TARBALL,
+                can_download
+                    ? "Downloading from the mirror repo failed (no internet?)."
+                    : "Neither curl nor wget is available to download it.",
+                DRIVERS_TARBALL, DRIVERS_MIRROR_REPO,
+                bindir[0] ? bindir : "<directory containing the cctl binary>",
+                DRIVERS_TARBALL);
+            printf("Full path to %s (Enter to abort): ", DRIVERS_TARBALL);
+            char path[PATH_MAX] = {0};
             if (!fgets(path, sizeof(path), stdin) || path[0] == '\0') {
-                archive[0] = '\0';
-                break;
+                printf("Aborted.\n");
+                rc = 0;
+                goto cleanup;
             }
             path[strcspn(path, "\n")] = '\0';
-            if (access(path, F_OK) == 0) {
-                snprintf(archive, sizeof(archive), "%s", path);
-                break;
+            struct stat pst;
+            if (stat(path, &pst) != 0) {
+                fprintf(stderr, "Error: no such file: %s\n", path);
+                goto cleanup;
             }
-            fprintf(stderr, "  No such file: %s\n", path);
-        }
-        if (archive[0] == '\0') {
-            printf("Aborted.\n");
-            return 0;
+            if (S_ISDIR(pst.st_mode)) {
+                fprintf(stderr, "Error: only the %s file itself is accepted, not a folder.\n"
+                                "       Point to the tar.gz file.\n", DRIVERS_TARBALL);
+                goto cleanup;
+            }
+            if (access(path, R_OK) != 0) {
+                fprintf(stderr, "Error: no such readable file: %s\n", path);
+                goto cleanup;
+            }
+            /* Check the given file IN PLACE first — a mismatch is rejected
+             * here, before it is ever copied into our temp dir. */
+            if (verify_drivers_sha(path, "given drivers.tar.gz", 0) != 0)
+                goto cleanup;
+            snprintf(src, sizeof(src), "%s", path);
         }
     }
 
-    printf("Drivers archive found: %s\n", archive);
-
-    char ans[16];
-    printf("Shall I install it? [y/N] ");
-    if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
-        printf("Aborted.\n");
-        return 0;
+    /* Stage: a download already landed in tmpdir; a verified local/offline
+     * file is copied in now. Re-verify the staged bytes (the ones that will
+     * actually be extracted) to close any swap gap after the in-place check. */
+    if (staged_by_download) {
+        if (verify_drivers_sha(tarball, "downloaded drivers.tar.gz", 1) != 0)
+            goto cleanup;
+    } else {
+        if (!tmpdir) {
+            tmpdir = mkdtemp(tmpbase);
+            if (!tmpdir) { perror("Error: cannot create temp directory"); goto cleanup; }
+        }
+        snprintf(tarball, sizeof(tarball), "%s/%s", tmpdir, DRIVERS_TARBALL);
+        char *const cp_args[] = { "cp", "--", src, tarball, NULL };
+        if (run_cmd("cp", cp_args) != 0) {
+            fprintf(stderr, "Error: failed to copy %s into %s\n", src, tmpdir);
+            goto cleanup;
+        }
+        if (verify_drivers_sha(tarball, "staged drivers.tar.gz", 1) != 0)
+            goto cleanup;
     }
 
-    /* Extract to a temp dir */
-    char tmpl[] = "/tmp/cctl-drivers.XXXXXX";
-    char *tmpdir = mkdtemp(tmpl);
+    /* Extract into the private temp dir and run the verified installer. */
+    {
+        char *const tar_args[] = { "tar", "-xzf", tarball, "-C", tmpdir, NULL };
+        if (run_cmd("tar", tar_args) != 0) {
+            fprintf(stderr, "Error: failed to extract %s\n", tarball);
+            goto cleanup;
+        }
+    }
+    char script[PATH_MAX + 64];
+    snprintf(script, sizeof(script), "%s/drivers/driverinstall.sh", tmpdir);
+    if (access(script, R_OK) != 0) {
+        fprintf(stderr, "Error: drivers/driverinstall.sh not found inside %s\n", DRIVERS_TARBALL);
+        goto cleanup;
+    }
+
+    printf("Launching driver installer (verified sources)...\n");
+    {
+        char *const sh_args[] = { "bash", script, NULL };
+        if (run_cmd("bash", sh_args) != 0) {
+            fprintf(stderr, "Driver installer exited with an error.\n");
+            goto cleanup;
+        }
+    }
+    printf("Drivers installed from verified %s.\n", DRIVERS_TARBALL);
+    rc = 0;
+
+cleanup:
+    if (tmpdir) remove_tree(tmpdir);
+    return rc;
+}
+
+/* ========================================================================
+ * UPDATE — fetch the latest release binary from GitHub
+ * ========================================================================
+ * The release asset itself reports its (secret, strictly-increasing)
+ * microversion; if it is newer than ours, install it over
+ * /usr/local/bin/cctl. Everything runs as root in ONE pass: staging the
+ * file across the sudo boundary is deliberately avoided because sudo
+ * strips our environment and a user-writable staging path would allow the
+ * binary to be swapped between verification and install.
+ * ======================================================================== */
+
+#define UPDATE_ASSET_URL "https://github.com/bhusann/cctl/releases/latest/download/cctl"
+#define UPDATE_RELEASES  "https://github.com/bhusann/cctl/releases"
+
+static int cmd_update(int argc, char **argv)
+{
+    if (argc != 2) {
+        fprintf(stderr, "Error: 'cctl update' does not accept arguments.\n");
+        return 1;
+    }
+
+    if (geteuid() != 0)
+        self_elevate(argc, argv);
+
+    char tmpbase[] = "/tmp/cctl-update.XXXXXX";
+    char *tmpdir = mkdtemp(tmpbase);
     if (!tmpdir) {
         perror("Error: cannot create temp directory");
         return 1;
     }
 
-    char tar_cmd[PATH_MAX + 64];
-    snprintf(tar_cmd, sizeof(tar_cmd), "tar -xzf '%s' -C '%s'", archive, tmpdir);
-    if (system(tar_cmd) != 0) {
-        fprintf(stderr, "Error: failed to extract archive\n");
-        char rm_cmd[PATH_MAX + 64];
-        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
-        run_quiet(rm_cmd);
+    char dest[PATH_MAX];
+    snprintf(dest, sizeof(dest), "%s/cctl", tmpdir);
+
+    printf("Checking for the latest release at\n  %s\n", UPDATE_RELEASES);
+    if (download_file(UPDATE_ASSET_URL, dest) != 0) {
+        fprintf(stderr,
+            "Error: cannot download the latest cctl (no internet, no curl/wget,\n"
+            "       or the release asset is missing).\n"
+            "       Check manually: %s\n", UPDATE_RELEASES);
+        remove_tree(tmpdir);
+        return 1;
+    }
+    chmod(dest, 0755);
+
+    /* Query the downloaded binary for its version + microversion. Trust
+     * chain: TLS to github.com and our own release asset — the very file
+     * we would install anyway. tmpdir comes from mkdtemp (alnum only), so
+     * embedding the path in a shell command string is safe here. */
+    int remote_ver = 0;
+    char rel[64] = {0};
+    {
+        char cmd[PATH_MAX + 64];
+        snprintf(cmd, sizeof(cmd), "%s --microversion 2>/dev/null", dest);
+        FILE *fp = popen(cmd, "r");
+        if (fp) {
+            char buf[32];
+            if (fgets(buf, sizeof(buf), fp)) safe_atoi(buf, &remote_ver);
+            pclose(fp);
+        }
+        snprintf(cmd, sizeof(cmd), "%s --version 2>/dev/null", dest);
+        fp = popen(cmd, "r");
+        if (fp) {
+            char buf[64];
+            if (fgets(buf, sizeof(buf), fp)) {
+                buf[strcspn(buf, "\r\n")] = '\0';
+                snprintf(rel, sizeof(rel), "%s", buf);
+            }
+            pclose(fp);
+        }
+    }
+
+    if (remote_ver <= 0) {
+        fprintf(stderr,
+            "Error: downloaded file did not run/report a version — aborting\n"
+            "       (corrupt download or not a cctl binary).\n");
+        remove_tree(tmpdir);
         return 1;
     }
 
-    /* Locate the extracted installer script */
-    char script[PATH_MAX];
-    snprintf(script, sizeof(script), "%s/drivers/driverinstall.sh", tmpdir);
-    if (access(script, F_OK) != 0) {
-        fprintf(stderr, "Error: driverinstall.sh not found in extracted archive\n");
-        char rm_cmd[PATH_MAX + 64];
-        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
-        run_quiet(rm_cmd);
-        return 1;
+    if (remote_ver <= CCTL_MICROVERSION) {
+        printf("cctl is already up to date: v%s (build %d).\n",
+               CCTL_VERSION, CCTL_MICROVERSION);
+        remove_tree(tmpdir);
+        return 0;
     }
 
-    printf("Launching interactive driver installer...\n");
-    char launch[PATH_MAX + 64];
-    if (geteuid() == 0)
-        snprintf(launch, sizeof(launch), "bash '%s'", script);
+    if (rel[0])
+        printf("Update available: %s (build %d) — installed: v%s (build %d)\n",
+               rel, remote_ver, CCTL_VERSION, CCTL_MICROVERSION);
     else
-        snprintf(launch, sizeof(launch), "sudo bash '%s'", script);
+        printf("Update available: build %d — installed: build %d\n",
+               remote_ver, CCTL_MICROVERSION);
 
-    int rc = system(launch);
-
-    /* Clean up the temp dir */
-    char rm_cmd[PATH_MAX + 64];
-    snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", tmpdir);
-    run_quiet(rm_cmd);
-
-    if (rc != 0) {
-        fprintf(stderr, "Driver installer exited with an error.\n");
+    char *const args[] = { "install", "-m", "755", dest, "/usr/local/bin/cctl", NULL };
+    if (run_cmd("install", args) != 0) {
+        fprintf(stderr, "Error: failed to install the updated binary.\n");
+        remove_tree(tmpdir);
         return 1;
     }
+    printf("Updated /usr/local/bin/cctl → %s (build %d).\n",
+           rel[0] ? rel : "new release", remote_ver);
+    if (access("/etc/sudoers.d/cctl", R_OK) != 0)
+        printf("Note: no sudoers rule found — run 'cctl install' to set up passwordless sudo.\n");
+
+    remove_tree(tmpdir);
     return 0;
 }
 
@@ -4963,6 +5709,7 @@ static const struct command commands[] = {
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
     { "install", 0, cmd_install },
+    { "update",  0, cmd_update },
     { "mux",     0, cmd_mux },      /* root required for switch, checked in handler */
     { "drivers-install", 0, cmd_drivers_install },
 
@@ -4972,6 +5719,13 @@ int main(int argc, char **argv)
 {
     use_color = isatty(STDOUT_FILENO);
     init_colors();
+
+    /* Root runs get a pinned PATH: helper tools invoked later (amixer, tar,
+     * sha256sum, chattr, install, ...) must resolve to the real system
+     * binaries, never to whatever a user-writable directory in the
+     * inherited PATH might contain. Mirrors sudo's secure_path. */
+    if (geteuid() == 0)
+        setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
 
     /* Pin to E-cores to keep off P-cores if hybrid architecture is detected */
     {
@@ -5007,6 +5761,11 @@ int main(int argc, char **argv)
 
     if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
         print_usage(argv[0]);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0) {
+        printf("cctl %s\n", CCTL_VERSION);
         return 0;
     }
 

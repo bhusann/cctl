@@ -48,7 +48,7 @@ cctl status                # view all current settings
 `setR <profile> [--nosafe]` applies preset (EC defaults + preconfigured CPU TDP override).
 
 ```
-Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP overide (setR only)
+Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP override (setR only)
 ─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────
 max         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W
 cpuperf     ON     performance  performance        45/115W + GPU 70W               (no RAPL change)
@@ -78,7 +78,7 @@ eco         OFF    powersave    power              15/30W  + GPU 70W            
 
 ### Keyboard Backlight
 ```bash
-cctl kbc <color>                # Set keyboard color: R G B (0-255), #hex, or preset name
+cctl kbc <color>                # Set keyboard color: R G B (0-255), #RRGGBB, or preset name
 cctl kbb <pct>                  # Brightness (0-100%)
 cctl kbe <effect>               # Start background keyboard effect
 cctl kbe stop                   # Stop active effect and restore original color & brightness
@@ -103,7 +103,7 @@ Presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime`
 * `starlight` — Deep midnight sky with gentle twinkling star shimmers
 * `temp` — Live CPU thermal heatmap (cyan $\to$ green $\to$ yellow $\to$ red, pulses $>90^\circ\text{C}$)
 
-*Manual Status Check*: Run `cctl kbe` or inspect `/run/cctl_kbe.state` in RAM to view the active effect, PID, and preserved base state.
+*Manual Status Check*: Run `cctl kbe` to view the active effect, PID, and preserved base state (it re-elevates automatically — the `/run/cctl_kbe.state` file is root-only; `sudo cat` it directly if you prefer).
 
 ### Fan Control
 ```bash
@@ -133,13 +133,15 @@ cctl mic [on|off]               # Toggle or set internal microphone (laptop mic 
 ```bash
 cctl bat                        # Show current thresholds and battery health
 cctl bat <start> <stop>         # Set charge thresholds (custom, e.g. 40 80)
-cctl bat max                    # Standard mode (change to max - 100%)
+cctl bat max                    # Standard: charge to 100%, resume at 95%
 ```
 
 ### Info
 ```bash
 cctl status                     # Print all current settings (profiles, GPU MUX, telemetry)
 cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
+cctl update                     # Update cctl itself from the latest GitHub release
+cctl --version                  # Print version and exit (also -V)
 ```
 
 ### NVIDIA GPU
@@ -167,6 +169,8 @@ cctl gov powersave|performance  # CPU scaling governor
 cctl epp <preference>           # performance, balance_performance, balance_power, power
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 ```
+>
+> **RAPL limits:** PL2 ≤ 115 W always. PL1 ≤ 45 W — with one exception: up to **90 W PL1 while max mode is active** (recorded by the last `cctl set max` / `cctl setR max`; shown as `Mode:` in `cctl status`, `EC default` when no profile has been applied yet).
 
 ---
 
@@ -174,7 +178,6 @@ cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 
 ```bash
 make                # Standard build (profiles, fans, display, battery, nvidia clock/power)
-make test-drivers   # Compile kernel drivers locally in-tree for testing (no install)
 ```
 
 ---
@@ -183,11 +186,27 @@ make test-drivers   # Compile kernel drivers locally in-tree for testing (no ins
 
 The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is required for fan control, keyboard backlight, battery thresholds, and EC GPU profile slots. The installer handles DKMS registration, build, and modprobe config.
 
+**Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball (fetched straight from the mirror — never rebuilt; the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`).
+
+`sudo cctl drivers-install` resolves the sources itself, trying in this order:
+
+1. `drivers.tar.gz` next to the cctl binary — sha256-checked on the spot (a bad file is rejected immediately, before anything is copied)
+2. download `drivers.tar.gz` from the mirror repo (curl/wget) into a private temp dir — on failure it tells you exactly where to place a manual copy
+3. offline / download failed: accepts the full path to a `drivers.tar.gz` you already have (checked in place first; staged to `/tmp` only if valid)
+
+Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused.
+
 ```bash
-sudo ./cctl drivers-install                  # Interactive: detects state, installs/uninstalls
-sudo ./drivers/driverinstall.sh --install    # Direct install
-sudo ./drivers/driverinstall.sh --uninstall  # Direct uninstall
-./drivers/driverinstall.sh --status          # Check state (no root needed)
+sudo ./cctl drivers-install
+```
+
+Direct install/uninstall (bypass cctl) — the script lives in the mirror repo:
+
+```bash
+git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
+sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --install
+sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --uninstall
+tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --status   # no root needed
 ```
 
 ### Supported Distros
@@ -204,21 +223,21 @@ Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
 | `emerge` | Gentoo | — |
 | `eopkg` | Solus | — |
 
-> **Immutable / Atomic OS note:** Atomic and immutable editions of Fedora (Silverblue, Kinoite, Atomic Desktops, Bazzite, etc. using `rpm-ostree`) are **not supported** because the root filesystem is read-only and DKMS modules cannot persist across image updates. Only standard, non-atomic Fedora (Workstation, KDE Spin, etc. using regular `dnf`) is supported. On unrecognized distros, the installer points to the driver source at `drivers/` for manual installation.
+> **Immutable / Atomic OS note:** Atomic and immutable editions of Fedora (Silverblue, Kinoite, Atomic Desktops, Bazzite, etc. using `rpm-ostree`) are **not supported** because the root filesystem is read-only and DKMS modules cannot persist across image updates. Only standard, non-atomic Fedora (Workstation, KDE Spin, etc. using regular `dnf`) is supported. On unrecognized distros, the installer points to the driver source in the mirror repo for manual installation.
 
 ---
 
 ## Uninstallation
 
 ### 1. Remove `cctl` Binary & Sudoers Entry
-`cctl install` places the binary in `/usr/local/bin/cctl` and configures a passwordless sudo rule in `/etc/sudoers.d/cctl` for auto-elevation. To remove both:
+`cctl install` places the binary in `/usr/local/bin/cctl` and configures a passwordless sudo rule in `/etc/sudoers.d/cctl` for auto-elevation (validated with `visudo -c` on install; the previous rule is backed up as `/etc/sudoers.d/cctl.bak`). To remove them:
 
 ```bash
 # Remove installed binary
 sudo rm -f /usr/local/bin/cctl
 
-# Remove passwordless sudo rule
-sudo rm -f /etc/sudoers.d/cctl
+# Remove passwordless sudo rule (+ backup)
+sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak
 ```
 
 ### 2. Remove Kernel Drivers
@@ -227,7 +246,8 @@ sudo rm -f /etc/sudoers.d/cctl
 Use the driver installation script to cleanly unload modules and deregister DKMS:
 
 ```bash
-sudo ./drivers/driverinstall.sh --uninstall
+git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
+sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --uninstall
 # or if cctl is still installed:
 sudo cctl drivers-install   # select the uninstall option
 ```
@@ -270,7 +290,7 @@ To remove the driver stack manually without using the script:
 - **GPU Fan Duty Register** — ACPI `FANINFO1` byte 2 is stuck at ~15% on this model. `cctl` reads GPU fan duty from `FANINFO2` (`0x64`, byte 0) for accurate readings.
 
 - **Keyboard Backlight Type Override (`force_backlight_type=6`)** — Why the driver installer forces type 6:
-  - In `drivers/src/clevo_leds.h:clevo_leds_init()`:
+  - In `drivers/src/clevo_leds.h:clevo_leds_init()` (path within the mirror repo):
     1. The driver calls `clevo_evaluate_method2(0x0D, 0)` to read the ACPI `_DSM` buffer. `buffer[0x0f]` holds the keyboard type ID. Known IDs include: `0x00` (NONE), `0x01` (FIXED), `0x02` (3ZONE), `0x06` (1ZONE), `0xF3` (PERKEY).
     2. The Colorful Evol P15 EC returns `0x26`. Because this ID is unknown to the driver, probe switches fail to match, registering no `led_classdev` — resulting in no `/sys/class/leds/*::kbd_backlight` and leaving brightness/color ioctls non-functional.
     3. `0x26` (`0b00100110`) vs `0x06` (`0b00000110`): the low nibble is identical, while the high bits likely signify a newer revision or flag. The wire protocol (`0x67` + `0xF4000000 | brightness`, zone color) remains standard single-zone RGB.
@@ -313,7 +333,7 @@ To remove the driver stack manually without using the script:
 
 `cctl` own code is licensed under the MIT License — see [LICENSE](LICENSE).
 
-The driver code under `drivers/` is **not** MIT. It is derived from the TUXEDO Linux driver project and remains under **GPL-2.0-or-later** — see [drivers/LICENSE](drivers/LICENSE) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
+The driver code (in the [mirror repo](https://github.com/bhusann/tuxedo-drivers-cctl-mirror)'s `drivers/` folder) is **not** MIT. It is derived from the TUXEDO Linux driver project and remains under **GPL-2.0-or-later** — see [drivers/LICENSE](https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/drivers/LICENSE) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
 
 ## Credits
 

@@ -1,29 +1,25 @@
-obj-m += legacymethod/
+# ── Shared flags ────────────────────────────────────────────────────────────
+# cctl routinely runs as root (EC port I/O, NVRAM, sysfs writes), so both
+# builds get standard binary hardening: bounds-checked libc calls, stack
+# canary, full RELRO + immediate binding, PIE/ASLR, format-string safety.
+CFLAGS  = -Os -Wall -Wextra -Wshadow \
+          -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 \
+          -fstack-protector-strong -fPIE -Wformat-security
+LDFLAGS = -s -pie -Wl,-z,relro -Wl,-z,now
 
-# ── Default: only cctl binary (no NVIDIA support) ────────────────────────
+# ── Default: only cctl binary (no NVIDIA support) ────────────────────────────
 cctl: cctl.c
-	gcc -o $@ $< -Os -s -Wall -Wextra -Wshadow
+	gcc $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 # ── Experimental build with NVIDIA GPU management compiled in ─────────────
 # Adds the nvidia module/GPU-toggle commands: on/off/load/unload/loadgame/status/power.
 experimental: cctl.c
-	gcc -o $@ $< -Os -s -Wall -Wextra -Wshadow -DCCTL_NVIDIA
+	gcc $(CFLAGS) -DCCTL_NVIDIA -o $@ $< $(LDFLAGS)
 
-# ── tuxedo-drivers (clevo_acpi, tuxedo_keyboard, tuxedo_io) ─────────────────
-# Compile kernel drivers locally in-tree for testing (no installation)
-test-drivers:
-	$(MAKE) -C drivers CC=clang LD=ld.lld
-
-# ── Kernel modules (legacygpu) ──────────────────────────────────────────────
-legacygpu:
-	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) CC=clang LD=ld.lld modules
-
-.PHONY: cctl experimental legacygpu test-drivers
+.PHONY: cctl experimental
 
 # ── Clean ───────────────────────────────────────────────────────────────────
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) clean
-	$(MAKE) -C drivers clean
-	rm -f cctl experimental cctl-nvidia
+	rm -f cctl experimental
 
 .PHONY: clean
