@@ -44,6 +44,26 @@ Pre-built `cctl` and `drivers.tar.gz` assets are also available on the [Releases
 
 ---
 
+## Screenshots
+
+**`cctl` — full command reference**
+
+![cctl help](docs/screenshots/help.png)
+
+**`cctl status` — all current settings at a glance**
+
+![cctl status](docs/screenshots/status.png)
+
+**`cctl kbe` — keyboard backlight effects**
+
+![cctl keyboard effects](docs/screenshots/kbe-effects.png)
+
+**`cctl kbc` — keyboard color presets**
+
+![cctl keyboard color presets](docs/screenshots/kbc-presets.png)
+
+---
+
 ## Power Profiles
 
 `set <profile> [--nosafe]` applies preset (EC defaults + table values below).
