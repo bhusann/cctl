@@ -17,3 +17,6 @@ remove_test_sudoers.sh
 
 # Local research notes (not for upstream)
 progress_finding.md
+
+# Local test harness (not for upstream)
+cctl_units2.c
