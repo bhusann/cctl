@@ -41,7 +41,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100028
+#define CCTL_MICROVERSION 100029
 #endif
 
 /* ========================================================================
@@ -114,6 +114,12 @@ static int nvidia_is_loaded(void);
 static int bat_read_start(void);
 static int bat_read_end(void);
 static int command_exists(const char *cmd);
+static int kbd_get_brightness(void);
+static int kbd_get_color(int *r, int *g, int *b);
+static const char *kbd_find_preset_name(int r, int g, int b);
+static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz,
+                          int *orig_r, int *orig_g, int *orig_b, int *orig_bri);
+static int nvidia_find_pci_address(char *buf, size_t bufsz);
 
 /* ========================================================================
  * EC PORT I/O
@@ -1663,8 +1669,7 @@ static void show_status(void)
 
     printf("%s=== System Status ===%s\n\n", C_YLW, C_RST);
 
-    /* Active profile mode — recorded by `cctl set`/`setR` in /tmp/cctl.mode,
-     * cleared on reboot (missing file = EC default, nothing applied). */
+    /* 1. Mode */
     {
         char m_prof[32] = {0}, m_how[16] = {0};
         if (mode_read(m_prof, sizeof(m_prof), m_how, sizeof(m_how)) == 0)
@@ -1674,68 +1679,207 @@ static void show_status(void)
             printf("  %-14s %sEC default%s\n", "Mode:", C_DIM, C_RST);
     }
 
-    /* Turbo */
-    if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0) {
-        int val = atoi(buf);
-        printf("  %-14s %s%s%s\n", "Turbo:", val == 0 ? C_GRN : C_RED, val == 0 ? "ON" : "OFF", C_RST);
-    } else {
-        printf("  %-14s %sN/A (intel_pstate not loaded)%s\n", "Turbo:", C_DIM, C_RST);
+    /* 2. Turbo + Governor + EPP (single line) */
+    {
+        int turbo_val = -1;
+        if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0)
+            turbo_val = atoi(buf);
+
+        char gov_buf[64] = {0};
+        int have_gov = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", gov_buf, sizeof(gov_buf)) >= 0);
+
+        char epp_buf[64] = {0};
+        int have_epp = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", epp_buf, sizeof(epp_buf)) >= 0);
+
+        printf("  %-14s Turbo %s%s%s, gov: %s%s%s, epp: %s%s%s\n",
+               "CPU Profile:",
+               turbo_val == 0 ? C_GRN : (turbo_val == 1 ? C_RED : C_DIM),
+               turbo_val == 0 ? "ON" : (turbo_val == 1 ? "OFF" : "N/A"),
+               C_RST,
+               have_gov ? C_CYN : C_DIM, have_gov ? gov_buf : "N/A", C_RST,
+               have_epp ? C_CYN : C_DIM, have_epp ? epp_buf : "N/A", C_RST);
     }
 
-    /* Governor (read cpu0) */
-    if (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", buf, sizeof(buf)) >= 0) {
-        printf("  %-14s %s%s%s\n", "Governor:", C_CYN, buf, C_RST);
-    } else {
-        printf("  %-14s %sN/A%s\n", "Governor:", C_DIM, C_RST);
+    /* 3. RAPL PL1 and PL2 (single line) */
+    {
+        long pl1_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", -1);
+        long pl2_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", -1);
+        if (pl1_uw >= 0 && pl2_uw >= 0) {
+            printf("  %-14s PL1 %s%ldW%s, PL2 %s%ldW%s\n", "RAPL Limits:",
+                   C_CYN, pl1_uw / 1000000, C_RST,
+                   C_CYN, pl2_uw / 1000000, C_RST);
+        } else if (pl1_uw >= 0) {
+            printf("  %-14s PL1 %s%ldW%s, PL2 %sN/A%s\n", "RAPL Limits:",
+                   C_CYN, pl1_uw / 1000000, C_RST, C_DIM, C_RST);
+        } else if (pl2_uw >= 0) {
+            printf("  %-14s PL1 %sN/A%s, PL2 %s%ldW%s\n", "RAPL Limits:",
+                   C_DIM, C_RST, C_CYN, pl2_uw / 1000000, C_RST);
+        } else {
+            printf("  %-14s %sN/A%s\n", "RAPL Limits:", C_DIM, C_RST);
+        }
     }
 
-    /* EPP (read cpu0) */
-    if (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", buf, sizeof(buf)) >= 0) {
-        printf("  %-14s %s%s%s\n", "EPP:", C_CYN, buf, C_RST);
-    } else {
-        printf("  %-14s %sN/A%s\n", "EPP:", C_DIM, C_RST);
+    /* 4. Current max CPU frequency for P-Core and E-Core (single line) */
+    {
+        int p_max = 0, e_max = 0;
+        DIR *d = opendir("/sys/devices/system/cpu");
+        if (d) {
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                if (strncmp(ent->d_name, "cpu", 3) != 0) continue;
+                if (ent->d_name[3] < '0' || ent->d_name[3] > '9') continue;
+                int cpu_num = atoi(ent->d_name + 3);
+                char path[512];
+                snprintf(path, sizeof(path),
+                         "/sys/devices/system/cpu/%s/cpufreq/scaling_max_freq", ent->d_name);
+                long khz = read_sysfs_long(path, -1);
+                if (khz <= 0) {
+                    snprintf(path, sizeof(path),
+                             "/sys/devices/system/cpu/%s/cpufreq/cpuinfo_max_freq", ent->d_name);
+                    khz = read_sysfs_long(path, -1);
+                }
+                if (khz <= 0) continue;
+                int mhz = (int)(khz / 1000);
+                if (!is_cpu_e_core(cpu_num)) {
+                    if (mhz > p_max) p_max = mhz;
+                } else {
+                    if (mhz > e_max) e_max = mhz;
+                }
+            }
+            closedir(d);
+        }
+        if (p_max > 0 && e_max > 0) {
+            printf("  %-14s P-Core %s%d MHz%s, E-Core %s%d MHz%s\n", "CPU Max Freq:",
+                   C_CYN, p_max, C_RST, C_CYN, e_max, C_RST);
+        } else if (p_max > 0) {
+            printf("  %-14s P-Core %s%d MHz%s\n", "CPU Max Freq:",
+                   C_CYN, p_max, C_RST);
+        } else if (e_max > 0) {
+            printf("  %-14s E-Core %s%d MHz%s\n", "CPU Max Freq:",
+                   C_CYN, e_max, C_RST);
+        } else {
+            printf("  %-14s %sN/A%s\n", "CPU Max Freq:", C_DIM, C_RST);
+        }
     }
 
-    /* RAPL PL1 */
-    long pl1_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", -1);
-    if (pl1_uw >= 0) {
-        printf("  %-14s %s%ldW%s\n", "RAPL PL1:", C_CYN, pl1_uw / 1000000, C_RST);
-    } else {
-        printf("  %-14s %sN/A%s\n", "RAPL PL1:", C_DIM, C_RST);
+    /* 5. dGPU Power State */
+    {
+        char pci_path[512];
+        if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
+            char state_path[576];
+            snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
+            char state[16] = "unknown";
+            FILE *fp = fopen(state_path, "r");
+            if (fp) {
+                if (fgets(state, sizeof(state), fp))
+                    state[strcspn(state, "\n")] = 0;
+                fclose(fp);
+            }
+            const char *col = (strcmp(state, "D0") == 0) ? C_GRN : C_DIM;
+            printf("  %-14s %s%s%s\n", "dGPU Power:", col, state, C_RST);
+        } else {
+            printf("  %-14s %sN/A (no dGPU found)%s\n", "dGPU Power:", C_DIM, C_RST);
+        }
     }
 
-    /* RAPL PL2 */
-    long pl2_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", -1);
-    if (pl2_uw >= 0) {
-        printf("  %-14s %s%ldW%s\n", "RAPL PL2:", C_CYN, pl2_uw / 1000000, C_RST);
-    } else {
-        printf("  %-14s %sN/A%s\n", "RAPL PL2:", C_DIM, C_RST);
+#ifdef CCTL_NVIDIA
+    /* Nvidia GPU */
+    {
+        int nv_blacklisted = nvidia_is_blacklisted();
+        int nv_loaded = nvidia_is_loaded();
+        printf("  %-14s %s%s%s (modules %s%s%s)\n",
+               "Nvidia GPU:",
+               nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
+               nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
+    }
+#endif
+
+    /* 6. GPU MUX */
+    mux_show();
+
+    /* 7. Refresh Rate (only shown if xrandr is present) */
+    struct display_info disp_info;
+    if (is_x11_xrandr_available(&disp_info)) {
+        printf("  %-14s %s%s Hz%s\n", "Refresh Rate:", C_CYN, disp_info.current_rate, C_RST);
     }
 
-    /* Webcam */
-    int cam = is_webcam_enabled();
-    if (cam < 0) {
-        printf("  %-14s %sNot detected%s\n", "Webcam:", C_DIM, C_RST);
+    /* Fan Telemetry */
+    int cpu_pct = 0, gpu_pct = 0, cpu_rpm = 0, gpu_rpm = 0;
+    if (read_fan_telemetry(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm) == 0) {
+        printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
+        printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n", "CPU Fan:", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
+        if (gpu_pct == 0 && gpu_rpm == 0) {
+            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s  %s(GPU in D3cold state)%s\n",
+                   "GPU Fan:", C_DIM, gpu_pct, C_RST, C_DIM, gpu_rpm, C_RST, C_DIM, C_RST);
+        } else {
+            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n",
+                   "GPU Fan:", C_CYN, gpu_pct, C_RST, C_CYN, gpu_rpm, C_RST);
+        }
     } else {
-        printf("  %-14s %s%s%s\n", "Webcam:", cam ? C_GRN : C_RED, cam ? "ON" : "OFF", C_RST);
+        printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
+        printf("  %-14s %sN/A (ec_sys or tuxedo_io not available)%s\n", "Fans:", C_DIM, C_RST);
     }
 
-    /* Microphone */
-    int mic = mic_is_enabled();
-    if (mic < 0)
-        printf("  %-14s %sN/A (amixer not available)%s\n", "Microphone:", C_DIM, C_RST);
-    else
-        printf("  %-14s %s%s%s\n", "Microphone:", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
+    /* Keyboard */
+    printf("\n%s--- Keyboard ---%s\n", C_YLW, C_RST);
+    {
+        int cur_r = 0, cur_g = 0, cur_b = 0;
+        if (kbd_get_color(&cur_r, &cur_g, &cur_b) == 0) {
+            const char *pname = kbd_find_preset_name(cur_r, cur_g, cur_b);
+            if (pname) {
+                printf("  %-14s %s%s%s %sRGB(%d, %d, %d)%s\n", "Color:",
+                       C_CYN, pname, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
+            } else {
+                printf("  %-14s %scustom%s %sRGB(%d, %d, %d)%s\n", "Color:",
+                       C_YLW, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
+            }
+        } else {
+            printf("  %-14s %sN/A (tuxedo_keyboard not loaded)%s\n", "Color:", C_DIM, C_RST);
+        }
 
-    /* Fn Lock */
-    if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
-        int val = atoi(buf);
-        printf("  %-14s %s%s%s\n", "Fn Lock:", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
-    } else {
-        printf("  %-14s %sN/A (tuxedo_keyboard not loaded)%s\n", "Fn Lock:", C_DIM, C_RST);
+        int bri = kbd_get_brightness();
+        if (bri >= 0) {
+            printf("  %-14s %s%d%%%s\n", "Brightness:", C_CYN, bri, C_RST);
+        } else {
+            printf("  %-14s %sN/A%s\n", "Brightness:", C_DIM, C_RST);
+        }
+
+        pid_t kbe_pid = 0;
+        char kbe_effect[32] = {0};
+        int dummy_r, dummy_g, dummy_b, dummy_bri;
+        if (kbe_is_running(&kbe_pid, kbe_effect, sizeof(kbe_effect), &dummy_r, &dummy_g, &dummy_b, &dummy_bri)) {
+            printf("  %-14s %s%s%s %s(PID %d)%s\n", "Effect:", C_CYN, kbe_effect, C_RST, C_DIM, (int)kbe_pid, C_RST);
+        } else {
+            printf("  %-14s %snone%s\n", "Effect:", C_DIM, C_RST);
+        }
+
+        if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
+            int val = atoi(buf);
+            printf("  %-14s %s%s%s\n", "Fn Lock:", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
+        } else {
+            printf("  %-14s %sN/A (tuxedo_keyboard not loaded)%s\n", "Fn Lock:", C_DIM, C_RST);
+        }
     }
 
-    /* Battery */
+    /* Privacy */
+    printf("\n%s--- Privacy ---%s\n", C_YLW, C_RST);
+    {
+        int cam = is_webcam_enabled();
+        if (cam < 0) {
+            printf("  %-14s %sNot detected%s\n", "Webcam:", C_DIM, C_RST);
+        } else {
+            printf("  %-14s %s%s%s\n", "Webcam:", cam ? C_GRN : C_RED, cam ? "ON" : "OFF", C_RST);
+        }
+
+        int mic = mic_is_enabled();
+        if (mic < 0)
+            printf("  %-14s %sN/A (amixer not available)%s\n", "Microphone:", C_DIM, C_RST);
+        else
+            printf("  %-14s %s%s%s\n", "Microphone:", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
+    }
+
+    /* Battery Info */
+    printf("\n%s--- Battery Info ---%s\n", C_YLW, C_RST);
     {
         char bat_status[32] = {0}, bp[256];
         bat_sysfs(bp, sizeof(bp), "status");
@@ -1782,80 +1926,6 @@ static void show_status(void)
         }
         if (volt > 0)
             printf("  %-14s %ld mV\n", "Voltage:", volt / 1000);
-    }
-
-    /* Nvidia GPU */
-#ifdef CCTL_NVIDIA
-    int nv_blacklisted = nvidia_is_blacklisted();
-    int nv_loaded = nvidia_is_loaded();
-    printf("  %-14s %s%s%s (modules %s%s%s)\n",
-           "Nvidia GPU:",
-           nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
-           nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
-#endif
-
-    /* GPU MUX */
-    mux_show();
-
-    /* Refresh Rate (only shown if xrandr is present) */
-    struct display_info disp_info;
-    if (is_x11_xrandr_available(&disp_info)) {
-        printf("  %-14s %s%s Hz%s\n", "Refresh Rate:", C_CYN, disp_info.current_rate, C_RST);
-    }
-
-    /* CPU Max Frequency (P-core vs E-core) */
-    printf("\n%s--- CPU Max Frequency ---%s\n", C_YLW, C_RST);
-    int p_max = 0, e_max = 0;
-    DIR *d = opendir("/sys/devices/system/cpu");
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            if (strncmp(ent->d_name, "cpu", 3) != 0) continue;
-            if (ent->d_name[3] < '0' || ent->d_name[3] > '9') continue;
-            int cpu_num = atoi(ent->d_name + 3);
-            char path[512];
-            snprintf(path, sizeof(path),
-                     "/sys/devices/system/cpu/%s/cpufreq/scaling_max_freq", ent->d_name);
-            long khz = read_sysfs_long(path, -1);
-            if (khz <= 0) {
-                snprintf(path, sizeof(path),
-                         "/sys/devices/system/cpu/%s/cpufreq/cpuinfo_max_freq", ent->d_name);
-                khz = read_sysfs_long(path, -1);
-            }
-            if (khz <= 0) continue;
-            int mhz = (int)(khz / 1000);
-            if (!is_cpu_e_core(cpu_num)) {
-                if (mhz > p_max) p_max = mhz;
-            } else {
-                if (mhz > e_max) e_max = mhz;
-            }
-        }
-        closedir(d);
-    }
-    if (p_max > 0)
-        printf("  %-14s %s%d MHz%s\n", "P-Core:", C_CYN, p_max, C_RST);
-    else
-        printf("  %-14s %sN/A%s\n", "P-Core:", C_DIM, C_RST);
-    if (e_max > 0)
-        printf("  %-14s %s%d MHz%s\n", "E-Core:", C_CYN, e_max, C_RST);
-    else
-        printf("  %-14s %sN/A%s\n", "E-Core:", C_DIM, C_RST);
-
-    /* Fan Telemetry */
-    int cpu_pct = 0, gpu_pct = 0, cpu_rpm = 0, gpu_rpm = 0;
-    if (read_fan_telemetry(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm) == 0) {
-        printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
-        printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n", "CPU Fan:", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
-        if (gpu_pct == 0 && gpu_rpm == 0) {
-            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s  %s(GPU in D3cold state)%s\n",
-                   "GPU Fan:", C_DIM, gpu_pct, C_RST, C_DIM, gpu_rpm, C_RST, C_DIM, C_RST);
-        } else {
-            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n",
-                   "GPU Fan:", C_CYN, gpu_pct, C_RST, C_CYN, gpu_rpm, C_RST);
-        }
-    } else {
-        printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
-        printf("  %-14s %sN/A (ec_sys or tuxedo_io not available)%s\n", "Fans:", C_DIM, C_RST);
     }
 
     printf("\n");
