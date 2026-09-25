@@ -41,7 +41,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100024
+#define CCTL_MICROVERSION 100025
 #endif
 
 /* Preprocessor stringification for embedding integer defines as strings */
@@ -5802,6 +5802,15 @@ static int file_sha256(const char *path, char out[65])
     return 0;
 }
 
+/* Construct metadata marker search prefix dynamically so the query string
+ * itself does not appear as a contiguous "@@CCTL_META_..." literal in .rodata.
+ * This guarantees older binaries whose extractors only check the first occurrence
+ * of a prefix will immediately hit the real marker rather than code literals. */
+static void make_meta_query(char *out, size_t sz, const char *key)
+{
+    snprintf(out, sz, "%s%s%s", "@", "@CCTL_META_", key);
+}
+
 /* Scan a binary file for an embedded "@@PREFIX=value@@" marker and extract
  * "value" into out.  DOES NOT execute the file — reads it as raw data.
  * Returns 0 on success, -1 if the marker is not found or unreadable.
@@ -5842,19 +5851,28 @@ static int extract_binary_marker(const char *filepath, const char *prefix,
     for (size_t i = 0; i + pfxlen + 2 <= filesz; i++) {
         if (memcmp(buf + i, prefix, pfxlen) != 0)
             continue;
-        /* Found prefix — extract value up to the closing "@@" */
+        /* Found prefix — check if followed by a valid value ending with "@@"
+         * without any intervening NUL byte, and within reasonable length (256 bytes).
+         * If this occurrence was just a string literal in code, keep searching. */
         size_t start = i + pfxlen;
-        for (size_t j = start; j + 1 < filesz; j++) {
-            if (buf[j] == '@' && buf[j + 1] == '@') {
-                size_t vlen = j - start;
-                if (vlen >= outsz) vlen = outsz - 1;
-                memcpy(out, buf + start, vlen);
-                out[vlen] = '\0';
-                found = 1;
+        int valid = 0;
+        size_t end = start;
+        while (end + 1 < filesz && (end - start) < 256) {
+            if (buf[end] == '\0') break; /* hit string boundary before @@ -> not marker */
+            if (buf[end] == '@' && buf[end + 1] == '@') {
+                valid = 1;
                 break;
             }
+            end++;
         }
-        break; /* only check the first occurrence */
+        if (valid) {
+            size_t vlen = end - start;
+            if (vlen >= outsz) vlen = outsz - 1;
+            memcpy(out, buf + start, vlen);
+            out[vlen] = '\0';
+            found = 1;
+            break;
+        }
     }
 
     free(buf);
@@ -6208,10 +6226,13 @@ static int cmd_update(int argc, char **argv)
     int remote_ver = 0;
     char rel[64] = {0};
     {
+        char q_micro[32], q_ver[32];
+        make_meta_query(q_micro, sizeof(q_micro), "MICROVER=");
+        make_meta_query(q_ver, sizeof(q_ver), "VERSION=");
         char buf[64];
-        if (extract_binary_marker(dest, "@@CCTL_META_MICROVER=", buf, sizeof(buf)) == 0)
+        if (extract_binary_marker(dest, q_micro, buf, sizeof(buf)) == 0)
             safe_atoi(buf, &remote_ver);
-        extract_binary_marker(dest, "@@CCTL_META_VERSION=", rel, sizeof(rel));
+        extract_binary_marker(dest, q_ver, rel, sizeof(rel));
     }
 
     if (remote_ver <= 0) {
@@ -6254,7 +6275,9 @@ static int cmd_update(int argc, char **argv)
      * specific drivers.tar.gz; the old binary's hash would reject any
      * update that ships new driver sources. */
     char expected_drv_sha[65] = {0};
-    if (extract_binary_marker(dest, "@@CCTL_META_SHA256=", expected_drv_sha,
+    char q_sha[32];
+    make_meta_query(q_sha, sizeof(q_sha), "SHA256=");
+    if (extract_binary_marker(dest, q_sha, expected_drv_sha,
                               sizeof(expected_drv_sha)) != 0 ||
         strlen(expected_drv_sha) != 64) {
         fprintf(stderr,
