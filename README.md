@@ -1,6 +1,6 @@
 # CCTL — ColorControl
 
-Linux CLI alternative to the Windows-only Colorful Laptop Control Center. Fast, single-binary tool for Colorful Evol P15 laptops (Clevo/TUXEDO chassis) — controls power profiles, fans, keyboard backlight, display, battery, GPU MUX switching, and NVIDIA GPU. Pure C, no GUI, no daemon.
+Linux CLI alternative to the Windows-only Colorful Laptop Control Center. Fast, single-binary tool for Colorful Evol P15 laptops (Clevo/TUXEDO chassis) — controls power profiles, fans, keyboard backlight, display, battery, GPU MUX switching, and NVIDIA GPU. Pure C, no GUI, no persistent daemon (keyboard effects use a lightweight background process while active).
 
 ## Hardware Compatibility
 
@@ -90,7 +90,7 @@ eco         OFF    powersave    power              15/30W  + GPU 70W            
 
 ### Keyboard Backlight
 ```bash
-cctl kbc <color>                # Set keyboard color: R G B (0-255), #RRGGBB, or preset name
+cctl kbc <color>                # Set keyboard color: R G B (0-255) or preset name
 cctl kbb <pct>                  # Brightness (0-100%)
 cctl kbe [effect|stop]          # Start an effect, stop & restore original color/brightness, or show status & list effects
 cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/unlock)
@@ -144,8 +144,8 @@ cctl --version                  # Print version and exit (also -V)
 ### NVIDIA GPU
 ```bash
 cctl nvidia power [on|off]              # Hardware D0/D3cold control; no arg shows state
-cctl nvidia clock <min,max> | reset     # Lock/unlock GPU clocks (auto persistence)
-cctl nvidia memclock <min,max> | reset  # Lock/unlock memory clocks (auto persistence)
+cctl nvidia clock [min] <max> | reset   # Lock/unlock GPU clocks (no arg shows max clock; min defaults to 0)
+cctl nvidia memclock [min] <max> | reset # Lock/unlock memory clocks (no arg shows max clock; min defaults to 0)
 ```
 
 ### Display
@@ -175,7 +175,10 @@ cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 
 ```bash
 make                # Standard build (profiles, fans, display, battery, nvidia clock/power)
+make install        # Install to /usr/local/bin/cctl (use DESTDIR for staged installs)
 ```
+
+The Makefile respects `CC`, `CFLAGS`, `LDFLAGS`, `PREFIX`, `BINDIR`, and `DESTDIR`. Hardening flags are always applied. Pass `STRIP=0` to keep debug symbols.
 
 ---
 
@@ -345,7 +348,8 @@ Or do it step by step:
   2. `drivers.tar.gz` beside the cctl binary — sha-checked on the spot; a stale copy is warned about and skipped
   3. download from the mirror into a private temp dir — on failure it names the folder for a manual copy
   4. full path to a `drivers.tar.gz` you already have — checked in place first; staged only if valid
-- **drivers-manage verification & update atomicity** — Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file. `cctl update` itself is all-or-nothing: it stages and verifies **both** release assets (binary + tarball) in tmp first and places them only when both pass — if the tarball fetch or hash check fails, **nothing** is installed.
+- **drivers-manage verification & update atomicity** — Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file. `cctl update` itself is all-or-nothing: it stages and verifies **both** release assets (binary + tarball) in tmp first and places them only when both pass — if the tarball fetch or hash check fails, **nothing** is installed. The expected driver hash is extracted from the **new** binary's embedded `@@CCTL_META_SHA256@@` marker (not the old running binary's constant), so updates that ship new driver sources are verified correctly.
+- **Update security model** — `cctl update` reads version and hash metadata from a downloaded release by scanning for embedded `@@CCTL_META_*@@` markers in the binary's `.rodata` — **the file is never executed** before installation. Trust is TLS to `github.com` plus the author's GitHub account; adding release signing (minisign/GPG) is a planned future improvement.
 
 ---
 
@@ -363,6 +367,6 @@ https://github.com/tuxedocomputers/tuxedo-drivers
 
 The driver code is licensed under GPL-2.0-or-later. Copyright belongs to the respective original authors (TUXEDO Computers GmbH and contributors).
 
-GPU MUX switch findings were informed by arbitrary-string's clevo-control-panel:
+GPU MUX reverse-engineered findings are referred from this repo:
 
 https://github.com/arbitrary-string/clevo-control-panel
