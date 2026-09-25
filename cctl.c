@@ -34,37 +34,15 @@
 #include <signal.h>
 #include <sys/file.h>
 
-#define CCTL_VERSION      "3.6"
+#define CCTL_VERSION      "3.7"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100025
+#define CCTL_MICROVERSION 100028
 #endif
-
-/* Preprocessor stringification for embedding integer defines as strings */
-#define CCTL_XSTR(x) #x
-#define CCTL_STR(x)  CCTL_XSTR(x)
-
-/* Extractable metadata markers — embedded as string literals in the compiled
- * binary so `cctl update` can read version/hash info from a downloaded
- * release WITHOUT executing it.  The @@…=…@@ delimiters are chosen to be
- * vanishingly unlikely in compiled code.
- *
- * Security fix: the prior code ran the downloaded binary as root via
- * popen("downloaded_binary --microversion") to query its version, granting
- * arbitrary code execution to whatever the release asset contained.
- * Marker extraction reads the file as data instead.
- *
- * __attribute__((used)) prevents the compiler from dead-stripping the
- * variables even though no code references them directly; string data
- * lives in .rodata and survives `strip -s`. */
-static const char __attribute__((used)) cctl_meta_version[] =
-    "@@CCTL_META_VERSION=" CCTL_VERSION "@@";
-static const char __attribute__((used)) cctl_meta_microver[] =
-    "@@CCTL_META_MICROVER=" CCTL_STR(CCTL_MICROVERSION) "@@";
 
 /* ========================================================================
  * ANSI COLOR SUPPORT
@@ -858,21 +836,19 @@ static int set_gpu_profile(int profile)
 }
 
 /* ========================================================================
- * FAN CONTROL
+ * FAN CONTROL (Hybrid: tuxedo_io ioctls + direct EC port I/O)
  * ========================================================================
- *
- * EC byte-order note:
- * This Clevo EC uses DIFFERENT argument orders for cmd 0x99 depending on
- * context.  After a mode command (0x98), the follow-up 0x99 takes
- * { fan_idx, value }.  For standalone auto-restore, 0x99 takes
- * { 0xFF, fan_idx }.  fan_set_duty() also uses { fan_idx, raw_duty }.
- * This is quirky but confirmed working via live testing (max → 6700 RPM,
- * silent → 950 RPM, cpu 50 → 3789 RPM).  Do not "fix" the byte order.
+ * - Both fans auto: tuxedo_io ioctl W_CL_FANAUTO (bitmask 0x0F)
+ * - Both fans duty: tuxedo_io ioctl W_CL_FANSPEED (packed raw1 | raw2<<8)
+ * - Individual fan duty: direct EC port I/O (cmd 0x99) — leaves the other
+ *   fan on its automatic thermal curve without locking it
+ * - Max & Silent modes: legacy direct EC port I/O (cmd 0x98 mode + cmd 0x99)
  * ======================================================================== */
 
 #define FAN_CPU 1
 #define FAN_GPU 2
 
+/* Direct EC port commands */
 #define EC_CMD_FAN_MODE   0x98
 #define EC_CMD_FAN_SPEED  0x99
 #define FAN_MODE_MAX      0x40
@@ -880,19 +856,64 @@ static int set_gpu_profile(int profile)
 #define FAN_DUTY_AUTO     0xFF
 #define EC_FAN_RPM_DIVISOR 2156220
 
+/* tuxedo_io ioctl constants */
+#define R_CL_FANINFO1   0x8008ED10
+#define R_CL_FANINFO2   0x8008ED11
+#define W_CL_FANSPEED   0x4008EE10
+#define W_CL_FANAUTO    0x4008EE11
+#define FAN_MAX_RAW     255
+
+/* --- tuxedo_io implementations --- */
+
+static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
+{
+    int fd = tuxedo_open_clevo();
+    if (fd < 0) {
+        fprintf(stderr, "Error: cannot open /dev/tuxedo_io (is tuxedo_io module loaded?)\n");
+        return -1;
+    }
+    /* Byte order in packed argument: fan1 | (fan2 << 8) */
+    int32_t arg = (int32_t)raw_fan1 | ((int32_t)raw_fan2 << 8);
+    int res = ioctl(fd, W_CL_FANSPEED, &arg);
+    close(fd);
+    if (res < 0) {
+        perror("Error: ioctl W_CL_FANSPEED failed");
+        return -1;
+    }
+    return 0;
+}
+
+static int fan_auto_tuxedo(int32_t mask)
+{
+    int fd = tuxedo_open_clevo();
+    if (fd < 0) {
+        fprintf(stderr, "Error: cannot open /dev/tuxedo_io (is tuxedo_io module loaded?)\n");
+        return -1;
+    }
+    /* Note: arg MUST be passed as a pointer (&arg) because tuxedo_io
+     * uses copy_from_user. Bitmask 15 (0x0F) releases all fans (1, 2, 3, 4). */
+    int32_t arg = mask ? mask : 15;
+    int res = ioctl(fd, W_CL_FANAUTO, &arg);
+    close(fd);
+    if (res < 0) {
+        perror("Error: ioctl W_CL_FANAUTO failed");
+        return -1;
+    }
+    return 0;
+}
+
 static int fan_auto(int fan_idx)
 {
-    /* EC quirk: standalone 0x99 auto-restore uses { 0xFF, fan_idx } order.
-     * Do NOT swap to { fan_idx, 0xFF } — that only works after a mode cmd 0x98. */
-    uint8_t data[2] = { FAN_DUTY_AUTO, (uint8_t)fan_idx };
-    return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
+    int mask = (fan_idx == FAN_CPU) ? 1 : ((fan_idx == FAN_GPU) ? 2 : 15);
+    return fan_auto_tuxedo(mask);
 }
 
 static int fan_auto_all(void)
 {
-    if (fan_auto(FAN_CPU) < 0) return -1;
-    return fan_auto(FAN_GPU);
+    return fan_auto(0);
 }
+
+/* --- Legacy direct EC implementations (Max & Silent) --- */
 
 static int fan_max_all(void)
 {
@@ -920,19 +941,51 @@ static int fan_silent_all(void)
     return send_ec_cmd(EC_CMD_FAN_SPEED, gpu, 2);
 }
 
+/* --- Fan Duty (Individual = Legacy EC, Both = tuxedo_io) --- */
+
 static int fan_set_duty(int fan_idx, int percent)
 {
-    if (percent < 21 || percent > 100) {
-        fprintf(stderr, "Error: Fan duty %d%% out of range (21-100)\n", percent);
+    if (percent < 25 || percent > 100) {
+        fprintf(stderr, "Error: Fan duty %d%% out of range (25-100)\n", percent);
         return -1;
     }
     uint8_t raw = (uint8_t)((percent * 255) / 100);
-    /* EC quirk: standalone 0x99 duty uses { fan_idx, raw } — same order as after a mode cmd */
-    uint8_t data[2] = { (uint8_t)fan_idx, raw };
-    printf("  Fan %s duty: %d%% (0x%02X)\n",
-           fan_idx == FAN_CPU ? "CPU" : "GPU", percent, raw);
+
+    if (fan_idx == FAN_CPU || fan_idx == FAN_GPU) {
+        /* Individual fan duty: use legacy direct EC port I/O to avoid
+         * overriding the other fan's automatic thermal curve */
+        uint8_t data[2] = { (uint8_t)fan_idx, raw };
+        printf("  Fan %s duty: %d%% (0x%02X)\n",
+               fan_idx == FAN_CPU ? "CPU" : "GPU", percent, raw);
+        return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
+    }
+
+    /* Both fans: use tuxedo_io ioctl */
+    printf("  Fans duty: %d%% (0x%02X)\n", percent, raw);
+    return fan_set_speeds_tuxedo(raw, raw);
+}
+
+/* Direct EC port individual auto restore */
+static int legacy_fan_auto(int fan_idx)
+{
+    /* EC quirk: standalone 0x99 auto-restore uses { 0xFF, fan_idx } order.
+     * Do NOT swap to { fan_idx, 0xFF } — that only works after a mode cmd 0x98. */
+    uint8_t data[2] = { FAN_DUTY_AUTO, (uint8_t)fan_idx };
     return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
 }
+
+/* ========================================================================
+ * [LEGACY / PRESERVATION] UNUSED DIRECT EC AUTO-ALL
+ * IMPORTANT: This section is kept for preservation — DO NOT DELETE.
+ * Full auto uses fan_auto_all() via tuxedo_io W_CL_FANAUTO ioctl.
+ * ======================================================================== */
+#if 0
+static int legacy_fan_auto_all(void)
+{
+    if (legacy_fan_auto(FAN_CPU) < 0) return -1;
+    return legacy_fan_auto(FAN_GPU);
+}
+#endif
 
 /* ========================================================================
  * PROFILES
@@ -1031,10 +1084,6 @@ static int profile_eco(int with_rapl)
  * TUXEDO IOCTL CONSTANTS
  * ======================================================================== */
 
-#define R_CL_FANINFO1   0x8008ED10
-#define R_CL_FANINFO2   0x8008ED11
-#define W_CL_FANSPEED   0x4008EE10
-#define W_CL_FANAUTO    0x4008EE11
 #define R_CL_WEBCAM_SW  0x8008ED13
 #define W_CL_WEBCAM_SW  0x4008EE12
 
@@ -2299,11 +2348,6 @@ static int kbe_read_state_ex(pid_t *pid, long *starttime, char *effect, size_t e
     return 0;
 }
 
-static inline int kbe_read_state(pid_t *pid, char *effect, size_t effect_sz,
-                                 int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
-{
-    return kbe_read_state_ex(pid, NULL, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, NULL, 0);
-}
 
 static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz, int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
 {
@@ -3466,8 +3510,9 @@ static void print_usage(const char *prog)
     printf("  %sFAN%s\n", C_YLW, C_RST);
     printf("    %sfan%s   auto|max           Set both fans %s(EC-controlled / full)%s\n", C_BLD, C_RST, C_DIM, C_RST);
     printf("    %sfan%s   silent [--nosafe]  Quiet mode %s(forces eco profile first; bypass with --nosafe)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   <pct> --nosafe     Set both fans to duty %s(21-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   cpu|gpu <pct> --nosafe Set individual fan duty %s(21-100%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   <pct> --nosafe     Set both fans to duty %s(25-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   cpu|gpu <pct> --nosafe Set individual fan duty %s(25-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
+    printf("    %sfan%s   cpu|gpu auto       Restore individual fan to auto %s(independent)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* ── GPU MUX ───────────────────────────────────────────────────────── */
     printf("  %sGPU MUX%s %s(UEFI NVRAM, reboot required to apply)%s\n", C_MAG, C_RST, C_DIM, C_RST);
@@ -3521,16 +3566,9 @@ static void print_usage(const char *prog)
 
     /* ── System ─────────────────────────────────────────────────────────── */
     printf("  %sSYSTEM%s\n", C_CYN_BLD, C_RST);
-    /* State-dependent advertising: an uninstalled copy tells you how to
-     * install; the installed binary tells you how to update. The hidden
-     * one still works if invoked — this is help visibility only. */
     if (!is_installed_systemwide())
         printf("    %sinstall%s [--force]        Install/upgrade system-wide + passwordless sudo\n", C_BLD, C_RST);
-    printf("    %sdrivers-manage%s          Install, reinstall, or uninstall kernel drivers %s(auto-fetch or offline; sha256-verified)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    if (is_installed_systemwide())
-        printf("    %supdate%s                  Update cctl from GitHub releases\n\n", C_BLD, C_RST);
-    else
-        printf("\n"); /* keep the section's blank line without the update entry */
+    printf("    %sdrivers-manage%s          Install, reinstall, or uninstall kernel drivers %s(auto-fetch or offline; sha256-verified)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
 
     /* Driver hint — only shown when the TUXEDO/Clevo stack is not loaded */
     if (!drivers_loaded()) {
@@ -5018,12 +5056,12 @@ static int cmd_fan(int argc, char **argv)
         printf("%sUsage:%s %scctl fan <mode> [pct] [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("%sValid Modes:%s\n", C_YLW, C_RST);
-        printf("  %s%-12s%s Automatic EC fan control\n", C_CYN, "auto", C_RST);
-        printf("  %s%-12s%s Full 100%% fan speed\n", C_CYN, "max", C_RST);
-        printf("  %s%-12s%s Quiet mode (forces eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
-        printf("  %s%-12s%s Set both fans to duty 21-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
-        printf("  %s%-12s%s Set CPU fan duty 21-100%% (requires --nosafe)\n", C_CYN, "cpu <pct>", C_RST);
-        printf("  %s%-12s%s Set GPU fan duty 21-100%% (requires --nosafe)\n", C_CYN, "gpu <pct>", C_RST);
+        printf("  %s%-18s%s Automatic EC fan control (both fans, or cpu/gpu)\n", C_CYN, "auto [cpu|gpu]", C_RST);
+        printf("  %s%-18s%s Full 100%% fan speed\n", C_CYN, "max", C_RST);
+        printf("  %s%-18s%s Quiet mode (forces eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
+        printf("  %s%-18s%s Set both fans to duty 25-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
+        printf("  %s%-18s%s Set CPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "cpu <pct|auto>", C_RST);
+        printf("  %s%-18s%s Set GPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "gpu <pct|auto>", C_RST);
         return 0;
     }
 
@@ -5033,8 +5071,16 @@ static int cmd_fan(int argc, char **argv)
     int rc = 0;
 
     if (strcmp(mode, "auto") == 0) {
-        printf("Setting both fans to AUTO...\n");
-        rc = fan_auto_all();
+        if (val_str && strcmp(val_str, "cpu") == 0) {
+            printf("Setting CPU fan to AUTO...\n");
+            rc = legacy_fan_auto(FAN_CPU);
+        } else if (val_str && strcmp(val_str, "gpu") == 0) {
+            printf("Setting GPU fan to AUTO...\n");
+            rc = legacy_fan_auto(FAN_GPU);
+        } else {
+            printf("Setting both fans to AUTO...\n");
+            rc = fan_auto_all();
+        }
     } else if (strcmp(mode, "max") == 0) {
         printf("Setting both fans to MAX...\n");
         rc = fan_max_all();
@@ -5047,48 +5093,57 @@ static int cmd_fan(int argc, char **argv)
         rc = fan_silent_all();
     } else if (strcmp(mode, "cpu") == 0) {
         if (!val_str) {
-            fprintf(stderr, "Error: Missing duty percentage\n");
+            fprintf(stderr, "Error: Missing duty percentage or 'auto'\n");
             return 1;
         }
-        int pct;
-        if (safe_atoi(val_str, &pct) < 0) {
-            fprintf(stderr, "Error: Invalid duty percentage '%s'\n", val_str);
-            return 1;
+        if (strcmp(val_str, "auto") == 0) {
+            printf("Setting CPU fan to AUTO...\n");
+            rc = legacy_fan_auto(FAN_CPU);
+        } else {
+            int pct;
+            if (safe_atoi(val_str, &pct) < 0) {
+                fprintf(stderr, "Error: Invalid duty percentage '%s' (use 25-100 or 'auto')\n", val_str);
+                return 1;
+            }
+            if (!nosafe) {
+                fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n", pct);
+                return 1;
+            }
+            rc = fan_set_duty(FAN_CPU, pct);
         }
-        if (!nosafe) {
-            fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n", pct);
-            return 1;
-        }
-        rc = fan_set_duty(FAN_CPU, pct);
     } else if (strcmp(mode, "gpu") == 0) {
         if (!val_str) {
-            fprintf(stderr, "Error: Missing duty percentage\n");
+            fprintf(stderr, "Error: Missing duty percentage or 'auto'\n");
             return 1;
         }
-        int pct;
-        if (safe_atoi(val_str, &pct) < 0) {
-            fprintf(stderr, "Error: Invalid duty percentage '%s'\n", val_str);
-            return 1;
+        if (strcmp(val_str, "auto") == 0) {
+            printf("Setting GPU fan to AUTO...\n");
+            rc = legacy_fan_auto(FAN_GPU);
+        } else {
+            int pct;
+            if (safe_atoi(val_str, &pct) < 0) {
+                fprintf(stderr, "Error: Invalid duty percentage '%s' (use 25-100 or 'auto')\n", val_str);
+                return 1;
+            }
+            if (!nosafe) {
+                fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n", pct);
+                return 1;
+            }
+            rc = fan_set_duty(FAN_GPU, pct);
         }
-        if (!nosafe) {
-            fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n", pct);
-            return 1;
-        }
-        rc = fan_set_duty(FAN_GPU, pct);
     } else {
         /* Try as a plain number — apply to both fans */
         int pct;
-        if (safe_atoi(mode, &pct) >= 0 && pct >= 21 && pct <= 100) {
+        if (safe_atoi(mode, &pct) >= 0 && pct >= 25 && pct <= 100) {
             if (!nosafe) {
                 fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n", pct);
                 return 1;
             }
             printf("Setting both fans to %d%%...\n", pct);
-            if (fan_set_duty(FAN_CPU, pct) < 0) rc = -1;
-            if (fan_set_duty(FAN_GPU, pct) < 0) rc = -1;
+            rc = fan_set_duty(0, pct);
         } else {
             fprintf(stderr, "Error: Unknown fan mode '%s'\n", mode);
-            fprintf(stderr, "Valid modes: auto, max, silent, cpu <pct> --nosafe, gpu <pct> --nosafe, or <pct> --nosafe\n");
+            fprintf(stderr, "Valid modes: auto [cpu|gpu], max, silent, cpu <pct|auto>, gpu <pct|auto>, or <pct> --nosafe\n");
             return 1;
         }
     }
@@ -5738,11 +5793,6 @@ static int cmd_install(int argc, char **argv)
  * themselves live only in the mirror repo, not in this checkout.) */
 #define DRIVERS_SHA256      "ca6cb6d2bcc7abb8168e16c76ca42220bc957e611f718ee678c6be4d593dd4c2"
 
-/* Embedded marker for extract_binary_marker() — lets `cctl update` read
- * this binary's expected driver hash without executing it. */
-static const char __attribute__((used)) cctl_meta_sha256[] =
-    "@@CCTL_META_SHA256=" DRIVERS_SHA256 "@@";
-
 /* Persistent driver cache: survives reboots so reinstall/uninstall works
  * offline with no tarball beside the binary and no typed path. /var/lib
  * (not /var/cache) — FHS marks it as state that must persist, not as
@@ -5800,83 +5850,6 @@ static int file_sha256(const char *path, char out[65])
     }
     out[64] = '\0';
     return 0;
-}
-
-/* Construct metadata marker search prefix dynamically so the query string
- * itself does not appear as a contiguous "@@CCTL_META_..." literal in .rodata.
- * This guarantees older binaries whose extractors only check the first occurrence
- * of a prefix will immediately hit the real marker rather than code literals. */
-static void make_meta_query(char *out, size_t sz, const char *key)
-{
-    snprintf(out, sz, "%s%s%s", "@", "@CCTL_META_", key);
-}
-
-/* Scan a binary file for an embedded "@@PREFIX=value@@" marker and extract
- * "value" into out.  DOES NOT execute the file — reads it as raw data.
- * Returns 0 on success, -1 if the marker is not found or unreadable.
- *
- * Used by `cctl update` to read version/hash metadata from a downloaded
- * release binary without running it — closing the prior arbitrary-code-
- * execution-as-root hole where popen() ran the unverified download. */
-static int extract_binary_marker(const char *filepath, const char *prefix,
-                                 char *out, size_t outsz)
-{
-    if (!out || outsz == 0) return -1;
-    out[0] = '\0';
-
-    int fd = open(filepath, O_RDONLY);
-    if (fd < 0) return -1;
-
-    struct stat st;
-    if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > 50 * 1024 * 1024) {
-        close(fd);
-        return -1;
-    }
-
-    size_t filesz = (size_t)st.st_size;
-    unsigned char *buf = malloc(filesz);
-    if (!buf) { close(fd); return -1; }
-
-    size_t total = 0;
-    while (total < filesz) {
-        ssize_t n = read(fd, buf + total, filesz - total);
-        if (n <= 0) break;
-        total += (size_t)n;
-    }
-    close(fd);
-    if (total != filesz) { free(buf); return -1; }
-
-    size_t pfxlen = strlen(prefix);
-    int found = 0;
-    for (size_t i = 0; i + pfxlen + 2 <= filesz; i++) {
-        if (memcmp(buf + i, prefix, pfxlen) != 0)
-            continue;
-        /* Found prefix — check if followed by a valid value ending with "@@"
-         * without any intervening NUL byte, and within reasonable length (256 bytes).
-         * If this occurrence was just a string literal in code, keep searching. */
-        size_t start = i + pfxlen;
-        int valid = 0;
-        size_t end = start;
-        while (end + 1 < filesz && (end - start) < 256) {
-            if (buf[end] == '\0') break; /* hit string boundary before @@ -> not marker */
-            if (buf[end] == '@' && buf[end + 1] == '@') {
-                valid = 1;
-                break;
-            }
-            end++;
-        }
-        if (valid) {
-            size_t vlen = end - start;
-            if (vlen >= outsz) vlen = outsz - 1;
-            memcpy(out, buf + start, vlen);
-            out[vlen] = '\0';
-            found = 1;
-            break;
-        }
-    }
-
-    free(buf);
-    return found ? 0 : -1;
 }
 
 /* Download url → dest via curl (preferred) or wget. 0 = success. */
@@ -6160,201 +6133,6 @@ cleanup:
     return rc;
 }
 
-/* ========================================================================
- * UPDATE — fetch the latest release binary from GitHub
- * ========================================================================
- * The release asset itself reports its (secret, strictly-increasing)
- * microversion; if it is newer than ours, install it over
- * /usr/local/bin/cctl. Everything runs as root in ONE pass: staging the
- * file across the sudo boundary is deliberately avoided because sudo
- * strips our environment and a user-writable staging path would allow the
- * binary to be swapped between verification and install.
- * ======================================================================== */
-
-#ifndef UPDATE_ASSET_URL
-#define UPDATE_ASSET_URL   "https://github.com/bhusann/cctl/releases/latest/download/cctl"
-#endif
-#ifndef UPDATE_DRIVERS_URL
-#define UPDATE_DRIVERS_URL "https://github.com/bhusann/cctl/releases/latest/download/drivers.tar.gz"
-#endif
-#define UPDATE_RELEASES    "https://github.com/bhusann/cctl/releases"
-
-static int cmd_update(int argc, char **argv)
-{
-    if (argc != 2) {
-        fprintf(stderr, "Error: 'cctl update' does not accept arguments.\n");
-        return 1;
-    }
-
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
-
-    char tmpbase[] = "/tmp/cctl-update.XXXXXX";
-    char *tmpdir = mkdtemp(tmpbase);
-    if (!tmpdir) {
-        perror("Error: cannot create temp directory");
-        return 1;
-    }
-
-    char dest[PATH_MAX];
-    snprintf(dest, sizeof(dest), "%s/cctl", tmpdir);
-
-    printf("Checking for the latest release at\n  %s\n", UPDATE_RELEASES);
-    if (download_file(UPDATE_ASSET_URL, dest) != 0) {
-        fprintf(stderr,
-            "Error: cannot download the latest cctl (no internet, no curl/wget,\n"
-            "       or the release asset is missing).\n"
-            "       Check manually: %s\n", UPDATE_RELEASES);
-        remove_tree(tmpdir);
-        return 1;
-    }
-    chmod(dest, 0755);
-
-    /* Extract version info from the downloaded binary WITHOUT executing it.
-     * Each cctl build embeds @@CCTL_META_*=value@@ markers in its .rodata
-     * section.  Scanning for these is safe — the file is read as data,
-     * never run.
-     *
-     * Security fix: the prior approach ran popen("downloaded_binary
-     * --microversion") as root, granting arbitrary code execution to
-     * whatever the release asset contained — the only trust was TLS to
-     * github.com.  A compromised release or supply-chain attack on CI
-     * would own the machine.
-     *
-     * TODO: add release signing (minisign or GPG) for defense-in-depth
-     * beyond TLS + GitHub account trust. */
-    int remote_ver = 0;
-    char rel[64] = {0};
-    {
-        char q_micro[32], q_ver[32];
-        make_meta_query(q_micro, sizeof(q_micro), "MICROVER=");
-        make_meta_query(q_ver, sizeof(q_ver), "VERSION=");
-        char buf[64];
-        if (extract_binary_marker(dest, q_micro, buf, sizeof(buf)) == 0)
-            safe_atoi(buf, &remote_ver);
-        extract_binary_marker(dest, q_ver, rel, sizeof(rel));
-    }
-
-    if (remote_ver <= 0) {
-        fprintf(stderr,
-            "Error: cannot read version markers from downloaded file — aborting\n"
-            "       (corrupt download, not a cctl binary, or pre-marker release).\n");
-        remove_tree(tmpdir);
-        return 1;
-    }
-
-    if (remote_ver <= CCTL_MICROVERSION) {
-        printf("cctl is already up to date: v%s (build %d).\n",
-               CCTL_VERSION, CCTL_MICROVERSION);
-        remove_tree(tmpdir);
-        return 0;
-    }
-
-    printf("Found update: %s (build %d) — currently running: v%s (build %d)\n",
-           rel[0] ? rel : "new release", remote_ver, CCTL_VERSION, CCTL_MICROVERSION);
-    printf("Proceed with update? [y/n] ");
-    fflush(stdout);
-
-    char ans[32] = {0};
-    if (!fgets(ans, sizeof(ans), stdin) ||
-        (ans[0] != 'y' && ans[0] != 'Y') ||
-        (ans[1] != '\n' && strcasecmp(ans, "yes\n") != 0)) {
-        printf("Update aborted.\n");
-        remove_tree(tmpdir);
-        return 0;
-    }
-
-    /* ── All-or-nothing staging ─────────────────────────────────────────
-     * Both assets must be downloaded AND verified into tmpdir before a
-     * single byte is placed anywhere: a failed tarball fetch or hash gate
-     * aborts the whole update (binary stays, cache stays).
-     *
-     * The expected drivers hash is extracted from the NEW binary's baked
-     * @@CCTL_META_SHA256@@ marker — NOT the currently running binary's
-     * DRIVERS_SHA256 constant.  Each release pairs a binary with a
-     * specific drivers.tar.gz; the old binary's hash would reject any
-     * update that ships new driver sources. */
-    char expected_drv_sha[65] = {0};
-    char q_sha[32];
-    make_meta_query(q_sha, sizeof(q_sha), "SHA256=");
-    if (extract_binary_marker(dest, q_sha, expected_drv_sha,
-                              sizeof(expected_drv_sha)) != 0 ||
-        strlen(expected_drv_sha) != 64) {
-        fprintf(stderr,
-            "Error: update aborted — cannot extract driver hash from new binary.\n"
-            "       The downloaded file may be corrupt or a pre-marker release.\n");
-        remove_tree(tmpdir);
-        return 1;
-    }
-
-    printf("Fetching %s for the offline cache...\n", DRIVERS_TARBALL);
-    char dtar[PATH_MAX];
-    char dsha[65] = {0};
-    snprintf(dtar, sizeof(dtar), "%s/%s", tmpdir, DRIVERS_TARBALL);
-    if (download_file(UPDATE_DRIVERS_URL, dtar) != 0) {
-        fprintf(stderr,
-            "Error: update aborted — could not download %s (offline?).\n"
-            "       Nothing was installed: cctl stays at v%s (build %d) and\n"
-            "       %s was left unchanged. Both assets must be staged and\n"
-            "       verified before either is placed — retry 'cctl update'.\n",
-            DRIVERS_TARBALL, CCTL_VERSION, CCTL_MICROVERSION, DRIVERS_CACHE_FILE);
-        remove_tree(tmpdir);
-        return 1;
-    }
-    if (file_sha256(dtar, dsha) != 0 || strcmp(dsha, expected_drv_sha) != 0) {
-        fprintf(stderr,
-            "Error: update aborted — downloaded %s failed its sha256 check.\n"
-            "       expected %s\n"
-            "       got      %s\n"
-            "       Nothing was installed: cctl stays at v%s (build %d) and\n"
-            "       %s was left unchanged.\n",
-            DRIVERS_TARBALL, expected_drv_sha,
-            dsha[0] ? dsha : "unreadable",
-            CCTL_VERSION, CCTL_MICROVERSION, DRIVERS_CACHE_FILE);
-        remove_tree(tmpdir);
-        return 1;
-    }
-
-    if (rel[0])
-        printf("Update available: %s (build %d) — installed: v%s (build %d)\n",
-               rel, remote_ver, CCTL_VERSION, CCTL_MICROVERSION);
-    else
-        printf("Update available: build %d — installed: build %d\n",
-               remote_ver, CCTL_MICROVERSION);
-
-    /* ── Commit phase ── both assets staged + verified above. Cache goes
-     * first: if its placement fails, nothing else has moved and the whole
-     * update reruns cleanly next time; the binary install goes last. */
-    if (cache_store(dtar) != 0) {
-        fprintf(stderr,
-            "Error: update aborted — could not refresh %s.\n"
-            "       The new binary was NOT installed (all-or-nothing):\n"
-            "       cctl stays at v%s (build %d). Retry 'cctl update'.\n",
-            DRIVERS_CACHE_FILE, CCTL_VERSION, CCTL_MICROVERSION);
-        remove_tree(tmpdir);
-        return 1;
-    }
-    char *const args[] = { "install", "-m", "755", dest, "/usr/local/bin/cctl", NULL };
-    if (run_cmd("install", args) != 0) {
-        fprintf(stderr,
-            "Error: failed to install the updated binary.\n"
-            "       (The driver cache was already refreshed — harmless: a\n"
-            "       verified cache with the old binary works, and rerunning\n"
-            "       'cctl update' converges.)\n");
-        remove_tree(tmpdir);
-        return 1;
-    }
-    printf("Updated /usr/local/bin/cctl → %s (build %d).\n",
-           rel[0] ? rel : "new release", remote_ver);
-    printf("Offline cache refreshed: %s\n", DRIVERS_CACHE_FILE);
-
-    if (access("/etc/sudoers.d/cctl", R_OK) != 0)
-        printf("Note: no sudoers rule found — run 'cctl install' to set up passwordless sudo.\n");
-
-    remove_tree(tmpdir);
-    return 0;
-}
-
 static int cmd_mux(int argc, char **argv)
 {
     if (argc >= 3 && strcmp(argv[2], "switch") == 0) {
@@ -6407,7 +6185,6 @@ static const struct command commands[] = {
     { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
     { "nvidia",  0, cmd_nvidia },
     { "install", 0, cmd_install },
-    { "update",  0, cmd_update },
     { "mux",     0, cmd_mux },      /* root required for switch, checked in handler */
     { "drivers-manage", 0, cmd_drivers_install },
 

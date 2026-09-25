@@ -106,8 +106,9 @@ Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-c
 ```bash
 cctl fan auto|max               # Both fans: EC automatic / 100% full speed
 cctl fan silent [--nosafe]      # Quiet mode (forces eco profile first; bypass with --nosafe)
-cctl fan <pct> --nosafe         # Set both fans to duty cycle (21-100%, requires --nosafe)
+cctl fan <pct> --nosafe         # Set both fans to duty cycle (25-100%, requires --nosafe)
 cctl fan cpu|gpu <pct> --nosafe # Set individual fan duty (requires --nosafe)
+cctl fan cpu|gpu auto           # Restore individual fan to automatic EC control (independent)
 ```
 
 ### GPU MUX Switching
@@ -137,7 +138,6 @@ cctl bat max                    # Standard: charge to 100%, resume at 95%
 ```bash
 cctl status                     # Print all current settings (profiles, GPU MUX, telemetry)
 cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
-cctl update                     # Update cctl + refresh the offline driver cache
 cctl --version                  # Print version and exit (also -V)
 ```
 
@@ -298,7 +298,27 @@ Or do it step by step:
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
 - **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while max mode is active: recorded by the last `cctl set max` / `cctl setR max`; shown as `Mode:` in `cctl status`, and `EC default` when no profile has been applied yet.
 
-- **EC Fan Byte Order** — Clevo's EC expects reversed byte order depending on command context. Auto-restore uses `{0xFF, fan_idx}`, duty cycle uses `{fan_idx, duty}`.
+- **Direct EC Port I/O Fan Control & Protocol Quirks (Legacy Method)** — `cctl` uses direct port I/O (`ioperm`, `inb`/`outb` on port `0x66` command and `0x62` data) for individual fan control (`cctl fan cpu <pct>`, `cctl fan gpu <pct>`), Max, and Silent modes. This preserves the ability to adjust a single fan independently without kicking the other fan off its automatic EC thermal curve (which the `tuxedo_io` `W_CL_FANSPEED` ioctl cannot do, as it forces all channels into fixed manual mode).
+  - **Hardware Handshake:** All writes require polling Input Buffer Full (IBF, bit 1 of port `0x66`): wait until `((inb(0x66) >> 1) & 1) == 0` before sending each command or data byte.
+  - **Individual Fan Duty:**
+    - Send command `0x99` to port `0x66`, followed by 2 data bytes to port `0x62`:
+      ```
+      { fan_idx, raw_duty }
+      ```
+      where `fan_idx` is `1` (CPU) or `2` (GPU), and `raw_duty = (pct * 255) / 100` (range 25–100%).
+    - Directly writes to that fan's hardware PWM channel without altering or locking the other fan.
+  - **Max Fan Mode:**
+    - Step 1: Send mode command `0x98` to port `0x66` with data byte `0x40` (`FAN_MODE_MAX`) to port `0x62`.
+    - Step 2: Send follow-up command `0x99` for each fan: `{ 0x01 (CPU), 0xFF (FAN_DUTY_AUTO) }` and `{ 0x02 (GPU), 0xFF (FAN_DUTY_AUTO) }`.
+  - **Silent Fan Mode:**
+    - Step 1: Send mode command `0x98` to port `0x66` with data byte `0x20` (`FAN_MODE_SILENT`) to port `0x62`.
+    - Step 2: Send follow-up command `0x99` for each fan: `{ 0x01 (CPU), 0x20 (FAN_MODE_SILENT) }` and `{ 0x02 (GPU), 0x20 (FAN_MODE_SILENT) }`.
+  - **Standalone Auto Restore Quirk (Reversed Byte Order):**
+    - When restoring automatic EC control without a preceding `0x98` mode command, command `0x99` requires **reversed** argument order:
+      ```
+      { 0xFF (FAN_DUTY_AUTO), fan_idx }
+      ```
+    - Notice that `{ fan_idx, 0xFF }` only works as a follow-up after a `0x98` mode command. For standalone auto-restore, passing `{ fan_idx, 0xFF }` is ignored by the firmware; `{ 0xFF, fan_idx }` must be used.
 
 - **GPU Fan Duty Register** — ACPI `FANINFO1` byte 2 is stuck at ~15% on this model. `cctl` reads GPU fan duty from `FANINFO2` (`0x64`, byte 0) for accurate readings.
 
@@ -348,8 +368,7 @@ Or do it step by step:
   2. `drivers.tar.gz` beside the cctl binary — sha-checked on the spot; a stale copy is warned about and skipped
   3. download from the mirror into a private temp dir — on failure it names the folder for a manual copy
   4. full path to a `drivers.tar.gz` you already have — checked in place first; staged only if valid
-- **drivers-manage verification & update atomicity** — Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file. `cctl update` itself is all-or-nothing: it stages and verifies **both** release assets (binary + tarball) in tmp first and places them only when both pass — if the tarball fetch or hash check fails, **nothing** is installed. The expected driver hash is extracted from the **new** binary's embedded `@@CCTL_META_SHA256@@` marker (not the old running binary's constant), so updates that ship new driver sources are verified correctly.
-- **Update security model** — `cctl update` reads version and hash metadata from a downloaded release by scanning for embedded `@@CCTL_META_*@@` markers in the binary's `.rodata` — **the file is never executed** before installation. Trust is TLS to `github.com` plus the author's GitHub account; adding release signing (minisign/GPG) is a planned future improvement.
+- **drivers-manage verification** — Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file.
 
 ---
 
