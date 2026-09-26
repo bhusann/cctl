@@ -41,7 +41,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100029
+#define CCTL_MICROVERSION 100030
 #endif
 
 /* ========================================================================
@@ -5861,7 +5861,7 @@ static int cmd_install(int argc, char **argv)
  * drivers/ tree changes: re-tar deterministically, update THIS constant,
  * bump CCTL_MICROVERSION, release a new cctl binary. (The driver sources
  * themselves live only in the mirror repo, not in this checkout.) */
-#define DRIVERS_SHA256      "ca6cb6d2bcc7abb8168e16c76ca42220bc957e611f718ee678c6be4d593dd4c2"
+#define DRIVERS_SHA256      "c1b8b5060e62e8fc54146769e0311408e8acf76db7f503a958936026ca87b4f9"
 
 /* Persistent driver cache: survives reboots so reinstall/uninstall works
  * offline with no tarball beside the binary and no typed path. /var/lib
