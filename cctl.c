@@ -41,7 +41,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100030
+#define CCTL_MICROVERSION 100031
 #endif
 
 /* ========================================================================
@@ -71,16 +71,55 @@ static void init_colors(void)
  * unused-variable warning). */
 static void run_quiet(const char *cmd) { int r = system(cmd); (void)r; }
 
+static int run_cmd_silent(const char *cmd, char *const argv[])
+{
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execvp(cmd, argv);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+static int run_cmd(const char *cmd, char *const argv[])
+{
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execvp(cmd, argv);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+/* Resolve the absolute path to this running executable */
+static int get_self_exe(char *out, size_t sz)
+{
+    ssize_t n = readlink("/proc/self/exe", out, sz - 1);
+    if (n <= 0) return -1;
+    out[n] = '\0';
+    return 0;
+}
+
 /* Re-execute the current command with sudo if not already running as root. */
 static void self_elevate(int argc, char **argv)
 {
     if (geteuid() == 0) return;
 
     char exe_path[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
     const char *bin = argv[0];
-    if (n > 0) {
-        exe_path[n] = '\0';
+    if (get_self_exe(exe_path, sizeof(exe_path)) == 0) {
         bin = exe_path;
     }
 
@@ -193,6 +232,13 @@ static int write_sysfs(const char *path, const char *value)
     ssize_t n = write(fd, value, len);
     close(fd);
     return (n == (ssize_t)len) ? 0 : -1;
+}
+
+static int write_sysfs_int(const char *path, int value)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", value);
+    return write_sysfs(path, buf);
 }
 
 /* Read a sysfs file into buf (stripping trailing newlines). Returns bytes read or -1. */
@@ -430,12 +476,24 @@ static void bat_sysfs(char *out, size_t sz, const char *suffix)
     snprintf(out, sz, "/sys/class/power_supply/%s/%s", bat_detect(), suffix);
 }
 
+static long bat_read_long(const char *suffix, long fallback)
+{
+    char path[256];
+    bat_sysfs(path, sizeof(path), suffix);
+    return read_sysfs_long(path, fallback);
+}
+
+static int bat_read_str(const char *suffix, char *out, size_t sz)
+{
+    char path[256];
+    bat_sysfs(path, sizeof(path), suffix);
+    return read_sysfs_str(path, out, sz);
+}
+
 /* Battery charge percent, or -1 when no battery is present/readable. */
 static int battery_pct(void)
 {
-    char path[256];
-    bat_sysfs(path, sizeof(path), "capacity");
-    long v = read_sysfs_long(path, -1);
+    long v = bat_read_long("capacity", -1);
     return (v >= 0 && v <= 100) ? (int)v : -1;
 }
 
@@ -1026,64 +1084,73 @@ static int legacy_fan_auto_all(void)
  *   --nosafe is passed, preventing silent fan lock from causing thermal throttling.
  */
 
-static int profile_max(int with_rapl)
+enum prof_color {
+    PROF_COL_RED,
+    PROF_COL_YLW,
+    PROF_COL_GRN,
+    PROF_COL_CYN_BLD,
+    PROF_COL_DIM
+};
+
+struct profile_def {
+    const char *name;
+    const char *label;
+    enum prof_color color;
+    const char *help_desc;
+    int gpu_profile;
+    int turbo;
+    const char *gov;
+    const char *epp;
+    int rapl_pl1, rapl_pl2;
+    int fan_safety;
+    uint8_t pulse_r, pulse_g, pulse_b;
+};
+
+static const struct profile_def PROFILES[] = {
+    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         45, 90, 1, 255,   0,   0 },
+    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "performance", "performance",          0,  0, 1, 255, 110,   0 },
+    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 35, 40, 1, 200,  50, 255 },
+    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",        0,  0, 0,   0, 255,   0 },
+    { "eco",       "Ultra Powersave",                  PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                9, 10, 0,  80, 180, 255 },
+};
+
+static const struct profile_def *find_profile(const char *name)
 {
-    int err = 0;
-    printf("Applying: Performance Max + GPU (80W-100W)\n");
-    set_gpu_profile(2); /* non-fatal: CPU settings still apply without tuxedo_io */
-    if (set_turbo(1) < 0) err++;
-    if (set_governor("performance") < 0) err++;
-    if (set_epp("performance") < 0) err++;
-    if (with_rapl && set_rapl_limits(45, 90) < 0) err++;
-    return err ? -1 : 0;
+    for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
+        if (strcmp(PROFILES[i].name, name) == 0)
+            return &PROFILES[i];
+    }
+    return NULL;
 }
 
-static int profile_cpuperf(int with_rapl)
+static const char *prof_color_str(enum prof_color c)
 {
-    (void)with_rapl;
-    int err = 0;
-    printf("Applying: Performance CPU Only\n");
-    set_gpu_profile(3);
-    if (set_turbo(1) < 0) err++;
-    if (set_governor("performance") < 0) err++;
-    if (set_epp("performance") < 0) err++;
-    return err ? -1 : 0;
+    switch (c) {
+        case PROF_COL_RED:     return C_RED;
+        case PROF_COL_YLW:     return C_YLW;
+        case PROF_COL_GRN:     return C_GRN;
+        case PROF_COL_CYN_BLD: return C_CYN_BLD;
+        case PROF_COL_DIM:     return C_DIM;
+    }
+    return C_RST;
 }
 
-static int profile_balanced(int with_rapl)
+static int profile_apply(const struct profile_def *p, int with_rapl)
 {
     int err = 0;
-    printf("Applying: Balanced\n");
-    set_gpu_profile(3);
-    if (set_turbo(1) < 0) err++;
-    if (set_governor("powersave") < 0) err++;
-    if (set_epp("balance_performance") < 0) err++;
-    if (with_rapl && set_rapl_limits(35, 40) < 0) err++;
-    return err ? -1 : 0;
-}
-
-static int profile_powersave(int with_rapl)
-{
-    (void)with_rapl;
-    int err = 0;
-    printf("Applying: Powersave\n");
-    set_gpu_profile(1);
-    if (set_turbo(0) < 0) err++;
-    if (set_governor("powersave") < 0) err++;
-    if (set_epp("balance_power") < 0) err++;
+    printf("Applying: %s\n", p->label);
+    set_gpu_profile(p->gpu_profile); /* non-fatal: CPU settings still apply without tuxedo_io */
+    if (set_turbo(p->turbo) < 0) err++;
+    if (set_governor(p->gov) < 0) err++;
+    if (set_epp(p->epp) < 0) err++;
+    if (with_rapl && p->rapl_pl1 > 0 && set_rapl_limits(p->rapl_pl1, p->rapl_pl2) < 0) err++;
     return err ? -1 : 0;
 }
 
 static int profile_eco(int with_rapl)
 {
-    int err = 0;
-    printf("Applying: Ultra Powersave\n");
-    set_gpu_profile(0);
-    if (set_turbo(0) < 0) err++;
-    if (set_governor("powersave") < 0) err++;
-    if (set_epp("power") < 0) err++;
-    if (with_rapl && set_rapl_limits(9, 10) < 0) err++;
-    return err ? -1 : 0;
+    const struct profile_def *p = find_profile("eco");
+    return p ? profile_apply(p, with_rapl) : -1;
 }
 
 /* ========================================================================
@@ -1381,15 +1448,20 @@ static int mic_set(int enabled)
     }
     const char *verb = enabled ? "cap" : "nocap";
     int card = mic_find_card();
-    char cmd[256];
+    int rc;
 
     /* Toggle master capture switch — this gates all mic inputs (internal +
      * headphone) regardless of which source the HDA codec mux has selected. */
-    if (card >= 0)
-        snprintf(cmd, sizeof(cmd), "amixer -c %d sset Capture %s >/dev/null 2>&1", card, verb);
-    else
-        snprintf(cmd, sizeof(cmd), "amixer sset Capture %s >/dev/null 2>&1", verb);
-    if (system(cmd) != 0) {
+    if (card >= 0) {
+        char card_str[16];
+        snprintf(card_str, sizeof(card_str), "%d", card);
+        char *const args[] = { "amixer", "-c", card_str, "sset", "Capture", (char *)verb, NULL };
+        rc = run_cmd_silent("amixer", args);
+    } else {
+        char *const args[] = { "amixer", "sset", "Capture", (char *)verb, NULL };
+        rc = run_cmd_silent("amixer", args);
+    }
+    if (rc != 0) {
         fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
         return -1;
     }
@@ -1579,22 +1651,11 @@ static int rr_set(const char *rate)
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-        return -1;
-    }
-    if (pid == 0) {
-        /* child */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-        execlp("xrandr", "xrandr", "--output", info.output, "--mode", info.resolution,
-               "--rate", rate, (char *)NULL);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    char *const args[] = {
+        "xrandr", "--output", info.output, "--mode", info.resolution,
+        "--rate", (char *)rate, NULL
+    };
+    if (run_cmd_silent("xrandr", args) != 0) {
         fprintf(stderr, "Error: Failed to set refresh rate to %sHz\n", rate);
         return -1;
     }
@@ -1622,41 +1683,54 @@ static int rr_list(void)
 }
 
 /* Helper to check if a CPU core is an E-core based on its max frequency relative to global max.
- * Cache the global max frequency on first call. */
+ * Caches core classification in a static lookup table on first pass. */
 static int is_cpu_e_core(int cpu_num)
 {
-    static int global_max_khz = -1;
-    if (global_max_khz < 0) {
-        global_max_khz = 0;
+    static int8_t e_core_cache[256];
+    static int cache_initialized = 0;
+
+    if (!cache_initialized) {
+        memset(e_core_cache, -1, sizeof(e_core_cache));
+        int global_max_khz = 0;
+        int core_khz[256];
+        memset(core_khz, 0, sizeof(core_khz));
+
         DIR *d = opendir("/sys/devices/system/cpu");
         if (d) {
             struct dirent *ent;
             while ((ent = readdir(d)) != NULL) {
                 if (strncmp(ent->d_name, "cpu", 3) != 0) continue;
                 if (ent->d_name[3] < '0' || ent->d_name[3] > '9') continue;
+                int cnum = atoi(ent->d_name + 3);
+                if (cnum < 0 || cnum >= 256) continue;
+
                 char path[512];
                 snprintf(path, sizeof(path),
                          "/sys/devices/system/cpu/%s/cpufreq/cpuinfo_max_freq", ent->d_name);
                 long khz = read_sysfs_long(path, -1);
-                if (khz > global_max_khz) {
-                    global_max_khz = (int)khz;
+                if (khz > 0) {
+                    core_khz[cnum] = (int)khz;
+                    if ((int)khz > global_max_khz)
+                        global_max_khz = (int)khz;
                 }
             }
             closedir(d);
         }
-        if (global_max_khz <= 0) {
-            global_max_khz = 4000000; // fallback default
+        if (global_max_khz <= 0)
+            global_max_khz = 4000000;
+
+        for (int i = 0; i < 256; i++) {
+            if (core_khz[i] > 0)
+                e_core_cache[i] = (core_khz[i] < (long)(global_max_khz * 0.85)) ? 1 : 0;
+            else
+                e_core_cache[i] = 0;
         }
+        cache_initialized = 1;
     }
 
-    char path[256];
-    snprintf(path, sizeof(path),
-             "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", cpu_num);
-    long khz = read_sysfs_long(path, -1);
-    if (khz <= 0) return 0; // default to P-core (0) if can't read
-
-    /* If max freq is less than 85% of global max, classify as E-core */
-    return (khz < (long)(global_max_khz * 0.85)) ? 1 : 0;
+    if (cpu_num >= 0 && cpu_num < 256)
+        return e_core_cache[cpu_num];
+    return 0;
 }
 
 /* ========================================================================
@@ -1769,12 +1843,7 @@ static void show_status(void)
             char state_path[576];
             snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
             char state[16] = "unknown";
-            FILE *fp = fopen(state_path, "r");
-            if (fp) {
-                if (fgets(state, sizeof(state), fp))
-                    state[strcspn(state, "\n")] = 0;
-                fclose(fp);
-            }
+            read_sysfs_str(state_path, state, sizeof(state));
             const char *col = (strcmp(state, "D0") == 0) ? C_GRN : C_DIM;
             printf("  %-14s %s%s%s\n", "dGPU Power:", col, state, C_RST);
         } else {
@@ -1881,23 +1950,15 @@ static void show_status(void)
     /* Battery Info */
     printf("\n%s--- Battery Info ---%s\n", C_YLW, C_RST);
     {
-        char bat_status[32] = {0}, bp[256];
-        bat_sysfs(bp, sizeof(bp), "status");
-        read_sysfs_str(bp, bat_status, sizeof(bat_status));
-        bat_sysfs(bp, sizeof(bp), "capacity");
-        long cap      = read_sysfs_long(bp, -1);
-        bat_sysfs(bp, sizeof(bp), "charge_full");
-        long full     = read_sysfs_long(bp, -1);
-        bat_sysfs(bp, sizeof(bp), "charge_full_design");
-        long full_dsn = read_sysfs_long(bp, -1);
-        bat_sysfs(bp, sizeof(bp), "charge_now");
-        long now      = read_sysfs_long(bp, -1);
-        bat_sysfs(bp, sizeof(bp), "current_now");
-        long current  = read_sysfs_long(bp, LONG_MIN);
-        bat_sysfs(bp, sizeof(bp), "cycle_count");
-        long cycles   = read_sysfs_long(bp, -1);
-        bat_sysfs(bp, sizeof(bp), "voltage_now");
-        long volt     = read_sysfs_long(bp, -1);
+        char bat_status[32] = {0};
+        bat_read_str("status", bat_status, sizeof(bat_status));
+        long cap      = bat_read_long("capacity", -1);
+        long full     = bat_read_long("charge_full", -1);
+        long full_dsn = bat_read_long("charge_full_design", -1);
+        long now      = bat_read_long("charge_now", -1);
+        long current  = bat_read_long("current_now", LONG_MIN);
+        long cycles   = bat_read_long("cycle_count", -1);
+        long volt     = bat_read_long("voltage_now", -1);
         int bat_start = bat_read_start();
         int bat_end   = bat_read_end();
 
@@ -2042,17 +2103,14 @@ static int bat_set(int start, int end)
         return -1;
     }
 
-    char val[12];
     bat_start_path(pa, sizeof(pa));
-    snprintf(val, sizeof(val), "%d", start);
-    if (write_sysfs(pa, val) < 0) {
+    if (write_sysfs_int(pa, start) < 0) {
         fprintf(stderr, "Error: Failed to set start threshold to %d%%\n", start);
         return -1;
     }
 
     bat_end_path(pa, sizeof(pa));
-    snprintf(val, sizeof(val), "%d", end);
-    if (write_sysfs(pa, val) < 0) {
+    if (write_sysfs_int(pa, end) < 0) {
         fprintf(stderr, "Error: Failed to set end threshold to %d%%\n", end);
         return -1;
     }
@@ -2086,19 +2144,26 @@ static int kbd_get_color(int *r, int *g, int *b)
     return 0;
 }
 
+static int kbd_write_color(int r, int g, int b)
+{
+    char val[64];
+    snprintf(val, sizeof(val), "%d %d %d", r, g, b);
+    return write_sysfs(KBD_PATH "/multi_intensity", val);
+}
+
+static void kbd_restore_state(int r, int g, int b, int bri)
+{
+    kbd_write_color(r, g, b);
+    write_sysfs_int(KBD_PATH "/brightness", bri);
+}
+
 static int kbd_set_color(int r, int g, int b)
 {
     if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
         fprintf(stderr, "Error: RGB values must be 0-255\n");
         return -1;
     }
-    char val[64];
-    snprintf(val, sizeof(val), "%d %d %d", r, g, b);
-
-    char path[128];
-    snprintf(path, sizeof(path), "%s/multi_intensity", KBD_PATH);
-
-    if (write_sysfs(path, val) < 0) {
+    if (kbd_write_color(r, g, b) < 0) {
         fprintf(stderr, "Error: Failed to set keyboard color (is tuxedo_keyboard loaded?)\n");
         return -1;
     }
@@ -2117,13 +2182,10 @@ static int kbd_set_brightness(int percent)
         return -1;
     }
     int raw = (percent * 255) / 100;
-    char val[8];
-    snprintf(val, sizeof(val), "%d", raw);
-
     char path[128];
     snprintf(path, sizeof(path), "%s/brightness", KBD_PATH);
 
-    if (write_sysfs(path, val) < 0) {
+    if (write_sysfs_int(path, raw) < 0) {
         fprintf(stderr, "Error: Failed to set keyboard brightness (is tuxedo_keyboard loaded?)\n");
         return -1;
     }
@@ -2482,12 +2544,7 @@ static int kbe_stop(int quiet)
         usleep(20000);
     }
 
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%d %d %d", orig_r, orig_g, orig_b);
-    write_sysfs(KBD_PATH "/multi_intensity", buf);
-    snprintf(buf, sizeof(buf), "%d", orig_bri);
-    write_sysfs(KBD_PATH "/brightness", buf);
-
+    kbd_restore_state(orig_r, orig_g, orig_b, orig_bri);
     unlink(KBE_STATE_PATH);
     unlink(KBE_LOCK_PATH);
 
@@ -2506,7 +2563,8 @@ static int kbe_candle_step(int *flicker_val)
     return *flicker_val;
 }
 
-static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int orig_b, int orig_bri)
+/* Acquire exclusive daemon lock, retrying up to ~1.5s for previous daemon to finish exit cleanup */
+static int kbe_acquire_worker_lock(void)
 {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -2516,23 +2574,21 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
     sigaction(SIGINT, &sa, NULL);
 
     int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0600);
-    if (lock_fd < 0) exit(1);
-    /* Retry instead of give-up: the previous daemon was SIGTERM'd just
-     * before this worker was forked (profile pulse) or stopped (kbe start),
-     * and under load it may still be finishing its keyboard-restore exit
-     * path. The old LOCK_NB-once behavior silently lost the profile-change
-     * pulse entirely in that window. ~1.5s max wait. */
-    int kbe_locked = 0;
-    for (int i = 0; i < 75 && !kbe_locked; i++) {
+    if (lock_fd < 0) return -1;
+
+    for (int i = 0; i < 75; i++) {
         if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0)
-            kbe_locked = 1;
-        else
-            usleep(20000);
+            return lock_fd;
+        usleep(20000);
     }
-    if (!kbe_locked) {
-        close(lock_fd);
-        exit(1);
-    }
+    close(lock_fd);
+    return -1;
+}
+
+static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int orig_b, int orig_bri)
+{
+    int lock_fd = kbe_acquire_worker_lock();
+    if (lock_fd < 0) exit(1);
 
     FILE *fp = fopen(KBE_STATE_PATH, "w");
     if (!fp) {
@@ -2939,31 +2995,8 @@ static void kbe_profile_pulse_worker(int pr, int pg, int pb,
                                      const char *resume_effect,
                                      int orig_r, int orig_g, int orig_b, int orig_bri)
 {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = kbe_sig_handler;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0600);
+    int lock_fd = kbe_acquire_worker_lock();
     if (lock_fd < 0) exit(1);
-    /* Retry instead of give-up: the previous daemon was SIGTERM'd just
-     * before this worker was forked (profile pulse) or stopped (kbe start),
-     * and under load it may still be finishing its keyboard-restore exit
-     * path. The old LOCK_NB-once behavior silently lost the profile-change
-     * pulse entirely in that window. ~1.5s max wait. */
-    int kbe_locked = 0;
-    for (int i = 0; i < 75 && !kbe_locked; i++) {
-        if (flock(lock_fd, LOCK_EX | LOCK_NB) == 0)
-            kbe_locked = 1;
-        else
-            usleep(20000);
-    }
-    if (!kbe_locked) {
-        close(lock_fd);
-        exit(1);
-    }
 
     FILE *fp = fopen(KBE_STATE_PATH, "w");
     if (!fp) {
@@ -3000,12 +3033,7 @@ static void kbe_profile_pulse_worker(int pr, int pg, int pb,
     if (fd_bri >= 0) close(fd_bri);
 
     if (!g_kbe_running) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%d %d %d", orig_r, orig_g, orig_b);
-        write_sysfs(KBD_PATH "/multi_intensity", buf);
-        snprintf(buf, sizeof(buf), "%d", orig_bri);
-        write_sysfs(KBD_PATH "/brightness", buf);
-
+        kbd_restore_state(orig_r, orig_g, orig_b, orig_bri);
         unlink(KBE_STATE_PATH);
         flock(lock_fd, LOCK_UN);
         close(lock_fd);
@@ -3021,12 +3049,7 @@ static void kbe_profile_pulse_worker(int pr, int pg, int pb,
         exit(0);
     }
 
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%d %d %d", orig_r, orig_g, orig_b);
-    write_sysfs(KBD_PATH "/multi_intensity", buf);
-    snprintf(buf, sizeof(buf), "%d", orig_bri);
-    write_sysfs(KBD_PATH "/brightness", buf);
-
+    kbd_restore_state(orig_r, orig_g, orig_b, orig_bri);
     unlink(KBE_STATE_PATH);
     unlink(KBE_LOCK_PATH);
     exit(0);
@@ -3037,20 +3060,11 @@ static void kbe_profile_pulse(const char *profile)
     if (access(KBD_PATH "/multi_intensity", F_OK) != 0)
         return;
 
-    int pr = 0, pg = 0, pb = 0;
-    if (strcmp(profile, "max") == 0) {
-        pr = 255; pg = 0; pb = 0;        /* Red */
-    } else if (strcmp(profile, "cpuperf") == 0) {
-        pr = 255; pg = 110; pb = 0;      /* Orange */
-    } else if (strcmp(profile, "balanced") == 0) {
-        pr = 200; pg = 50; pb = 255;      /* Violet */
-    } else if (strcmp(profile, "powersave") == 0) {
-        pr = 0; pg = 255; pb = 0;        /* Green */
-    } else if (strcmp(profile, "eco") == 0) {
-        pr = 80; pg = 180; pb = 255;     /* Light Blue */
-    } else {
+    const struct profile_def *p = find_profile(profile);
+    if (!p)
         return;
-    }
+
+    int pr = p->pulse_r, pg = p->pulse_g, pb = p->pulse_b;
 
     pid_t old_pid = 0;
     char running_effect[32] = {0};
@@ -3117,8 +3131,8 @@ static int ensure_ec_sys(void)
     /* modprobe needs root; if we're not root, just return failure */
     if (geteuid() != 0)
         return -1;
-    int rc = system("modprobe ec_sys 2>/dev/null");
-    if (rc != 0)
+    char *const args[] = { "modprobe", "ec_sys", NULL };
+    if (run_cmd_silent("modprobe", args) != 0)
         return -1;
     /* Give udev a moment to create the file */
     usleep(200000);
@@ -3272,6 +3286,14 @@ static int read_cpu_temp_ex(int cached_fd)
     }
 
     /* Fallback: thermal_zone via sysfs */
+    static char cached_zone_path[512] = {0};
+    if (cached_zone_path[0] != '\0') {
+        long milli = read_sysfs_long(cached_zone_path, -1000);
+        if (milli >= -50000 && milli <= 150000)
+            return (int)(milli / 1000);
+        cached_zone_path[0] = '\0';
+    }
+
     DIR *d = opendir("/sys/class/thermal");
     if (d) {
         struct dirent *ent;
@@ -3282,12 +3304,13 @@ static int read_cpu_temp_ex(int cached_fd)
             if (read_sysfs_str(path, type_buf, sizeof(type_buf)) < 0) continue;
             /* Look for x86_pkg_temp or coretemp or generic pkg temp */
             if (strstr(type_buf, "x86_pkg") || strstr(type_buf, "pkg") || strstr(type_buf, "coretemp")) {
-                snprintf(path, sizeof(path), "/sys/class/thermal/%s/temp", ent->d_name);
-                long milli = read_sysfs_long(path, -1000);
+                snprintf(cached_zone_path, sizeof(cached_zone_path), "/sys/class/thermal/%s/temp", ent->d_name);
+                long milli = read_sysfs_long(cached_zone_path, -1000);
                 if (milli >= -50000 && milli <= 150000) {
                     closedir(d);
                     return (int)(milli / 1000);
                 }
+                cached_zone_path[0] = '\0';
             }
         }
         closedir(d);
@@ -3519,9 +3542,7 @@ static int cpumonitor(void)
 static int is_installed_systemwide(void)
 {
     char path[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
-    if (n <= 0) return 0;
-    path[n] = '\0';
+    if (get_self_exe(path, sizeof(path)) < 0) return 0;
     return (strcmp(path, "/usr/local/bin/cctl") == 0);
 }
 
@@ -3774,38 +3795,7 @@ static int nvidia_display_in_use(void)
     return in_use;
 }
 
-static int run_cmd_silent(const char *cmd, char *const argv[])
-{
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
-        }
-        execvp(cmd, argv);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
-}
 #endif /* CCTL_NVIDIA */
-
-static int run_cmd(const char *cmd, char *const argv[])
-{
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        execvp(cmd, argv);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
-}
 
 /* Forward declarations: common PCI power helpers (defined after the
  * CCTL_NVIDIA block so both builds share them). */
@@ -4385,12 +4375,7 @@ static int nvidia_power_show(void)
     char state_path[576];
     snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
     char state[16] = "unknown";
-    FILE *fp = fopen(state_path, "r");
-    if (fp) {
-        if (fgets(state, sizeof(state), fp))
-            state[strcspn(state, "\n")] = 0;
-        fclose(fp);
-    }
+    read_sysfs_str(state_path, state, sizeof(state));
     printf("  GPU power: %s%s%s\n",
            strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
     return 0;
@@ -4437,66 +4422,43 @@ static int nvidia_power_set(int on)
     snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
     snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
 
-    FILE *fp = fopen(ctrl_path, "w");
-    if (!fp) {
+    if (write_sysfs(ctrl_path, on ? "on" : "auto") < 0) {
         perror("  Failed to write PCI power control");
         return 1;
     }
-    fprintf(fp, "%s", on ? "on" : "auto");
-    fclose(fp);
 
     /* Wait for PCI runtime PM to transition power state */
     usleep(200000); /* 200ms */
 
     /* Read back power state */
     char state[16] = "unknown";
-    fp = fopen(state_path, "r");
-    if (fp) {
-        if (fgets(state, sizeof(state), fp))
-            state[strcspn(state, "\n")] = 0;
-        fclose(fp);
-    }
+    read_sysfs_str(state_path, state, sizeof(state));
 
     printf("  GPU power: %s%s%s\n",
            strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
     return 0;
 }
 
-/* Auto-enable persistence + lock GPU clocks to [min,max] (nvidia-smi -lgc) */
-static int nvidia_clock_set(int min, int max)
+static int nvidia_clock_apply(const char *flag, int min, int max)
 {
     if (nvidia_pm_set(1) != 0)
         fprintf(stderr, "  Warning: failed to enable persistence mode\n");
     char range[32];
     snprintf(range, sizeof(range), "%d,%d", min, max);
-    char *const args[] = { "nvidia-smi", "-lgc", range, NULL };
+    char *const args[] = { "nvidia-smi", (char *)flag, range, NULL };
     return run_cmd("nvidia-smi", args);
 }
 
-/* Run nvidia-smi -rgc (reset/unlock GPU clocks) */
-static int nvidia_clock_reset(void)
+static int nvidia_clock_reset_flag(const char *flag)
 {
-    char *const args[] = { "nvidia-smi", "-rgc", NULL };
+    char *const args[] = { "nvidia-smi", (char *)flag, NULL };
     return run_cmd("nvidia-smi", args);
 }
 
-/* Auto-enable persistence + lock GPU memory clocks to [min,max] (nvidia-smi -lmc) */
-static int nvidia_memclock_set(int min, int max)
-{
-    if (nvidia_pm_set(1) != 0)
-        fprintf(stderr, "  Warning: failed to enable persistence mode\n");
-    char range[32];
-    snprintf(range, sizeof(range), "%d,%d", min, max);
-    char *const args[] = { "nvidia-smi", "-lmc", range, NULL };
-    return run_cmd("nvidia-smi", args);
-}
-
-/* Run nvidia-smi -rmc (reset/unlock GPU memory clocks) */
-static int nvidia_memclock_reset(void)
-{
-    char *const args[] = { "nvidia-smi", "-rmc", NULL };
-    return run_cmd("nvidia-smi", args);
-}
+#define nvidia_clock_set(min, max)    nvidia_clock_apply("-lgc", min, max)
+#define nvidia_clock_reset()          nvidia_clock_reset_flag("-rgc")
+#define nvidia_memclock_set(min, max) nvidia_clock_apply("-lmc", min, max)
+#define nvidia_memclock_reset()       nvidia_clock_reset_flag("-rmc")
 
 struct nvidia_clock_info {
     int cur_graphics;
@@ -4664,6 +4626,21 @@ static int nvidia_parse_clock_inputs(int argc, char **argv, int max_supported,
     return 0;
 }
 
+static int nvidia_clock_display(const char *label, const char *subcmd, int max_val,
+                                int ex_single, int ex_min, int ex_max)
+{
+    printf("%s%s:%s\n", C_YLW, label, C_RST);
+    printf("  %sMax Supported:%s %s%d MHz%s\n\n", C_CYN, C_RST, C_CYN, max_val, C_RST);
+    printf("%sUsage:%s %scctl nvidia %s [min] <max>  |  cctl nvidia %s reset%s\n",
+           C_BLD, C_RST, C_CYN_BLD, subcmd, subcmd, C_RST);
+    printf("  %sExamples:%s cctl nvidia %s %d        %s(auto minimum 0 MHz)%s\n",
+           C_YLW, C_RST, subcmd, ex_single, C_DIM, C_RST);
+    printf("            cctl nvidia %s %d %d\n", subcmd, ex_min, ex_max);
+    printf("            cctl nvidia %s %d,%d\n", subcmd, ex_min, ex_max);
+    printf("            cctl nvidia %s reset\n", subcmd);
+    return 0;
+}
+
 static int nvidia_clock_show(void)
 {
     struct nvidia_clock_info ci;
@@ -4671,16 +4648,7 @@ static int nvidia_clock_show(void)
         fprintf(stderr, "Error: Unable to query GPU clocks via nvidia-smi\n");
         return 1;
     }
-    printf("%sGPU Graphics Clock:%s\n", C_YLW, C_RST);
-    printf("  %sMax Supported:%s %s%d MHz%s\n\n", C_CYN, C_RST, C_CYN, ci.max_graphics, C_RST);
-    printf("%sUsage:%s %scctl nvidia clock [min] <max>  |  cctl nvidia clock reset%s\n",
-           C_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("  %sExamples:%s cctl nvidia clock 1500        %s(auto minimum 0 MHz)%s\n",
-           C_YLW, C_RST, C_DIM, C_RST);
-    printf("            cctl nvidia clock 210 1500\n");
-    printf("            cctl nvidia clock 210,1500\n");
-    printf("            cctl nvidia clock reset\n");
-    return 0;
+    return nvidia_clock_display("GPU Graphics Clock", "clock", ci.max_graphics, 1500, 210, 1500);
 }
 
 static int nvidia_memclock_show(void)
@@ -4690,16 +4658,7 @@ static int nvidia_memclock_show(void)
         fprintf(stderr, "Error: Unable to query GPU memory clocks via nvidia-smi\n");
         return 1;
     }
-    printf("%sGPU Memory Clock:%s\n", C_YLW, C_RST);
-    printf("  %sMax Supported:%s %s%d MHz%s\n\n", C_CYN, C_RST, C_CYN, ci.max_memory, C_RST);
-    printf("%sUsage:%s %scctl nvidia memclock [min] <max>  |  cctl nvidia memclock reset%s\n",
-           C_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("  %sExamples:%s cctl nvidia memclock 5000     %s(auto minimum 0 MHz)%s\n",
-           C_YLW, C_RST, C_DIM, C_RST);
-    printf("            cctl nvidia memclock 405 5000\n");
-    printf("            cctl nvidia memclock 405,5000\n");
-    printf("            cctl nvidia memclock reset\n");
-    return 0;
+    return nvidia_clock_display("GPU Memory Clock", "memclock", ci.max_memory, 5000, 405, 5000);
 }
 
 #ifdef CCTL_NVIDIA
@@ -4877,18 +4836,11 @@ static int scale_set(const char *resolution)
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) { perror("fork"); return -1; }
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-        execlp("xrandr", "xrandr", "--output", info.output, "--mode", info.resolution,
-               "--scale-from", resolution, (char *)NULL);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    char *const args[] = {
+        "xrandr", "--output", info.output, "--mode", info.resolution,
+        "--scale-from", (char *)resolution, NULL
+    };
+    if (run_cmd_silent("xrandr", args) != 0) {
         fprintf(stderr, "Error: Failed to set scale to %s\n", resolution);
         return -1;
     }
@@ -4904,18 +4856,11 @@ static int scale_reset(void)
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) { perror("fork"); return -1; }
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-        execlp("xrandr", "xrandr", "--output", info.output, "--mode", info.resolution,
-               "--scale", "1x1", (char *)NULL);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    char *const args[] = {
+        "xrandr", "--output", info.output, "--mode", info.resolution,
+        "--scale", "1x1", NULL
+    };
+    if (run_cmd_silent("xrandr", args) != 0) {
         fprintf(stderr, "Error: Failed to reset scale\n");
         return -1;
     }
@@ -5043,19 +4988,18 @@ static int cmd_set(int argc, char **argv)
         printf("%sUsage:%s %scctl %s <profile> [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, with_rapl ? "setr" : "set", C_RST);
         printf("%sValid Profiles:%s\n", C_YLW, C_RST);
-        printf("  %s%-12s%s %s\n", C_RED, "max", C_RST, "Maximum performance (90/115W + GPU 100W)");
-        printf("  %s%-12s%s %s\n", C_YLW, "cpuperf", C_RST, "Performance CPU only (45/115W + GPU 70W)");
-        printf("  %s%-12s%s %s\n", C_GRN, "balanced", C_RST, "Balanced daily use (45/115W + GPU 70W)");
-        printf("  %s%-12s%s %s\n", C_CYN_BLD, "powersave", C_RST, "Power saving, turbo off (15/30W + GPU 70W)");
-        printf("  %s%-12s%s %s\n", C_DIM, "eco", C_RST, "Ultra power saving (15/30W + GPU 70W)");
+        for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
+            printf("  %s%-12s%s %s\n",
+                   prof_color_str(PROFILES[i].color),
+                   PROFILES[i].name,
+                   C_RST,
+                   PROFILES[i].help_desc);
+        }
         return 0;
     }
 
-    /* Validate before recording: only the five known profiles ever reach
-     * /tmp/cctl.mode (cctl status and the RAPL PL1 ceiling read it). */
-    if (strcmp(profile, "max") != 0 && strcmp(profile, "cpuperf") != 0 &&
-        strcmp(profile, "balanced") != 0 && strcmp(profile, "powersave") != 0 &&
-        strcmp(profile, "eco") != 0) {
+    const struct profile_def *p = find_profile(profile);
+    if (!p) {
         fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
         fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
         return 1;
@@ -5064,35 +5008,11 @@ static int cmd_set(int argc, char **argv)
     if (geteuid() != 0)
         self_elevate(argc, argv);
 
-    int rc = 0;
-
-    if (strcmp(profile, "max") == 0) {
-        if (!nosafe) {
-            printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
-            fan_auto_all();
-        }
-        rc = profile_max(with_rapl);
-    } else if (strcmp(profile, "cpuperf") == 0) {
-        if (!nosafe) {
-            printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
-            fan_auto_all();
-        }
-        rc = profile_cpuperf(with_rapl);
-    } else if (strcmp(profile, "balanced") == 0) {
-        if (!nosafe) {
-            printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
-            fan_auto_all();
-        }
-        rc = profile_balanced(with_rapl);
-    } else if (strcmp(profile, "powersave") == 0) {
-        rc = profile_powersave(with_rapl);
-    } else if (strcmp(profile, "eco") == 0) {
-        rc = profile_eco(with_rapl);
-    } else {
-        fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
-        fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
-        return 1;
+    if (p->fan_safety && !nosafe) {
+        printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
+        fan_auto_all();
     }
+    int rc = profile_apply(p, with_rapl);
 
     ec_release_ports();
     if (rc == 0) {
@@ -5693,12 +5613,10 @@ static int cmd_install(int argc, char **argv)
      * self_elevate() re-execs us as root only after they pass — do not
      * assume EUID==0 at this point. */
     char src[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", src, sizeof(src) - 1);
-    if (n <= 0) {
+    if (get_self_exe(src, sizeof(src)) < 0) {
         perror("Error: cannot determine running binary path");
         return 1;
     }
-    src[n] = '\0';
 
     /* If running from /usr/local/bin/cctl directly, it's already installed */
     if (strcmp(src, "/usr/local/bin/cctl") == 0) {
@@ -5878,9 +5796,7 @@ static int cmd_install(int argc, char **argv)
 static int binary_dir(char *out, size_t sz)
 {
     char path[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
-    if (n <= 0) return -1;
-    path[n] = '\0';
+    if (get_self_exe(path, sizeof(path)) < 0) return -1;
     char *slash = strrchr(path, '/');
     if (!slash) return -1;
     *slash = '\0';
