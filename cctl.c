@@ -33,6 +33,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <sys/file.h>
+#include <stdarg.h>
 
 #define CCTL_VERSION      "3.7"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
@@ -41,7 +42,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100031
+#define CCTL_MICROVERSION 100033
 #endif
 
 /* ========================================================================
@@ -65,42 +66,94 @@ static void init_colors(void)
     }
 }
 
-/* Best-effort command/chown wrappers: intentionally discard the return
- * value in a way that satisfies -Wunused-result on every gcc (assigning
- * the result to a variable counts as "used"; the (void) silences the
- * unused-variable warning). */
-static void run_quiet(const char *cmd) { int r = system(cmd); (void)r; }
+enum run_flags {
+    RUN_SILENT  = 1 << 0, /* redirect stdout & stderr to /dev/null */
+    RUN_CAPTURE = 1 << 1, /* capture stdout into out buffer */
+};
 
-static int run_cmd_silent(const char *cmd, char *const argv[])
+/* Unified process spawner: replaces run_cmd, run_cmd_silent, popen, system, and fork/pipe.
+ * Returns process exit code (0 on success, non-zero or -1 on failure). */
+static int run(char *const argv[], int flags, char *out, size_t out_sz)
 {
+    int pipefd[2] = { -1, -1 };
+    if ((flags & RUN_CAPTURE) && pipe(pipefd) != 0)
+        return -1;
+
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) {
+        if (pipefd[0] >= 0) { close(pipefd[0]); close(pipefd[1]); }
+        return -1;
+    }
+
     if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
+        if (flags & RUN_CAPTURE) {
+            close(pipefd[0]);
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
+        } else if (flags & RUN_SILENT) {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
         }
-        execvp(cmd, argv);
+        execvp(argv[0], argv);
         _exit(127);
     }
-    int status;
+
+    if (flags & RUN_CAPTURE) {
+        close(pipefd[1]);
+        size_t total = 0;
+        if (out && out_sz > 0) {
+            ssize_t n;
+            while ((n = read(pipefd[0], out + total, out_sz - 1 - total)) > 0) {
+                total += (size_t)n;
+            }
+            out[total] = '\0';
+        }
+        close(pipefd[0]);
+    }
+
+    int status = 0;
     waitpid(pid, &status, 0);
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 }
 
-static int run_cmd(const char *cmd, char *const argv[])
+#define run_cmd(cmd, argv)        run((char *const *)(argv), 0, NULL, 0)
+#define run_cmd_silent(cmd, argv) run((char *const *)(argv), RUN_SILENT, NULL, 0)
+static void run_quiet(const char *cmd) { int r = system(cmd); (void)r; }
+
+static int fail(const char *fmt, ...)
 {
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        execvp(cmd, argv);
-        _exit(127);
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "Error: ");
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+    return 1;
+}
+
+#define require_root(argc, argv) self_elevate(argc, argv)
+
+static int extract_flag(int *argc, char **argv, const char *flag)
+{
+    int found = 0, w = 0;
+    for (int r = 0; r < *argc; r++) {
+        if (strcmp(argv[r], flag) == 0)
+            found = 1;
+        else
+            argv[w++] = argv[r];
     }
-    int status;
-    waitpid(pid, &status, 0);
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+    *argc = w;
+    argv[w] = NULL;
+    return found;
 }
 
 /* Resolve the absolute path to this running executable */
@@ -156,8 +209,17 @@ static int command_exists(const char *cmd);
 static int kbd_get_brightness(void);
 static int kbd_get_color(int *r, int *g, int *b);
 static const char *kbd_find_preset_name(int r, int g, int b);
-static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz,
-                          int *orig_r, int *orig_g, int *orig_b, int *orig_bri);
+struct kbe_state {
+    pid_t pid;
+    long starttime;
+    char effect[32];
+    int orig_r;
+    int orig_g;
+    int orig_b;
+    int orig_bri;
+    char resume_effect[32];
+};
+static int kbe_is_running(struct kbe_state *st);
 static int nvidia_find_pci_address(char *buf, size_t bufsz);
 
 /* ========================================================================
@@ -401,22 +463,28 @@ static int mux_running_mode(void)
     return ((val >> 8) == 0x0300) ? MUX_VAL_MSHYBRID : MUX_VAL_DGPU;
 }
 
-static void mux_show(void)
+static int mux_show_internal(const char *prefix)
 {
     int nvram = mux_read();
     if (nvram < 0) {
-        printf("  %-14s %sN/A (NVRAM variable not found or unrecognized)%s\n", "GPU MUX:", C_DIM, C_RST);
-        return;
+        printf("%s%sN/A (NVRAM variable not found or unrecognized)%s\n", prefix, C_DIM, C_RST);
+        return 1;
     }
     int running = mux_running_mode();
     const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_MAG;
     if (running >= 0 && nvram != running)
-        printf("  %-14s %s%s%s  %s← %s pending (reboot to apply)%s\n",
-               "GPU MUX:",
+        printf("%s%s%s%s  %s← %s pending (reboot to apply)%s\n",
+               prefix,
                col, mux_mode_str(running), C_RST,
                C_YLW, mux_mode_str(nvram), C_RST);
     else
-        printf("  %-14s %s%s%s\n", "GPU MUX:", col, mux_mode_str(nvram), C_RST);
+        printf("%s%s%s%s\n", prefix, col, mux_mode_str(nvram), C_RST);
+    return 0;
+}
+
+static void mux_show(void)
+{
+    mux_show_internal("  GPU MUX:       ");
 }
 
 /* AC adapter / battery state for the NVRAM-write power guard.
@@ -553,10 +621,9 @@ static int mux_switch(void)
     int target = (current == MUX_VAL_MSHYBRID) ? MUX_VAL_DGPU : MUX_VAL_MSHYBRID;
 
     /* Confirmation prompt */
-    printf("Switch GPU MUX mode from %s%s%s to %s%s%s?\n",
+    printf("Switch GPU MUX mode from %s%s%s to %s%s%s? [y/N] ",
            C_DIM, mux_mode_str(current), C_RST,
            C_BLD, mux_mode_str(target), C_RST);
-    printf("Are you sure you want to switch to %s? [y/N] ", mux_mode_str(target));
     fflush(stdout);
 
     char ans[32] = {0};
@@ -717,7 +784,7 @@ static int set_epp(const char *val)
 
 /* RAPL ceilings (watts): PL2 hard max 115W (OEM platform limit); PL1 hard
  * max 45W — raised to 90W ONLY while mode == max (see rapl_pl1_ceiling(),
- * fed by /tmp/cctl.mode; GPU wattage is never read for this). */
+ * fed by /run/cctl/mode; GPU wattage is never read for this). */
 #define RAPL_PL1_MAX_WATTS      45
 #define RAPL_PL1_MAX_WATTS_MAX  90
 #define RAPL_PL2_MAX_WATTS     115
@@ -868,19 +935,19 @@ static int tuxedo_open_clevo(void)
     return fd;
 }
 
-static int set_gpu_profile_tuxedo(int profile)
+/* Open /dev/tuxedo_io, issue an ioctl, and close it. Returns ioctl status or -1. */
+static int tuxedo_ioctl(unsigned long req, void *arg)
 {
     int fd = tuxedo_open_clevo();
     if (fd < 0) return -1;
-
-    int arg = profile;
-    if (ioctl(fd, W_CL_PERF_PROFILE, &arg) < 0) {
-        close(fd);
-        return -1;
-    }
-
+    int res = ioctl(fd, req, arg);
     close(fd);
-    return 0;
+    return res;
+}
+
+static int set_gpu_profile_tuxedo(int profile)
+{
+    return tuxedo_ioctl(W_CL_PERF_PROFILE, &profile);
 }
 
 static int set_gpu_profile(int profile)
@@ -931,15 +998,9 @@ static int set_gpu_profile(int profile)
 
 static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
 {
-    int fd = tuxedo_open_clevo();
-    if (fd < 0) {
-        fprintf(stderr, "Error: cannot open /dev/tuxedo_io (is tuxedo_io module loaded?)\n");
-        return -1;
-    }
     /* Byte order in packed argument: fan1 | (fan2 << 8) */
     int32_t arg = (int32_t)raw_fan1 | ((int32_t)raw_fan2 << 8);
-    int res = ioctl(fd, W_CL_FANSPEED, &arg);
-    close(fd);
+    int res = tuxedo_ioctl(W_CL_FANSPEED, &arg);
     if (res < 0) {
         perror("Error: ioctl W_CL_FANSPEED failed");
         return -1;
@@ -949,16 +1010,10 @@ static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
 
 static int fan_auto_tuxedo(int32_t mask)
 {
-    int fd = tuxedo_open_clevo();
-    if (fd < 0) {
-        fprintf(stderr, "Error: cannot open /dev/tuxedo_io (is tuxedo_io module loaded?)\n");
-        return -1;
-    }
     /* Note: arg MUST be passed as a pointer (&arg) because tuxedo_io
      * uses copy_from_user. Bitmask 15 (0x0F) releases all fans (1, 2, 3, 4). */
     int32_t arg = mask ? mask : 15;
-    int res = ioctl(fd, W_CL_FANAUTO, &arg);
-    close(fd);
+    int res = tuxedo_ioctl(W_CL_FANAUTO, &arg);
     if (res < 0) {
         perror("Error: ioctl W_CL_FANAUTO failed");
         return -1;
@@ -1088,9 +1143,27 @@ enum prof_color {
     PROF_COL_RED,
     PROF_COL_YLW,
     PROF_COL_GRN,
+    PROF_COL_CYN,
     PROF_COL_CYN_BLD,
+    PROF_COL_MAG,
+    PROF_COL_BLU,
     PROF_COL_DIM
 };
+
+static const char *prof_color_str(enum prof_color c)
+{
+    switch (c) {
+        case PROF_COL_RED:     return C_RED;
+        case PROF_COL_YLW:     return C_YLW;
+        case PROF_COL_GRN:     return C_GRN;
+        case PROF_COL_CYN:     return C_CYN;
+        case PROF_COL_CYN_BLD: return C_CYN_BLD;
+        case PROF_COL_MAG:     return C_MAG;
+        case PROF_COL_BLU:     return C_BLU;
+        case PROF_COL_DIM:     return C_DIM;
+    }
+    return C_RST;
+}
 
 struct profile_def {
     const char *name;
@@ -1104,15 +1177,41 @@ struct profile_def {
     int rapl_pl1, rapl_pl2;
     int fan_safety;
     uint8_t pulse_r, pulse_g, pulse_b;
+    const char *ec_tdp;
 };
 
 static const struct profile_def PROFILES[] = {
-    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         45, 90, 1, 255,   0,   0 },
-    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "performance", "performance",          0,  0, 1, 255, 110,   0 },
-    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 35, 40, 1, 200,  50, 255 },
-    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",        0,  0, 0,   0, 255,   0 },
-    { "eco",       "Ultra Powersave",                  PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                9, 10, 0,  80, 180, 255 },
+    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         45, 90, 1, 255,   0,   0, "90/115W + GPU 100W" },
+    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "performance", "performance",          0,  0, 1, 255, 110,   0, "45/115W + GPU 70W" },
+    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 35, 40, 1, 200,  50, 255, "45/115W + GPU 70W" },
+    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",        0,  0, 0,   0, 255,   0, "15/30W  + GPU 70W" },
+    { "eco",       "Ultra Powersave",                  PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                9, 10, 0,  80, 180, 255, "15/30W  + GPU 70W" },
 };
+
+static void print_profile_table(void)
+{
+    printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP override (setR only)%s\n", C_BLD, C_RST);
+    printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────%s\n", C_DIM, C_RST);
+    for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
+        const struct profile_def *p = &PROFILES[i];
+        char name_buf[32];
+        snprintf(name_buf, sizeof(name_buf), "%s%s%s", prof_color_str(p->color), p->name, C_RST);
+        int pad = 12 - (int)strlen(p->name);
+        char rapl_buf[64];
+        if (p->rapl_pl1 > 0)
+            snprintf(rapl_buf, sizeof(rapl_buf), "PL1 %d / PL2 %dW", p->rapl_pl1, p->rapl_pl2);
+        else
+            snprintf(rapl_buf, sizeof(rapl_buf), "%s(no RAPL change)%s", C_DIM, C_RST);
+        printf("      %s%*s %-6s %-12s %-18s %-31s %s\n",
+               name_buf, pad, "",
+               p->turbo ? "ON" : "OFF",
+               p->gov,
+               p->epp,
+               p->ec_tdp,
+               rapl_buf);
+    }
+    printf("\n");
+}
 
 static const struct profile_def *find_profile(const char *name)
 {
@@ -1121,18 +1220,6 @@ static const struct profile_def *find_profile(const char *name)
             return &PROFILES[i];
     }
     return NULL;
-}
-
-static const char *prof_color_str(enum prof_color c)
-{
-    switch (c) {
-        case PROF_COL_RED:     return C_RED;
-        case PROF_COL_YLW:     return C_YLW;
-        case PROF_COL_GRN:     return C_GRN;
-        case PROF_COL_CYN_BLD: return C_CYN_BLD;
-        case PROF_COL_DIM:     return C_DIM;
-    }
-    return C_RST;
 }
 
 static int profile_apply(const struct profile_def *p, int with_rapl)
@@ -1162,25 +1249,14 @@ static int profile_eco(int with_rapl)
 
 static int webcam_read_tuxedo(void)
 {
-    int fd = tuxedo_open_clevo();
-    if (fd < 0) return -1;
-
     int val = 0;
-    int res = ioctl(fd, R_CL_WEBCAM_SW, &val);
-    close(fd);
-    if (res < 0) return -1;
-    return val;
+    return (tuxedo_ioctl(R_CL_WEBCAM_SW, &val) < 0) ? -1 : val;
 }
 
 static int webcam_write_tuxedo(int enabled)
 {
-    int fd = tuxedo_open_clevo();
-    if (fd < 0) return -1;
-
     int val = enabled ? 1 : 0;
-    int res = ioctl(fd, W_CL_WEBCAM_SW, &val);
-    close(fd);
-    return (res < 0) ? -1 : 0;
+    return (tuxedo_ioctl(W_CL_WEBCAM_SW, &val) < 0) ? -1 : 0;
 }
 
 /* Find USB device ID for the webcam (class 0x0E or 0xEF with camera keywords).
@@ -1419,25 +1495,21 @@ static int mic_is_enabled(void)
     if (!command_exists("amixer")) return -1;
 
     int card = mic_find_card();
-    char cmd[128];
+    char card_str[16] = {0};
+    char buf[1024] = {0};
+    char *const args_card[] = { "amixer", "-c", card_str, "sget", "Capture", NULL };
+    char *const args_def[] = { "amixer", "sget", "Capture", NULL };
     if (card >= 0)
-        snprintf(cmd, sizeof(cmd), "amixer -c %d sget Capture 2>/dev/null", card);
-    else
-        snprintf(cmd, sizeof(cmd), "amixer sget Capture 2>/dev/null");
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return -1;
+        snprintf(card_str, sizeof(card_str), "%d", card);
 
-    char line[256];
-    int enabled = -1;
-    while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, "Front Left:")) {
-            if (strstr(line, "[on]")) enabled = 1;
-            else if (strstr(line, "[off]")) enabled = 0;
-            break;
-        }
-    }
-    pclose(fp);
-    return enabled;
+    if (run(card >= 0 ? args_card : args_def, RUN_CAPTURE, buf, sizeof(buf)) != 0)
+        return -1;
+
+    char *p = strstr(buf, "Front Left:");
+    if (!p) p = buf;
+    if (strstr(p, "[on]")) return 1;
+    if (strstr(p, "[off]")) return 0;
+    return -1;
 }
 
 static int mic_set(int enabled)
@@ -1733,134 +1805,151 @@ static int is_cpu_e_core(int cpu_num)
     return 0;
 }
 
+/* Pin current process to up to 2 E-cores (keeps off P-cores on hybrid CPUs).
+ * Only useful for long-running loops (monitor, kbe daemon); not every launch. */
+static void pin_to_e_cores(void)
+{
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    int pinned = 0;
+    int max_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
+    if (max_cpus <= 0) max_cpus = 64;
+
+    for (int i = 0; i < max_cpus && pinned < 2; i++) {
+        if (i >= CPU_SETSIZE) continue;
+        if (is_cpu_e_core(i)) {
+            CPU_SET((unsigned)i, &cpuset);
+            pinned++;
+        }
+    }
+    if (pinned > 0)
+        sched_setaffinity(0, sizeof(cpuset), &cpuset);
+}
+
 /* ========================================================================
  * STATUS
  * ======================================================================== */
 
-static void show_status(void)
+static void row(const char *label, const char *fmt, ...)
+{
+    char val[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(val, sizeof(val), fmt, ap);
+    va_end(ap);
+    printf("  %-14s %s\n", label, val);
+}
+
+static void format_gpu_fan(char *buf, size_t sz, int pct, int rpm)
+{
+    if (pct == 0 && rpm == 0) {
+        snprintf(buf, sz, "%s%3d%%%s duty, %s%4d RPM%s  %s(GPU in D3cold state)%s",
+                 C_DIM, pct, C_RST, C_DIM, rpm, C_RST, C_DIM, C_RST);
+    } else {
+        snprintf(buf, sz, "%s%3d%%%s duty, %s%4d RPM%s",
+                 C_CYN, pct, C_RST, C_CYN, rpm, C_RST);
+    }
+}
+
+static void query_cpu_max_freqs(int *p_max_mhz, int *e_max_mhz)
+{
+    int p_max = 0, e_max = 0;
+    int max_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
+    if (max_cpus <= 0) max_cpus = 64;
+    for (int i = 0; i < max_cpus; i++) {
+        char path[128];
+        snprintf(path, sizeof(path),
+                 "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq", i);
+        long khz = read_sysfs_long(path, -1);
+        if (khz <= 0) {
+            snprintf(path, sizeof(path),
+                     "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+            khz = read_sysfs_long(path, -1);
+        }
+        if (khz > 0) {
+            int mhz = (int)(khz / 1000);
+            if (!is_cpu_e_core(i)) {
+                if (mhz > p_max) p_max = mhz;
+            } else {
+                if (mhz > e_max) e_max = mhz;
+            }
+        }
+    }
+    *p_max_mhz = p_max;
+    *e_max_mhz = e_max;
+}
+
+static void status_system(void)
 {
     char buf[128] = {0};
 
-    printf("%s=== System Status ===%s\n\n", C_YLW, C_RST);
-
     /* 1. Mode */
-    {
-        char m_prof[32] = {0}, m_how[16] = {0};
-        if (mode_read(m_prof, sizeof(m_prof), m_how, sizeof(m_how)) == 0)
-            printf("  %-14s %s%s%s %s(%s)%s\n", "Mode:",
-                   C_CYN, m_prof, C_RST, C_DIM, m_how, C_RST);
-        else
-            printf("  %-14s %sEC default%s\n", "Mode:", C_DIM, C_RST);
-    }
+    char m_prof[32] = {0}, m_how[16] = {0};
+    if (mode_read(m_prof, sizeof(m_prof), m_how, sizeof(m_how)) == 0)
+        row("Mode:", "%s%s%s %s(%s)%s", C_CYN, m_prof, C_RST, C_DIM, m_how, C_RST);
+    else
+        row("Mode:", "%sEC default%s", C_DIM, C_RST);
 
-    /* 2. Turbo + Governor + EPP (single line) */
-    {
-        int turbo_val = -1;
-        if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0)
-            turbo_val = atoi(buf);
+    /* 2. Turbo + Governor + EPP */
+    int turbo_val = -1;
+    if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0)
+        turbo_val = atoi(buf);
 
-        char gov_buf[64] = {0};
-        int have_gov = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", gov_buf, sizeof(gov_buf)) >= 0);
+    char gov_buf[64] = {0};
+    int have_gov = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", gov_buf, sizeof(gov_buf)) >= 0);
 
-        char epp_buf[64] = {0};
-        int have_epp = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", epp_buf, sizeof(epp_buf)) >= 0);
+    char epp_buf[64] = {0};
+    int have_epp = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", epp_buf, sizeof(epp_buf)) >= 0);
 
-        printf("  %-14s Turbo %s%s%s, gov: %s%s%s, epp: %s%s%s\n",
-               "CPU Profile:",
-               turbo_val == 0 ? C_GRN : (turbo_val == 1 ? C_RED : C_DIM),
-               turbo_val == 0 ? "ON" : (turbo_val == 1 ? "OFF" : "N/A"),
-               C_RST,
-               have_gov ? C_CYN : C_DIM, have_gov ? gov_buf : "N/A", C_RST,
-               have_epp ? C_CYN : C_DIM, have_epp ? epp_buf : "N/A", C_RST);
-    }
+    row("CPU Profile:", "Turbo %s%s%s, gov: %s%s%s, epp: %s%s%s",
+        turbo_val == 0 ? C_GRN : (turbo_val == 1 ? C_RED : C_DIM),
+        turbo_val == 0 ? "ON" : (turbo_val == 1 ? "OFF" : "N/A"), C_RST,
+        have_gov ? C_CYN : C_DIM, have_gov ? gov_buf : "N/A", C_RST,
+        have_epp ? C_CYN : C_DIM, have_epp ? epp_buf : "N/A", C_RST);
 
-    /* 3. RAPL PL1 and PL2 (single line) */
-    {
-        long pl1_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", -1);
-        long pl2_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", -1);
-        if (pl1_uw >= 0 && pl2_uw >= 0) {
-            printf("  %-14s PL1 %s%ldW%s, PL2 %s%ldW%s\n", "RAPL Limits:",
-                   C_CYN, pl1_uw / 1000000, C_RST,
-                   C_CYN, pl2_uw / 1000000, C_RST);
-        } else if (pl1_uw >= 0) {
-            printf("  %-14s PL1 %s%ldW%s, PL2 %sN/A%s\n", "RAPL Limits:",
-                   C_CYN, pl1_uw / 1000000, C_RST, C_DIM, C_RST);
-        } else if (pl2_uw >= 0) {
-            printf("  %-14s PL1 %sN/A%s, PL2 %s%ldW%s\n", "RAPL Limits:",
-                   C_DIM, C_RST, C_CYN, pl2_uw / 1000000, C_RST);
-        } else {
-            printf("  %-14s %sN/A%s\n", "RAPL Limits:", C_DIM, C_RST);
-        }
-    }
+    /* 3. RAPL PL1 and PL2 */
+    long pl1_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", -1);
+    long pl2_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", -1);
+    if (pl1_uw >= 0 && pl2_uw >= 0)
+        row("RAPL Limits:", "PL1 %s%ldW%s, PL2 %s%ldW%s", C_CYN, pl1_uw / 1000000, C_RST, C_CYN, pl2_uw / 1000000, C_RST);
+    else if (pl1_uw >= 0)
+        row("RAPL Limits:", "PL1 %s%ldW%s, PL2 %sN/A%s", C_CYN, pl1_uw / 1000000, C_RST, C_DIM, C_RST);
+    else if (pl2_uw >= 0)
+        row("RAPL Limits:", "PL1 %sN/A%s, PL2 %s%ldW%s", C_DIM, C_RST, C_CYN, pl2_uw / 1000000, C_RST);
+    else
+        row("RAPL Limits:", "%sN/A%s", C_DIM, C_RST);
 
-    /* 4. Current max CPU frequency for P-Core and E-Core (single line) */
-    {
-        int p_max = 0, e_max = 0;
-        DIR *d = opendir("/sys/devices/system/cpu");
-        if (d) {
-            struct dirent *ent;
-            while ((ent = readdir(d)) != NULL) {
-                if (strncmp(ent->d_name, "cpu", 3) != 0) continue;
-                if (ent->d_name[3] < '0' || ent->d_name[3] > '9') continue;
-                int cpu_num = atoi(ent->d_name + 3);
-                char path[512];
-                snprintf(path, sizeof(path),
-                         "/sys/devices/system/cpu/%s/cpufreq/scaling_max_freq", ent->d_name);
-                long khz = read_sysfs_long(path, -1);
-                if (khz <= 0) {
-                    snprintf(path, sizeof(path),
-                             "/sys/devices/system/cpu/%s/cpufreq/cpuinfo_max_freq", ent->d_name);
-                    khz = read_sysfs_long(path, -1);
-                }
-                if (khz <= 0) continue;
-                int mhz = (int)(khz / 1000);
-                if (!is_cpu_e_core(cpu_num)) {
-                    if (mhz > p_max) p_max = mhz;
-                } else {
-                    if (mhz > e_max) e_max = mhz;
-                }
-            }
-            closedir(d);
-        }
-        if (p_max > 0 && e_max > 0) {
-            printf("  %-14s P-Core %s%d MHz%s, E-Core %s%d MHz%s\n", "CPU Max Freq:",
-                   C_CYN, p_max, C_RST, C_CYN, e_max, C_RST);
-        } else if (p_max > 0) {
-            printf("  %-14s P-Core %s%d MHz%s\n", "CPU Max Freq:",
-                   C_CYN, p_max, C_RST);
-        } else if (e_max > 0) {
-            printf("  %-14s E-Core %s%d MHz%s\n", "CPU Max Freq:",
-                   C_CYN, e_max, C_RST);
-        } else {
-            printf("  %-14s %sN/A%s\n", "CPU Max Freq:", C_DIM, C_RST);
-        }
-    }
+    /* 4. Current max CPU frequency for P-Core and E-Core */
+    int p_max = 0, e_max = 0;
+    query_cpu_max_freqs(&p_max, &e_max);
+    if (p_max > 0 && e_max > 0)
+        row("CPU Max Freq:", "P-Core %s%d MHz%s, E-Core %s%d MHz%s", C_CYN, p_max, C_RST, C_CYN, e_max, C_RST);
+    else if (p_max > 0)
+        row("CPU Max Freq:", "P-Core %s%d MHz%s", C_CYN, p_max, C_RST);
+    else if (e_max > 0)
+        row("CPU Max Freq:", "E-Core %s%d MHz%s", C_CYN, e_max, C_RST);
+    else
+        row("CPU Max Freq:", "%sN/A%s", C_DIM, C_RST);
 
     /* 5. dGPU Power State */
-    {
-        char pci_path[512];
-        if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
-            char state_path[576];
-            snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
-            char state[16] = "unknown";
-            read_sysfs_str(state_path, state, sizeof(state));
-            const char *col = (strcmp(state, "D0") == 0) ? C_GRN : C_DIM;
-            printf("  %-14s %s%s%s\n", "dGPU Power:", col, state, C_RST);
-        } else {
-            printf("  %-14s %sN/A (no dGPU found)%s\n", "dGPU Power:", C_DIM, C_RST);
-        }
+    char pci_path[512];
+    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
+        char state_path[576];
+        snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
+        char state[16] = "unknown";
+        read_sysfs_str(state_path, state, sizeof(state));
+        row("dGPU Power:", "%s%s%s", (strcmp(state, "D0") == 0) ? C_GRN : C_DIM, state, C_RST);
+    } else {
+        row("dGPU Power:", "%sN/A (no dGPU found)%s", C_DIM, C_RST);
     }
 
 #ifdef CCTL_NVIDIA
     /* Nvidia GPU */
-    {
-        int nv_blacklisted = nvidia_is_blacklisted();
-        int nv_loaded = nvidia_is_loaded();
-        printf("  %-14s %s%s%s (modules %s%s%s)\n",
-               "Nvidia GPU:",
-               nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
-               nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
-    }
+    int nv_blacklisted = nvidia_is_blacklisted();
+    int nv_loaded = nvidia_is_loaded();
+    row("Nvidia GPU:", "%s%s%s (modules %s%s%s)",
+        nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
+        nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
 #endif
 
     /* 6. GPU MUX */
@@ -1868,127 +1957,124 @@ static void show_status(void)
 
     /* 7. Refresh Rate (only shown if xrandr is present) */
     struct display_info disp_info;
-    if (is_x11_xrandr_available(&disp_info)) {
-        printf("  %-14s %s%s Hz%s\n", "Refresh Rate:", C_CYN, disp_info.current_rate, C_RST);
-    }
+    if (is_x11_xrandr_available(&disp_info))
+        row("Refresh Rate:", "%s%s Hz%s", C_CYN, disp_info.current_rate, C_RST);
+}
 
-    /* Fan Telemetry */
+static void status_fans(void)
+{
+    printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
     int cpu_pct = 0, gpu_pct = 0, cpu_rpm = 0, gpu_rpm = 0;
     if (read_fan_telemetry(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm) == 0) {
-        printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
-        printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n", "CPU Fan:", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
-        if (gpu_pct == 0 && gpu_rpm == 0) {
-            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s  %s(GPU in D3cold state)%s\n",
-                   "GPU Fan:", C_DIM, gpu_pct, C_RST, C_DIM, gpu_rpm, C_RST, C_DIM, C_RST);
-        } else {
-            printf("  %-14s %s%3d%%%s duty, %s%4d RPM%s\n",
-                   "GPU Fan:", C_CYN, gpu_pct, C_RST, C_CYN, gpu_rpm, C_RST);
-        }
+        row("CPU Fan:", "%s%3d%%%s duty, %s%4d RPM%s", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
+        char gfan[128];
+        format_gpu_fan(gfan, sizeof(gfan), gpu_pct, gpu_rpm);
+        row("GPU Fan:", "%s", gfan);
     } else {
-        printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
-        printf("  %-14s %sN/A (ec_sys or tuxedo_io not available)%s\n", "Fans:", C_DIM, C_RST);
+        row("Fans:", "%sN/A (ec_sys or tuxedo_io not available)%s", C_DIM, C_RST);
     }
+}
 
-    /* Keyboard */
+static void status_keyboard(void)
+{
     printf("\n%s--- Keyboard ---%s\n", C_YLW, C_RST);
-    {
-        int cur_r = 0, cur_g = 0, cur_b = 0;
-        if (kbd_get_color(&cur_r, &cur_g, &cur_b) == 0) {
-            const char *pname = kbd_find_preset_name(cur_r, cur_g, cur_b);
-            if (pname) {
-                printf("  %-14s %s%s%s %sRGB(%d, %d, %d)%s\n", "Color:",
-                       C_CYN, pname, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
-            } else {
-                printf("  %-14s %scustom%s %sRGB(%d, %d, %d)%s\n", "Color:",
-                       C_YLW, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
-            }
-        } else {
-            printf("  %-14s %sN/A (tuxedo_keyboard not loaded)%s\n", "Color:", C_DIM, C_RST);
-        }
-
-        int bri = kbd_get_brightness();
-        if (bri >= 0) {
-            printf("  %-14s %s%d%%%s\n", "Brightness:", C_CYN, bri, C_RST);
-        } else {
-            printf("  %-14s %sN/A%s\n", "Brightness:", C_DIM, C_RST);
-        }
-
-        pid_t kbe_pid = 0;
-        char kbe_effect[32] = {0};
-        int dummy_r, dummy_g, dummy_b, dummy_bri;
-        if (kbe_is_running(&kbe_pid, kbe_effect, sizeof(kbe_effect), &dummy_r, &dummy_g, &dummy_b, &dummy_bri)) {
-            printf("  %-14s %s%s%s %s(PID %d)%s\n", "Effect:", C_CYN, kbe_effect, C_RST, C_DIM, (int)kbe_pid, C_RST);
-        } else {
-            printf("  %-14s %snone%s\n", "Effect:", C_DIM, C_RST);
-        }
-
-        if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
-            int val = atoi(buf);
-            printf("  %-14s %s%s%s\n", "Fn Lock:", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
-        } else {
-            printf("  %-14s %sN/A (tuxedo_keyboard not loaded)%s\n", "Fn Lock:", C_DIM, C_RST);
-        }
-    }
-
-    /* Privacy */
-    printf("\n%s--- Privacy ---%s\n", C_YLW, C_RST);
-    {
-        int cam = is_webcam_enabled();
-        if (cam < 0) {
-            printf("  %-14s %sNot detected%s\n", "Webcam:", C_DIM, C_RST);
-        } else {
-            printf("  %-14s %s%s%s\n", "Webcam:", cam ? C_GRN : C_RED, cam ? "ON" : "OFF", C_RST);
-        }
-
-        int mic = mic_is_enabled();
-        if (mic < 0)
-            printf("  %-14s %sN/A (amixer not available)%s\n", "Microphone:", C_DIM, C_RST);
+    int cur_r = 0, cur_g = 0, cur_b = 0;
+    if (kbd_get_color(&cur_r, &cur_g, &cur_b) == 0) {
+        const char *pname = kbd_find_preset_name(cur_r, cur_g, cur_b);
+        if (pname)
+            row("Color:", "%s%s%s %sRGB(%d, %d, %d)%s", C_CYN, pname, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
         else
-            printf("  %-14s %s%s%s\n", "Microphone:", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
+            row("Color:", "%scustom%s %sRGB(%d, %d, %d)%s", C_YLW, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
+    } else {
+        row("Color:", "%sN/A (tuxedo_keyboard not loaded)%s", C_DIM, C_RST);
     }
 
-    /* Battery Info */
+    int bri = kbd_get_brightness();
+    if (bri >= 0)
+        row("Brightness:", "%s%d%%%s", C_CYN, bri, C_RST);
+    else
+        row("Brightness:", "%sN/A%s", C_DIM, C_RST);
+
+    struct kbe_state ks;
+    if (kbe_is_running(&ks))
+        row("Effect:", "%s%s%s %s(PID %d)%s", C_CYN, ks.effect, C_RST, C_DIM, (int)ks.pid, C_RST);
+    else
+        row("Effect:", "%snone%s", C_DIM, C_RST);
+
+    char buf[128];
+    if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
+        int val = atoi(buf);
+        row("Fn Lock:", "%s%s%s", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
+    } else {
+        row("Fn Lock:", "%sN/A (tuxedo_keyboard not loaded)%s", C_DIM, C_RST);
+    }
+}
+
+static void status_privacy(void)
+{
+    printf("\n%s--- Privacy ---%s\n", C_YLW, C_RST);
+    int cam = is_webcam_enabled();
+    if (cam < 0)
+        row("Webcam:", "%sNot detected%s", C_DIM, C_RST);
+    else
+        row("Webcam:", "%s%s%s", cam ? C_GRN : C_RED, cam ? "ON" : "OFF", C_RST);
+
+    int mic = mic_is_enabled();
+    if (mic < 0)
+        row("Microphone:", "%sN/A (amixer not available)%s", C_DIM, C_RST);
+    else
+        row("Microphone:", "%s%s%s", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
+}
+
+static void status_battery(void)
+{
     printf("\n%s--- Battery Info ---%s\n", C_YLW, C_RST);
-    {
-        char bat_status[32] = {0};
-        bat_read_str("status", bat_status, sizeof(bat_status));
-        long cap      = bat_read_long("capacity", -1);
-        long full     = bat_read_long("charge_full", -1);
-        long full_dsn = bat_read_long("charge_full_design", -1);
-        long now      = bat_read_long("charge_now", -1);
-        long current  = bat_read_long("current_now", LONG_MIN);
-        long cycles   = bat_read_long("cycle_count", -1);
-        long volt     = bat_read_long("voltage_now", -1);
-        int bat_start = bat_read_start();
-        int bat_end   = bat_read_end();
+    char bat_status[32] = {0};
+    bat_read_str("status", bat_status, sizeof(bat_status));
+    long cap      = bat_read_long("capacity", -1);
+    long full     = bat_read_long("charge_full", -1);
+    long full_dsn = bat_read_long("charge_full_design", -1);
+    long now      = bat_read_long("charge_now", -1);
+    long current  = bat_read_long("current_now", LONG_MIN);
+    long cycles   = bat_read_long("cycle_count", -1);
+    long volt     = bat_read_long("voltage_now", -1);
+    int bat_start = bat_read_start();
+    int bat_end   = bat_read_end();
 
-        if (cap < 0) {
-            printf("  %-14s %sN/A (no battery)%s\n", "Battery:", C_DIM, C_RST);
-        } else {
-            printf("  %-14s %ld%% %s", "Battery:", cap, bat_status);
-            if (bat_start > 0 && bat_end > 0)
-                printf("  [threshold: %d%%→%d%%]", bat_start, bat_end);
-            printf("\n");
-        }
-
-        if (full > 0 && full_dsn > 0) {
-            int health = (int)((full * 100L) / full_dsn);
-            const char *hcol = health > 100 ? C_GRN : (health < 80 ? C_RED : C_YLW);
-            printf("  %-14s %s%d%%%s (%ld / %ld mAh)\n", "Health:", hcol, health, C_RST,
-                   full / 1000, full_dsn / 1000);
-        }
-        if (cycles > 0)
-            printf("  %-14s %s%ld%s\n", "Cycles:", C_CYN, cycles, C_RST);
-        if (now > 0 && full > 0)
-            printf("  %-14s %ld mAh / %ld mAh\n", "Charge:", now / 1000, full / 1000);
-        if (current != LONG_MIN && current != 0) {
-            long ma = current / 1000; /* microamps → milliamps */
-            printf("  %-14s %s%+ld mA%s\n", "Rate:", current > 0 ? C_RED : C_GRN, ma, C_RST);
-        }
-        if (volt > 0)
-            printf("  %-14s %ld mV\n", "Voltage:", volt / 1000);
+    if (cap < 0) {
+        row("Battery:", "%sN/A (no battery)%s", C_DIM, C_RST);
+    } else {
+        if (bat_start > 0 && bat_end > 0)
+            row("Battery:", "%ld%% %s  [threshold: %d%%→%d%%]", cap, bat_status, bat_start, bat_end);
+        else
+            row("Battery:", "%ld%% %s", cap, bat_status);
     }
 
+    if (full > 0 && full_dsn > 0) {
+        int health = (int)((full * 100L) / full_dsn);
+        const char *hcol = health > 100 ? C_GRN : (health < 80 ? C_RED : C_YLW);
+        row("Health:", "%s%d%%%s (%ld / %ld mAh)", hcol, health, C_RST, full / 1000, full_dsn / 1000);
+    }
+    if (cycles > 0)
+        row("Cycles:", "%s%ld%s", C_CYN, cycles, C_RST);
+    if (now > 0 && full > 0)
+        row("Charge:", "%ld mAh / %ld mAh", now / 1000, full / 1000);
+    if (current != LONG_MIN && current != 0) {
+        long ma = current / 1000;
+        row("Rate:", "%s%+ld mA%s", current > 0 ? C_RED : C_GRN, ma, C_RST);
+    }
+    if (volt > 0)
+        row("Voltage:", "%ld mV", volt / 1000);
+}
+
+static void show_status(void)
+{
+    printf("%s=== System Status ===%s\n\n", C_YLW, C_RST);
+    status_system();
+    status_fans();
+    status_keyboard();
+    status_privacy();
+    status_battery();
     printf("\n");
 }
 
@@ -2426,24 +2512,26 @@ static long proc_starttime(pid_t pid)
     return strtol(p, NULL, 10);
 }
 
-/* State file line 1: "<pid> <starttime>" (starttime optional for
- * compatibility with files from older builds → -1 = unknown/not checked). */
-static int kbe_read_state_ex(pid_t *pid, long *starttime, char *effect, size_t effect_sz,
-                             int *orig_r, int *orig_g, int *orig_b, int *orig_bri,
-                             char *resume_effect, size_t resume_sz)
+static int kbe_read_state(struct kbe_state *st)
 {
-    if (starttime) *starttime = -1;
+    memset(st, 0, sizeof(*st));
+    st->starttime = -1;
+    st->orig_r = 255;
+    st->orig_g = 255;
+    st->orig_b = 255;
+    st->orig_bri = 255;
+
     FILE *fp = fopen(KBE_STATE_PATH, "r");
     if (!fp) return -1;
     char line[128];
-    long p = -1, st = -1;
+    long p = -1, start = -1;
     if (!fgets(line, sizeof(line), fp)) { fclose(fp); return -1; }
-    if (sscanf(line, "%ld %ld", &p, &st) < 1 || p <= 1) {
+    if (sscanf(line, "%ld %ld", &p, &start) < 1 || p <= 1) {
         fclose(fp);
         return -1;
     }
-    if (pid) *pid = (pid_t)p;
-    if (starttime) *starttime = st;
+    st->pid = (pid_t)p;
+    st->starttime = start;
     if (!fgets(line, sizeof(line), fp)) {
         fclose(fp);
         return -1;
@@ -2451,65 +2539,52 @@ static int kbe_read_state_ex(pid_t *pid, long *starttime, char *effect, size_t e
     for (char *c = line; *c; c++) {
         if (*c == '\n' || *c == '\r') *c = '\0';
     }
-    if (effect && effect_sz > 0) {
-        strncpy(effect, line, effect_sz - 1);
-        effect[effect_sz - 1] = '\0';
-    }
+    strncpy(st->effect, line, sizeof(st->effect) - 1);
+
     if (fgets(line, sizeof(line), fp)) {
         int r = 255, g = 255, b = 255, bri = 255;
         if (sscanf(line, "%d %d %d %d", &r, &g, &b, &bri) >= 3) {
-            if (orig_r) *orig_r = r;
-            if (orig_g) *orig_g = g;
-            if (orig_b) *orig_b = b;
-            if (orig_bri) *orig_bri = bri;
+            st->orig_r = r;
+            st->orig_g = g;
+            st->orig_b = b;
+            st->orig_bri = bri;
         }
     }
-    if (resume_effect && resume_sz > 0) {
-        resume_effect[0] = '\0';
-        if (fgets(line, sizeof(line), fp)) {
-            for (char *c = line; *c; c++) {
-                if (*c == '\n' || *c == '\r') *c = '\0';
-            }
-            if (strcmp(line, "none") != 0) {
-                strncpy(resume_effect, line, resume_sz - 1);
-                resume_effect[resume_sz - 1] = '\0';
-            }
+    if (fgets(line, sizeof(line), fp)) {
+        for (char *c = line; *c; c++) {
+            if (*c == '\n' || *c == '\r') *c = '\0';
+        }
+        if (strcmp(line, "none") != 0) {
+            strncpy(st->resume_effect, line, sizeof(st->resume_effect) - 1);
         }
     }
     fclose(fp);
     return 0;
 }
 
-
-static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz, int *orig_r, int *orig_g, int *orig_b, int *orig_bri)
+static int kbe_is_running(struct kbe_state *st)
 {
-    pid_t p = 0;
-    long st = -1;
-    char resume_ef[32] = {0};
-    if (kbe_read_state_ex(&p, &st, effect, effect_sz, orig_r, orig_g, orig_b, orig_bri, resume_ef, sizeof(resume_ef)) < 0)
+    struct kbe_state local_st;
+    if (!st) st = &local_st;
+
+    if (kbe_read_state(st) < 0)
         return 0;
 
-    int alive = (kill(p, 0) == 0 || errno == EPERM);
-    /* PID-reuse guard: the recorded start time must still match. If the
-     * daemon died hard (SIGKILL/OOM), its state file survives in /run until
-     * reboot and the PID may now belong to an unrelated process — the old
-     * code would have SIGTERM'd that innocent process as root. */
-    if (alive && st > 0 && proc_starttime(p) != st)
+    int alive = (kill(st->pid, 0) == 0 || errno == EPERM);
+    if (alive && st->starttime > 0 && proc_starttime(st->pid) != st->starttime)
         alive = 0;
 
     if (alive) {
-        if (pid) *pid = p;
-        if (effect && strcmp(effect, "pulse-profile") == 0) {
-            if (resume_ef[0] != '\0') {
-                snprintf(effect, effect_sz, "%.20s", resume_ef);
+        if (strcmp(st->effect, "pulse-profile") == 0) {
+            if (st->resume_effect[0] != '\0') {
+                snprintf(st->effect, sizeof(st->effect), "%.20s", st->resume_effect);
             } else {
-                snprintf(effect, effect_sz, "profile pulse");
+                snprintf(st->effect, sizeof(st->effect), "profile pulse");
             }
         }
         return 1;
     }
 
-    /* Stale state file (daemon gone, or PID recycled): clean up when able. */
     if (geteuid() == 0) {
         unlink(KBE_STATE_PATH);
     }
@@ -2518,38 +2593,35 @@ static int kbe_is_running(pid_t *pid, char *effect, size_t effect_sz, int *orig_
 
 static int kbe_stop(int quiet)
 {
-    pid_t pid = 0;
-    char effect[32] = {0};
-    int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
-
-    if (!kbe_is_running(&pid, effect, sizeof(effect), &orig_r, &orig_g, &orig_b, &orig_bri)) {
+    struct kbe_state ks;
+    if (!kbe_is_running(&ks)) {
         if (!quiet)
             printf("No active keyboard effect is currently running.\n");
         return 0;
     }
 
-    kill(pid, SIGTERM);
+    kill(ks.pid, SIGTERM);
 
     int exited = 0;
     for (int i = 0; i < 30; i++) {
         usleep(20000);
-        if (kill(pid, 0) != 0 && errno == ESRCH) {
+        if (kill(ks.pid, 0) != 0 && errno == ESRCH) {
             exited = 1;
             break;
         }
     }
 
     if (!exited) {
-        kill(pid, SIGKILL);
+        kill(ks.pid, SIGKILL);
         usleep(20000);
     }
 
-    kbd_restore_state(orig_r, orig_g, orig_b, orig_bri);
+    kbd_restore_state(ks.orig_r, ks.orig_g, ks.orig_b, ks.orig_bri);
     unlink(KBE_STATE_PATH);
     unlink(KBE_LOCK_PATH);
 
     if (!quiet)
-        printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", effect, (int)pid);
+        printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", ks.effect, (int)ks.pid);
 
     return 0;
 }
@@ -2563,7 +2635,22 @@ static int kbe_candle_step(int *flicker_val)
     return *flicker_val;
 }
 
-/* Acquire exclusive daemon lock, retrying up to ~1.5s for previous daemon to finish exit cleanup */
+static pid_t daemonize(void)
+{
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        int null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            dup2(null_fd, STDOUT_FILENO);
+            dup2(null_fd, STDERR_FILENO);
+            if (null_fd > 2) close(null_fd);
+        }
+    }
+    return pid;
+}
+
 static int kbe_acquire_worker_lock(void)
 {
     struct sigaction sa;
@@ -2585,27 +2672,380 @@ static int kbe_acquire_worker_lock(void)
     return -1;
 }
 
-static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int orig_b, int orig_bri)
+struct kbe_worker_ctx {
+    int lock_fd;
+    int fd_col;
+    int fd_bri;
+    int orig_r, orig_g, orig_b, orig_bri;
+};
+
+static int kbe_worker_begin(struct kbe_worker_ctx *ctx, const char *effect,
+                            int orig_r, int orig_g, int orig_b, int orig_bri,
+                            const char *resume_effect)
 {
-    int lock_fd = kbe_acquire_worker_lock();
-    if (lock_fd < 0) exit(1);
+    pin_to_e_cores();
+
+    ctx->lock_fd = kbe_acquire_worker_lock();
+    if (ctx->lock_fd < 0) return -1;
 
     FILE *fp = fopen(KBE_STATE_PATH, "w");
     if (!fp) {
-        flock(lock_fd, LOCK_UN);
-        close(lock_fd);
-        exit(1);
+        flock(ctx->lock_fd, LOCK_UN);
+        close(ctx->lock_fd);
+        ctx->lock_fd = -1;
+        return -1;
     }
-    chmod(KBE_STATE_PATH, 0600); /* PID + saved state: root-only */
-    fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n", (int)getpid(),
-            proc_starttime(getpid()), effect, orig_r, orig_g, orig_b, orig_bri);
+    chmod(KBE_STATE_PATH, 0600);
+    fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n%s\n",
+            (int)getpid(), proc_starttime(getpid()),
+            effect, orig_r, orig_g, orig_b, orig_bri,
+            (resume_effect && *resume_effect) ? resume_effect : "none");
     fclose(fp);
 
-    int fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
-    int fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
+    ctx->orig_r = orig_r;
+    ctx->orig_g = orig_g;
+    ctx->orig_b = orig_b;
+    ctx->orig_bri = orig_bri;
+    ctx->fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
+    ctx->fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
+    return 0;
+}
+
+static void kbe_worker_end(struct kbe_worker_ctx *ctx, int restore)
+{
+    if (restore) {
+        if (ctx->fd_bri >= 0 && ctx->orig_bri >= 0)
+            kbe_write_bri(ctx->fd_bri, ctx->orig_bri);
+        if (ctx->fd_col >= 0)
+            kbe_write_frame(ctx->fd_col, ctx->orig_r, ctx->orig_g, ctx->orig_b);
+    }
+    if (ctx->fd_col >= 0) { close(ctx->fd_col); ctx->fd_col = -1; }
+    if (ctx->fd_bri >= 0) { close(ctx->fd_bri); ctx->fd_bri = -1; }
+    unlink(KBE_STATE_PATH);
+    if (ctx->lock_fd >= 0) {
+        flock(ctx->lock_fd, LOCK_UN);
+        close(ctx->lock_fd);
+        ctx->lock_fd = -1;
+    }
+    unlink(KBE_LOCK_PATH);
+}
+
+static const uint8_t kbe_pulse_wave[] = {
+    30, 90, 180, 255, 230, 160, 100, 60, 40,
+    90, 170, 230, 190, 130, 80, 40, 20, 10, 0
+};
+
+static void fx_breathe(int fd, int r, int g, int b, int *step)
+{
+    int bri = (int)kbe_breathe_lut[*step % 128];
+    kbe_write_frame(fd, (r * bri) / 255, (g * bri) / 255, (b * bri) / 255);
+    kbe_sleep_ms(25);
+    (*step)++;
+}
+
+static void fx_breathe_cycle(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    int bri = (int)kbe_breathe_lut[*step % 128];
+    int hue = (*step / 2) % 360;
+    int cr, cg, cb;
+    kbe_hue_to_rgb(hue, bri, &cr, &cg, &cb);
+    kbe_write_frame(fd, cr, cg, cb);
+    kbe_sleep_ms(25);
+    (*step)++;
+}
+
+static void fx_cycle(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    int cr, cg, cb;
+    kbe_hue_to_rgb(*step % 360, 255, &cr, &cg, &cb);
+    kbe_write_frame(fd, cr, cg, cb);
+    kbe_sleep_ms(50); /* 20 Hz: battery friendly */
+    (*step)++;
+}
+
+static void fx_flash(int fd, int r, int g, int b, int *step)
+{
+    (void)step;
+    for (int i = 0; i < 3 && g_kbe_running; i++) {
+        kbe_write_frame(fd, r, g, b);
+        kbe_sleep_ms(70);
+        if (!g_kbe_running) return;
+        kbe_write_frame(fd, 0, 0, 0);
+        kbe_sleep_ms(i == 2 ? 750 : 70);
+    }
+}
+
+static void fx_flash_cycle(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    int fr, fg, fb;
+    kbe_hue_to_rgb(*step, 255, &fr, &fg, &fb);
+    *step = (*step + 55) % 360;
+    for (int i = 0; i < 3 && g_kbe_running; i++) {
+        kbe_write_frame(fd, fr, fg, fb);
+        kbe_sleep_ms(70);
+        if (!g_kbe_running) return;
+        kbe_write_frame(fd, 0, 0, 0);
+        kbe_sleep_ms(i == 2 ? 750 : 70);
+    }
+}
+
+static void fx_candle(int fd, int r, int g, int b, int *step)
+{
+    (void)step;
+    static int candle_val = 200;
+    int val = kbe_candle_step(&candle_val);
+    kbe_write_frame(fd, (r * val) / 255, (g * val) / 255, (b * val) / 255);
+    kbe_sleep_ms(35 + (rand() % 35));
+}
+
+static void fx_pulse(int fd, int r, int g, int b, int *step)
+{
+    (void)step;
+    for (size_t i = 0; i < sizeof(kbe_pulse_wave) && g_kbe_running; i++) {
+        int val = kbe_pulse_wave[i];
+        kbe_write_frame(fd, (r * val) / 255, (g * val) / 255, (b * val) / 255);
+        kbe_sleep_ms(22);
+    }
+    kbe_sleep_ms(700);
+}
+
+static void fx_pulse_cycle(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    int pr, pg, pb;
+    kbe_hue_to_rgb(*step, 255, &pr, &pg, &pb);
+    *step = (*step + 55) % 360;
+    for (size_t i = 0; i < sizeof(kbe_pulse_wave) && g_kbe_running; i++) {
+        int val = kbe_pulse_wave[i];
+        kbe_write_frame(fd, (pr * val) / 255, (pg * val) / 255, (pb * val) / 255);
+        kbe_sleep_ms(22);
+    }
+    kbe_sleep_ms(700);
+}
+
+static void fx_police(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b; (void)step;
+    for (int k = 0; k < 2 && g_kbe_running; k++) {
+        kbe_write_frame(fd, 255, 0, 0);
+        kbe_sleep_ms(60);
+        if (!g_kbe_running) return;
+        kbe_write_frame(fd, 0, 0, 0);
+        kbe_sleep_ms(50);
+    }
+    kbe_sleep_ms(70);
+    for (int k = 0; k < 2 && g_kbe_running; k++) {
+        kbe_write_frame(fd, 0, 0, 255);
+        kbe_sleep_ms(60);
+        if (!g_kbe_running) return;
+        kbe_write_frame(fd, 0, 0, 0);
+        kbe_sleep_ms(50);
+    }
+    kbe_sleep_ms(70);
+}
+
+static void fx_fire(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b; (void)step;
+    static int fire_hue = 20, fire_bri = 200;
+    int target_h = 5 + (rand() % 35);
+    int target_b = 130 + (rand() % 125);
+    if ((rand() % 14) == 0) {
+        target_b = 255;
+        target_h = 36;
+    }
+    fire_hue = (fire_hue * 6 + target_h * 4) / 10;
+    fire_bri = (fire_bri * 6 + target_b * 4) / 10;
+    int fr, fg, fb;
+    kbe_hue_to_rgb(fire_hue, fire_bri, &fr, &fg, &fb);
+    kbe_write_frame(fd, fr, fg, fb);
+    kbe_sleep_ms(30 + (rand() % 25));
+}
+
+static void fx_aurora(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    int t = *step % 480;
+    int cur_hue;
+    if (t < 160) {
+        cur_hue = 130 + (t * 50) / 160;
+    } else if (t < 320) {
+        cur_hue = 180 + ((t - 160) * 95) / 160;
+    } else {
+        cur_hue = (275 + ((t - 320) * 215) / 160) % 360;
+    }
+    int bri = 130 + ((int)kbe_breathe_lut[*step % 128] * 125) / 255;
+    int ar, ag, ab;
+    kbe_hue_to_rgb(cur_hue, bri, &ar, &ag, &ab);
+    kbe_write_frame(fd, ar, ag, ab);
+    kbe_sleep_ms(50); /* 20 Hz: battery friendly */
+    (*step)++;
+}
+
+static void fx_storm(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b; (void)step;
+    kbe_write_frame(fd, 8, 12, 35);
+    int wait_ms = 1200 + (rand() % 2800);
+    while (wait_ms > 0 && g_kbe_running) {
+        if ((rand() % 10) == 0) {
+            int rumble = 25 + (rand() % 30);
+            kbe_write_frame(fd, rumble / 4, rumble / 3, rumble);
+            kbe_sleep_ms(35);
+            kbe_write_frame(fd, 8, 12, 35);
+        }
+        int chunk = wait_ms > 80 ? 80 : wait_ms;
+        kbe_sleep_ms(chunk);
+        wait_ms -= chunk;
+    }
+    if (!g_kbe_running) return;
+
+    kbe_write_frame(fd, 255, 255, 255);
+    kbe_sleep_ms(45);
+    kbe_write_frame(fd, 30, 45, 90);
+    kbe_sleep_ms(35);
+    kbe_write_frame(fd, 220, 240, 255);
+    kbe_sleep_ms(60);
+    if ((rand() % 2) == 0) {
+        kbe_write_frame(fd, 20, 30, 60);
+        kbe_sleep_ms(25);
+        kbe_write_frame(fd, 180, 210, 255);
+        kbe_sleep_ms(40);
+    }
+    kbe_write_frame(fd, 60, 90, 160);
+    kbe_sleep_ms(50);
+    kbe_write_frame(fd, 20, 30, 70);
+    kbe_sleep_ms(60);
+}
+
+static void fx_starlight(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    static int star_twinkle_steps = 0, star_peak_white = 220;
+    if (star_twinkle_steps <= 0) {
+        int sky_bri = 35 + ((int)kbe_breathe_lut[*step % 128] * 25) / 255;
+        kbe_write_frame(fd, (sky_bri * 12) / 60, (sky_bri * 20) / 60, sky_bri);
+        kbe_sleep_ms(30);
+        (*step)++;
+        if ((rand() % 30) == 0) {
+            star_twinkle_steps = 14;
+            star_peak_white = 180 + (rand() % 75);
+        }
+    } else {
+        int progress = 7 - abs(star_twinkle_steps - 7);
+        int factor = (progress * 255) / 7;
+        int tr = 12 + ((star_peak_white - 12) * factor) / 255;
+        int tg = 20 + ((star_peak_white - 20) * factor) / 255;
+        int tb = 55 + ((255 - 55) * factor) / 255;
+        kbe_write_frame(fd, tr, tg, tb);
+        kbe_sleep_ms(25);
+        star_twinkle_steps--;
+    }
+}
+
+static void fx_temp(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    static int cur_temp_val = -1;
+    static int tgt_r = 0, tgt_g = 220, tgt_b = 255;
+    static int smooth_r = 0, smooth_g = 220, smooth_b = 255;
+
+    if ((*step % 20) == 0 || cur_temp_val < 0) {
+        int t = read_cpu_temp();
+        if (t > 0) cur_temp_val = t;
+        else if (cur_temp_val < 0) cur_temp_val = 50;
+
+        if (cur_temp_val <= 40) {
+            tgt_r = 0; tgt_g = 220; tgt_b = 255;
+        } else if (cur_temp_val <= 60) {
+            int ratio = ((cur_temp_val - 40) * 255) / 20;
+            tgt_r = 0;
+            tgt_g = 220 + ((255 - 220) * ratio) / 255;
+            tgt_b = 255 - ((255 - 40) * ratio) / 255;
+        } else if (cur_temp_val <= 75) {
+            int ratio = ((cur_temp_val - 60) * 255) / 15;
+            tgt_r = (255 * ratio) / 255;
+            tgt_g = 255 - ((255 - 220) * ratio) / 255;
+            tgt_b = 40 - (40 * ratio) / 255;
+        } else if (cur_temp_val <= 85) {
+            int ratio = ((cur_temp_val - 75) * 255) / 10;
+            tgt_r = 255;
+            tgt_g = 220 - ((220 - 40) * ratio) / 255;
+            tgt_b = 0;
+        } else {
+            tgt_r = 255; tgt_g = 0; tgt_b = 0;
+        }
+    }
+
+    smooth_r = (smooth_r * 8 + tgt_r * 2) / 10;
+    smooth_g = (smooth_g * 8 + tgt_g * 2) / 10;
+    smooth_b = (smooth_b * 8 + tgt_b * 2) / 10;
+
+    int out_r = smooth_r;
+    int out_g = smooth_g;
+    int out_b = smooth_b;
+
+    if (cur_temp_val >= 90) {
+        int pulse_bri = (int)kbe_breathe_lut[*step % 128];
+        out_r = (out_r * (128 + pulse_bri / 2)) / 255;
+    }
+
+    kbe_write_frame(fd, out_r, out_g, out_b);
+    kbe_sleep_ms(30);
+    (*step)++;
+}
+
+struct kbe_effect_def {
+    const char *name;
+    const char *const aliases[5];
+    void (*step_fn)(int fd_col, int r, int g, int b, int *step);
+    const char *desc;
+};
+
+static const struct kbe_effect_def kbe_effects[] = {
+    { "breathe",       { "breath", NULL },                                                             fx_breathe,       "Smooth fade in/out (uses current color)" },
+    { "breathe-cycle", { "breathe+colorchange", "breathe_cycle", "breathecycle", NULL },               fx_breathe_cycle, "Smooth breathe shifting through colors" },
+    { "cycle",         { "rainbow", "spectrum", "slow-cycle", "slow_colorchanging", NULL },            fx_cycle,         "Smooth continuous rainbow cycle" },
+    { "flash",         { "strobe", NULL },                                                             fx_flash,         "Strobe flash bursts (uses current color)" },
+    { "flash-cycle",   { "flash+colorchange", "flash_cycle", "flashcycle", NULL },                     fx_flash_cycle,   "Strobe flash bursts cycling colors" },
+    { "candle",        { "flicker", NULL },                                                            fx_candle,        "Realistic flickering candle flame" },
+    { "pulse",         { "heartbeat", NULL },                                                          fx_pulse,         "Heartbeat double-pulse (uses current color)" },
+    { "pulse-cycle",   { "pulse+colorchange", "pulse_cycle", "pulsecycle", "heartbeat-cycle", NULL }, fx_pulse_cycle,   "Heartbeat double-pulse cycling colors" },
+    { "police",        { "siren", "cop", "emergency", NULL },                                          fx_police,        "Emergency red and blue alternating strobe" },
+    { "fire",          { "flame", "embers", "burn", NULL },                                            fx_fire,          "Dynamic warm flickering campfire flames" },
+    { "aurora",        { "arora", "northern-lights", "borealis", NULL },                               fx_aurora,        "Northern Lights emerald, cyan, and violet drift" },
+    { "storm",         { "lightning", "thunder", NULL },                                               fx_storm,         "Dark moody sky with electric lightning strikes" },
+    { "starlight",     { "stars", "star", "twinkle", NULL },                                           fx_starlight,     "Midnight sky with twinkling star shimmers" },
+    { "temp",          { "temperature", "thermal", "heatmap", NULL },                                  fx_temp,          "Live CPU thermal heatmap (cyan→green→yellow→red)" },
+};
+
+static const struct kbe_effect_def *kbe_find_effect(const char *name)
+{
+    for (size_t i = 0; i < sizeof(kbe_effects) / sizeof(kbe_effects[0]); i++) {
+        if (strcmp(kbe_effects[i].name, name) == 0)
+            return &kbe_effects[i];
+        for (int a = 0; kbe_effects[i].aliases[a]; a++) {
+            if (strcmp(kbe_effects[i].aliases[a], name) == 0)
+                return &kbe_effects[i];
+        }
+    }
+    return NULL;
+}
+
+static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int orig_b, int orig_bri)
+{
+    const struct kbe_effect_def *fx = kbe_find_effect(effect);
+    if (!fx) exit(1);
+
+    struct kbe_worker_ctx ctx;
+    if (kbe_worker_begin(&ctx, fx->name, orig_r, orig_g, orig_b, orig_bri, NULL) < 0)
+        exit(1);
 
     if (orig_bri <= 0) {
-        kbe_write_bri(fd_bri, 255);
+        kbe_write_bri(ctx.fd_bri, 255);
     }
 
     int base_r = orig_r;
@@ -2616,332 +3056,21 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
         base_g = 255;
         base_b = 255;
     }
-
-    int mode = 0;
-    if (strcmp(effect, "breathe") == 0 || strcmp(effect, "breath") == 0) {
-        mode = 1;
-    } else if (strcmp(effect, "breathe-cycle") == 0 || strcmp(effect, "breathe+colorchange") == 0 ||
-               strcmp(effect, "breathe_cycle") == 0 || strcmp(effect, "breathecycle") == 0) {
-        mode = 2;
-    } else if (strcmp(effect, "cycle") == 0 || strcmp(effect, "rainbow") == 0 ||
-               strcmp(effect, "spectrum") == 0 || strcmp(effect, "slow-cycle") == 0 ||
-               strcmp(effect, "slow_colorchanging") == 0) {
-        mode = 3;
-    } else if (strcmp(effect, "flash") == 0 || strcmp(effect, "strobe") == 0) {
-        mode = 4;
-    } else if (strcmp(effect, "flash-cycle") == 0 || strcmp(effect, "flash+colorchange") == 0 ||
-               strcmp(effect, "flash_cycle") == 0 || strcmp(effect, "flashcycle") == 0) {
-        mode = 5;
-    } else if (strcmp(effect, "candle") == 0 || strcmp(effect, "flicker") == 0) {
-        mode = 6;
-        if (orig_r == 255 && orig_g == 255 && orig_b == 255) {
-            base_r = 255;
-            base_g = 140;
-            base_b = 20;
-        }
-    } else if (strcmp(effect, "pulse") == 0 || strcmp(effect, "heartbeat") == 0) {
-        mode = 7;
-    } else if (strcmp(effect, "pulse-cycle") == 0 || strcmp(effect, "pulse+colorchange") == 0 ||
-               strcmp(effect, "pulse_cycle") == 0 || strcmp(effect, "pulsecycle") == 0 ||
-               strcmp(effect, "heartbeat-cycle") == 0) {
-        mode = 14;
-    } else if (strcmp(effect, "police") == 0 || strcmp(effect, "siren") == 0 ||
-               strcmp(effect, "cop") == 0 || strcmp(effect, "emergency") == 0) {
-        mode = 8;
-    } else if (strcmp(effect, "fire") == 0 || strcmp(effect, "flame") == 0 ||
-               strcmp(effect, "embers") == 0 || strcmp(effect, "burn") == 0) {
-        mode = 9;
-    } else if (strcmp(effect, "aurora") == 0 || strcmp(effect, "arora") == 0 ||
-               strcmp(effect, "northern-lights") == 0 || strcmp(effect, "borealis") == 0) {
-        mode = 10;
-    } else if (strcmp(effect, "storm") == 0 || strcmp(effect, "lightning") == 0 ||
-               strcmp(effect, "thunder") == 0) {
-        mode = 11;
-    } else if (strcmp(effect, "starlight") == 0 || strcmp(effect, "stars") == 0 ||
-               strcmp(effect, "star") == 0 || strcmp(effect, "twinkle") == 0) {
-        mode = 12;
-    } else if (strcmp(effect, "temp") == 0 || strcmp(effect, "temperature") == 0 ||
-               strcmp(effect, "thermal") == 0 || strcmp(effect, "heatmap") == 0) {
-        mode = 13;
+    if (strcmp(fx->name, "candle") == 0 && orig_r == 255 && orig_g == 255 && orig_b == 255) {
+        base_r = 255;
+        base_g = 140;
+        base_b = 20;
     }
 
     int step = 0;
-    int flash_hue = 0;
-    int pulse_hue = 0;
-    int candle_val = 200;
-    int fire_hue = 20, fire_bri = 200;
-    int star_twinkle_steps = 0, star_peak_white = 220;
-    int cur_temp_val = -1;
-    int tgt_r = 0, tgt_g = 220, tgt_b = 255;
-    int smooth_r = 0, smooth_g = 220, smooth_b = 255;
-
     srand((unsigned int)(time(NULL) ^ getpid()));
 
     while (g_kbe_running) {
-        switch (mode) {
-            case 1: {
-                int bri = (int)kbe_breathe_lut[step % 128];
-                int r = (base_r * bri) / 255;
-                int g = (base_g * bri) / 255;
-                int b = (base_b * bri) / 255;
-                kbe_write_frame(fd_col, r, g, b);
-                kbe_sleep_ms(25);
-                step++;
-                break;
-            }
-            case 2: {
-                int bri = (int)kbe_breathe_lut[step % 128];
-                int hue = (step / 2) % 360;
-                int r, g, b;
-                kbe_hue_to_rgb(hue, bri, &r, &g, &b);
-                kbe_write_frame(fd_col, r, g, b);
-                kbe_sleep_ms(25);
-                step++;
-                break;
-            }
-            case 3: {
-                int hue = step % 360;
-                int r, g, b;
-                kbe_hue_to_rgb(hue, 255, &r, &g, &b);
-                kbe_write_frame(fd_col, r, g, b);
-                kbe_sleep_ms(25);
-                step++;
-                break;
-            }
-            case 4: {
-                for (int i = 0; i < 3 && g_kbe_running; i++) {
-                    kbe_write_frame(fd_col, base_r, base_g, base_b);
-                    kbe_sleep_ms(70);
-                    if (!g_kbe_running) break;
-                    kbe_write_frame(fd_col, 0, 0, 0);
-                    kbe_sleep_ms(i == 2 ? 750 : 70);
-                }
-                break;
-            }
-            case 5: {
-                int fr, fg, fb;
-                kbe_hue_to_rgb(flash_hue, 255, &fr, &fg, &fb);
-                flash_hue = (flash_hue + 55) % 360;
-                for (int i = 0; i < 3 && g_kbe_running; i++) {
-                    kbe_write_frame(fd_col, fr, fg, fb);
-                    kbe_sleep_ms(70);
-                    if (!g_kbe_running) break;
-                    kbe_write_frame(fd_col, 0, 0, 0);
-                    kbe_sleep_ms(i == 2 ? 750 : 70);
-                }
-                break;
-            }
-            case 6: {
-                int val = kbe_candle_step(&candle_val);
-                int r = (base_r * val) / 255;
-                int g = (base_g * val) / 255;
-                int b = (base_b * val) / 255;
-                kbe_write_frame(fd_col, r, g, b);
-                kbe_sleep_ms(35 + (rand() % 35));
-                break;
-            }
-            case 7: {
-                static const uint8_t pulse_wave[] = {
-                    30, 90, 180, 255, 230, 160, 100, 60, 40,
-                    90, 170, 230, 190, 130, 80, 40, 20, 10, 0
-                };
-                for (size_t i = 0; i < sizeof(pulse_wave) && g_kbe_running; i++) {
-                    int val = pulse_wave[i];
-                    int r = (base_r * val) / 255;
-                    int g = (base_g * val) / 255;
-                    int b = (base_b * val) / 255;
-                    kbe_write_frame(fd_col, r, g, b);
-                    kbe_sleep_ms(22);
-                }
-                kbe_sleep_ms(700);
-                break;
-            }
-            case 8: { /* police / siren */
-                for (int k = 0; k < 2 && g_kbe_running; k++) {
-                    kbe_write_frame(fd_col, 255, 0, 0);
-                    kbe_sleep_ms(60);
-                    if (!g_kbe_running) break;
-                    kbe_write_frame(fd_col, 0, 0, 0);
-                    kbe_sleep_ms(50);
-                }
-                kbe_sleep_ms(70);
-                for (int k = 0; k < 2 && g_kbe_running; k++) {
-                    kbe_write_frame(fd_col, 0, 0, 255);
-                    kbe_sleep_ms(60);
-                    if (!g_kbe_running) break;
-                    kbe_write_frame(fd_col, 0, 0, 0);
-                    kbe_sleep_ms(50);
-                }
-                kbe_sleep_ms(70);
-                break;
-            }
-            case 9: { /* fire */
-                int target_h = 5 + (rand() % 35);
-                int target_b = 130 + (rand() % 125);
-                if ((rand() % 14) == 0) {
-                    target_b = 255;
-                    target_h = 36;
-                }
-                fire_hue = (fire_hue * 6 + target_h * 4) / 10;
-                fire_bri = (fire_bri * 6 + target_b * 4) / 10;
-                int r, g, b;
-                kbe_hue_to_rgb(fire_hue, fire_bri, &r, &g, &b);
-                kbe_write_frame(fd_col, r, g, b);
-                kbe_sleep_ms(30 + (rand() % 25));
-                break;
-            }
-            case 10: { /* aurora */
-                int t = step % 480;
-                int cur_hue;
-                if (t < 160) {
-                    cur_hue = 130 + (t * 50) / 160;
-                } else if (t < 320) {
-                    cur_hue = 180 + ((t - 160) * 95) / 160;
-                } else {
-                    cur_hue = (275 + ((t - 320) * 215) / 160) % 360;
-                }
-                int bri = 130 + ((int)kbe_breathe_lut[step % 128] * 125) / 255;
-                int r, g, b;
-                kbe_hue_to_rgb(cur_hue, bri, &r, &g, &b);
-                kbe_write_frame(fd_col, r, g, b);
-                kbe_sleep_ms(25);
-                step++;
-                break;
-            }
-            case 11: { /* storm */
-                kbe_write_frame(fd_col, 8, 12, 35);
-                int wait_ms = 1200 + (rand() % 2800);
-                while (wait_ms > 0 && g_kbe_running) {
-                    if ((rand() % 10) == 0) {
-                        int rumble = 25 + (rand() % 30);
-                        kbe_write_frame(fd_col, rumble / 4, rumble / 3, rumble);
-                        kbe_sleep_ms(35);
-                        kbe_write_frame(fd_col, 8, 12, 35);
-                    }
-                    int chunk = wait_ms > 80 ? 80 : wait_ms;
-                    kbe_sleep_ms(chunk);
-                    wait_ms -= chunk;
-                }
-                if (!g_kbe_running) break;
-
-                kbe_write_frame(fd_col, 255, 255, 255);
-                kbe_sleep_ms(45);
-                kbe_write_frame(fd_col, 30, 45, 90);
-                kbe_sleep_ms(35);
-                kbe_write_frame(fd_col, 220, 240, 255);
-                kbe_sleep_ms(60);
-                if ((rand() % 2) == 0) {
-                    kbe_write_frame(fd_col, 20, 30, 60);
-                    kbe_sleep_ms(25);
-                    kbe_write_frame(fd_col, 180, 210, 255);
-                    kbe_sleep_ms(40);
-                }
-                kbe_write_frame(fd_col, 60, 90, 160);
-                kbe_sleep_ms(50);
-                kbe_write_frame(fd_col, 20, 30, 70);
-                kbe_sleep_ms(60);
-                break;
-            }
-            case 12: { /* starlight */
-                if (star_twinkle_steps <= 0) {
-                    int sky_bri = 35 + ((int)kbe_breathe_lut[step % 128] * 25) / 255;
-                    kbe_write_frame(fd_col, (sky_bri * 12) / 60, (sky_bri * 20) / 60, sky_bri);
-                    kbe_sleep_ms(30);
-                    step++;
-                    if ((rand() % 30) == 0) {
-                        star_twinkle_steps = 14;
-                        star_peak_white = 180 + (rand() % 75);
-                    }
-                } else {
-                    int progress = 7 - abs(star_twinkle_steps - 7);
-                    int factor = (progress * 255) / 7;
-                    int tr = 12 + ((star_peak_white - 12) * factor) / 255;
-                    int tg = 20 + ((star_peak_white - 20) * factor) / 255;
-                    int tb = 55 + ((255 - 55) * factor) / 255;
-                    kbe_write_frame(fd_col, tr, tg, tb);
-                    kbe_sleep_ms(25);
-                    star_twinkle_steps--;
-                }
-                break;
-            }
-            case 13: { /* temp */
-                if ((step % 20) == 0 || cur_temp_val < 0) {
-                    int t = read_cpu_temp();
-                    if (t > 0) cur_temp_val = t;
-                    else if (cur_temp_val < 0) cur_temp_val = 50;
-
-                    if (cur_temp_val <= 40) {
-                        tgt_r = 0; tgt_g = 220; tgt_b = 255;
-                    } else if (cur_temp_val <= 60) {
-                        int ratio = ((cur_temp_val - 40) * 255) / 20;
-                        tgt_r = 0;
-                        tgt_g = 220 + ((255 - 220) * ratio) / 255;
-                        tgt_b = 255 - ((255 - 40) * ratio) / 255;
-                    } else if (cur_temp_val <= 75) {
-                        int ratio = ((cur_temp_val - 60) * 255) / 15;
-                        tgt_r = (255 * ratio) / 255;
-                        tgt_g = 255 - ((255 - 220) * ratio) / 255;
-                        tgt_b = 40 - (40 * ratio) / 255;
-                    } else if (cur_temp_val <= 85) {
-                        int ratio = ((cur_temp_val - 75) * 255) / 10;
-                        tgt_r = 255;
-                        tgt_g = 220 - ((220 - 40) * ratio) / 255;
-                        tgt_b = 0;
-                    } else {
-                        tgt_r = 255; tgt_g = 0; tgt_b = 0;
-                    }
-                }
-
-                smooth_r = (smooth_r * 8 + tgt_r * 2) / 10;
-                smooth_g = (smooth_g * 8 + tgt_g * 2) / 10;
-                smooth_b = (smooth_b * 8 + tgt_b * 2) / 10;
-
-                int out_r = smooth_r;
-                int out_g = smooth_g;
-                int out_b = smooth_b;
-
-                if (cur_temp_val >= 90) {
-                    int pulse_bri = (int)kbe_breathe_lut[step % 128];
-                    out_r = (out_r * (128 + pulse_bri / 2)) / 255;
-                }
-
-                kbe_write_frame(fd_col, out_r, out_g, out_b);
-                kbe_sleep_ms(30);
-                step++;
-                break;
-            }
-            case 14: { /* pulse-cycle: same heartbeat wave, hue +55 per beat */
-                static const uint8_t pulse_wave[] = {
-                    30, 90, 180, 255, 230, 160, 100, 60, 40,
-                    90, 170, 230, 190, 130, 80, 40, 20, 10, 0
-                };
-                int pr, pg, pb;
-                kbe_hue_to_rgb(pulse_hue, 255, &pr, &pg, &pb);
-                pulse_hue = (pulse_hue + 55) % 360;
-                for (size_t i = 0; i < sizeof(pulse_wave) && g_kbe_running; i++) {
-                    int val = pulse_wave[i];
-                    kbe_write_frame(fd_col, (pr * val) / 255, (pg * val) / 255, (pb * val) / 255);
-                    kbe_sleep_ms(22);
-                }
-                kbe_sleep_ms(700);
-                break;
-            }
-            default:
-                g_kbe_running = 0;
-                break;
-        }
+        fx->step_fn(ctx.fd_col, base_r, base_g, base_b, &step);
     }
 
-    kbe_write_bri(fd_bri, orig_bri);
-    kbe_write_frame(fd_col, orig_r, orig_g, orig_b);
-
-    if (fd_col >= 0) close(fd_col);
-    if (fd_bri >= 0) close(fd_bri);
-
-    unlink(KBE_STATE_PATH);
-    flock(lock_fd, LOCK_UN);
-    close(lock_fd);
-    unlink(KBE_LOCK_PATH);
+    kbe_worker_end(&ctx, 1);
+    exit(0);
 }
 
 static int kbe_start(const char *effect)
@@ -2951,10 +3080,9 @@ static int kbe_start(const char *effect)
         return 1;
     }
 
-    pid_t old_pid = 0;
-    char old_effect[32] = {0};
-    int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
-    int had_running = kbe_is_running(&old_pid, old_effect, sizeof(old_effect), &orig_r, &orig_g, &orig_b, &orig_bri);
+    struct kbe_state ks;
+    int had_running = kbe_is_running(&ks);
+    int orig_r = ks.orig_r, orig_g = ks.orig_g, orig_b = ks.orig_b, orig_bri = ks.orig_bri;
 
     if (had_running) {
         kbe_stop(1);
@@ -2967,7 +3095,7 @@ static int kbe_start(const char *effect)
         }
     }
 
-    pid_t pid = fork();
+    pid_t pid = daemonize();
     if (pid < 0) {
         fprintf(stderr, "Error: Failed to spawn background effect daemon\n");
         return 1;
@@ -2978,15 +3106,6 @@ static int kbe_start(const char *effect)
         return 0;
     }
 
-    setsid();
-    int null_fd = open("/dev/null", O_RDWR);
-    if (null_fd >= 0) {
-        dup2(null_fd, STDIN_FILENO);
-        dup2(null_fd, STDOUT_FILENO);
-        dup2(null_fd, STDERR_FILENO);
-        if (null_fd > 2) close(null_fd);
-    }
-
     kbe_daemon_worker(effect, orig_r, orig_g, orig_b, orig_bri);
     exit(0);
 }
@@ -2995,26 +3114,11 @@ static void kbe_profile_pulse_worker(int pr, int pg, int pb,
                                      const char *resume_effect,
                                      int orig_r, int orig_g, int orig_b, int orig_bri)
 {
-    int lock_fd = kbe_acquire_worker_lock();
-    if (lock_fd < 0) exit(1);
-
-    FILE *fp = fopen(KBE_STATE_PATH, "w");
-    if (!fp) {
-        flock(lock_fd, LOCK_UN);
-        close(lock_fd);
+    struct kbe_worker_ctx ctx;
+    if (kbe_worker_begin(&ctx, "pulse-profile", orig_r, orig_g, orig_b, orig_bri, resume_effect) < 0)
         exit(1);
-    }
-    chmod(KBE_STATE_PATH, 0600); /* PID + saved state: root-only */
-    fprintf(fp, "%d %ld\npulse-profile\n%d %d %d %d\n%s\n",
-            (int)getpid(), proc_starttime(getpid()),
-            orig_r, orig_g, orig_b, orig_bri,
-            (resume_effect && *resume_effect) ? resume_effect : "none");
-    fclose(fp);
 
-    int fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
-    int fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
-
-    kbe_write_bri(fd_bri, 255);
+    kbe_write_bri(ctx.fd_bri, 255);
 
     static const uint8_t oneshot_lut[] = {
         20, 60, 120, 180, 235, 255, 255, 230, 190, 140, 90, 50, 25, 10, 0
@@ -3022,36 +3126,17 @@ static void kbe_profile_pulse_worker(int pr, int pg, int pb,
 
     for (size_t i = 0; i < sizeof(oneshot_lut) && g_kbe_running; i++) {
         int val = oneshot_lut[i];
-        int r = (pr * val) / 255;
-        int g = (pg * val) / 255;
-        int b = (pb * val) / 255;
-        kbe_write_frame(fd_col, r, g, b);
+        kbe_write_frame(ctx.fd_col, (pr * val) / 255, (pg * val) / 255, (pb * val) / 255);
         kbe_sleep_ms(25);
     }
 
-    if (fd_col >= 0) close(fd_col);
-    if (fd_bri >= 0) close(fd_bri);
-
-    if (!g_kbe_running) {
-        kbd_restore_state(orig_r, orig_g, orig_b, orig_bri);
-        unlink(KBE_STATE_PATH);
-        flock(lock_fd, LOCK_UN);
-        close(lock_fd);
-        unlink(KBE_LOCK_PATH);
+    if (!g_kbe_running || !resume_effect || !*resume_effect || strcmp(resume_effect, "none") == 0) {
+        kbe_worker_end(&ctx, 1);
         exit(0);
     }
 
-    flock(lock_fd, LOCK_UN);
-    close(lock_fd);
-
-    if (resume_effect && *resume_effect && strcmp(resume_effect, "none") != 0) {
-        kbe_daemon_worker(resume_effect, orig_r, orig_g, orig_b, orig_bri);
-        exit(0);
-    }
-
-    kbd_restore_state(orig_r, orig_g, orig_b, orig_bri);
-    unlink(KBE_STATE_PATH);
-    unlink(KBE_LOCK_PATH);
+    kbe_worker_end(&ctx, 0);
+    kbe_daemon_worker(resume_effect, orig_r, orig_g, orig_b, orig_bri);
     exit(0);
 }
 
@@ -3066,31 +3151,23 @@ static void kbe_profile_pulse(const char *profile)
 
     int pr = p->pulse_r, pg = p->pulse_g, pb = p->pulse_b;
 
-    pid_t old_pid = 0;
-    char running_effect[32] = {0};
+    struct kbe_state ks;
+    int had_running = kbe_is_running(&ks);
+    int orig_r = ks.orig_r, orig_g = ks.orig_g, orig_b = ks.orig_b, orig_bri = ks.orig_bri;
     char resume_effect[32] = {0};
-    int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
 
-    long old_st = -1;
-    int had_running = kbe_read_state_ex(&old_pid, &old_st, running_effect, sizeof(running_effect),
-                                        &orig_r, &orig_g, &orig_b, &orig_bri,
-                                        resume_effect, sizeof(resume_effect));
-
-    /* Same PID-reuse guard as kbe_is_running: only signal the previous
-     * daemon if its recorded start time still matches this PID. */
-    if (had_running == 0 && (kill(old_pid, 0) == 0 || errno == EPERM) &&
-        (old_st < 0 || proc_starttime(old_pid) == old_st)) {
-        if (strcmp(running_effect, "pulse-profile") != 0) {
-            strncpy(resume_effect, running_effect, sizeof(resume_effect) - 1);
-            resume_effect[sizeof(resume_effect) - 1] = '\0';
+    if (had_running) {
+        if (strcmp(ks.effect, "pulse-profile") != 0) {
+            strncpy(resume_effect, ks.effect, sizeof(resume_effect) - 1);
+        } else if (ks.resume_effect[0]) {
+            strncpy(resume_effect, ks.resume_effect, sizeof(resume_effect) - 1);
         }
-        kill(old_pid, SIGTERM);
+        kill(ks.pid, SIGTERM);
         for (int i = 0; i < 20; i++) {
             usleep(10000);
-            if (kill(old_pid, 0) != 0 && errno == ESRCH) break;
+            if (kill(ks.pid, 0) != 0 && errno == ESRCH) break;
         }
     } else {
-        resume_effect[0] = '\0';
         if (kbd_get_color(&orig_r, &orig_g, &orig_b) < 0) {
             orig_r = 255; orig_g = 255; orig_b = 255;
         }
@@ -3099,18 +3176,8 @@ static void kbe_profile_pulse(const char *profile)
         }
     }
 
-    pid_t pid = fork();
-    if (pid < 0) return;
-    if (pid > 0) return;
-
-    setsid();
-    int null_fd = open("/dev/null", O_RDWR);
-    if (null_fd >= 0) {
-        dup2(null_fd, STDIN_FILENO);
-        dup2(null_fd, STDOUT_FILENO);
-        dup2(null_fd, STDERR_FILENO);
-        if (null_fd > 2) close(null_fd);
-    }
+    pid_t pid = daemonize();
+    if (pid != 0) return;
 
     kbe_profile_pulse_worker(pr, pg, pb, resume_effect, orig_r, orig_g, orig_b, orig_bri);
     exit(0);
@@ -3131,6 +3198,12 @@ static int ensure_ec_sys(void)
     /* modprobe needs root; if we're not root, just return failure */
     if (geteuid() != 0)
         return -1;
+
+    static int attempted = 0;
+    if (attempted)
+        return -1;
+    attempted = 1;
+
     char *const args[] = { "modprobe", "ec_sys", NULL };
     if (run_cmd_silent("modprobe", args) != 0)
         return -1;
@@ -3329,6 +3402,8 @@ static void cpumonitor_sigint(int sig) { (void)sig; cpumonitor_running = 0; }
 
 static int cpumonitor(void)
 {
+    pin_to_e_cores();
+
     /* Count CPUs */
     int max_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
     if (max_cpus <= 0) max_cpus = 64;
@@ -3405,26 +3480,7 @@ static int cpumonitor(void)
 
         /* Query dynamic max frequencies for P-cores and E-cores */
         int p_max_mhz = 0, e_max_mhz = 0;
-        int check_cpus = (cpu_count > 0) ? cpu_count : max_cpus;
-        for (int i = 0; i < check_cpus; i++) {
-            char path[128];
-            snprintf(path, sizeof(path),
-                     "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq", i);
-            long khz = read_sysfs_long(path, -1);
-            if (khz <= 0) {
-                snprintf(path, sizeof(path),
-                         "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
-                khz = read_sysfs_long(path, -1);
-            }
-            if (khz > 0) {
-                int mhz = (int)(khz / 1000);
-                if (!is_e_core[i]) {
-                    if (mhz > p_max_mhz) p_max_mhz = mhz;
-                } else {
-                    if (mhz > e_max_mhz) e_max_mhz = mhz;
-                }
-            }
-        }
+        query_cpu_max_freqs(&p_max_mhz, &e_max_mhz);
 
         /* Clear screen and print */
         printf("\033[H\033[J");
@@ -3507,12 +3563,9 @@ static int cpumonitor(void)
         printf("\n%s--- [ FANS ] ---%s\n", C_YLW, C_RST);
         if (has_fans) {
             printf("CPU Fan: %s%3d%% duty  %4d RPM%s\n", C_CYN, cpu_pct, cpu_rpm, C_RST);
-            if (gpu_pct == 0 && gpu_rpm == 0) {
-                printf("GPU Fan: %s%3d%% duty  %4d RPM%s  %s(GPU in D3cold state)%s\n",
-                       C_DIM, gpu_pct, gpu_rpm, C_RST, C_DIM, C_RST);
-            } else {
-                printf("GPU Fan: %s%3d%% duty  %4d RPM%s\n", C_CYN, gpu_pct, gpu_rpm, C_RST);
-            }
+            char gfan[128];
+            format_gpu_fan(gfan, sizeof(gfan), gpu_pct, gpu_rpm);
+            printf("GPU Fan: %s\n", gfan);
         } else {
             printf("Fan telemetry: %sN/A (ec_sys not loaded)%s\n", C_DIM, C_RST);
         }
@@ -3554,134 +3607,12 @@ static int drivers_loaded(void)
     return access("/dev/tuxedo_io", F_OK) == 0;
 }
 
-static void print_usage(const char *prog)
+static int not_installed_systemwide(void)
 {
-    const char *base = strrchr(prog, '/');
-    prog = base ? base + 1 : prog;
-
-    /* ASCII art generated via:
-     * curl "https://asciified.thelicato.io/api/v2/ascii?text=COLORCONTROL&font=slant" */
-    printf(
-    "\n"
-    "   %s____ ___  _     ___  ____  %s %s____ ___  _   _ _____ ____   ___  _     %s\n"
-    "  %s/ ___/ _ \\| |   / _ \\|  _ \\ %s%s/ ___/ _ \\| \\ | |_   _|  _ \\ / _ \\| |    %s\n"
-    " %s| |  | | | | |  | | | | |_) |%s%s |  | | | |  \\| | | | | |_) | | | | |    %s\n"
-    " %s| |__| |_| | |__| |_| |  _ <%s%s| |__| |_| | |\\  | | | |  _ <| |_| | |___ %s\n"
-    "  %s\\____\\___/|_____\\___/|_| \\_\\%s%s\\____\\___/|_| \\_| |_| |_| \\_\\___/|_____|%s\n"
-    "\n",
-    C_GRN, C_RST, C_RED, C_RST,
-    C_GRN, C_RST, C_RED, C_RST,
-    C_GRN, C_RST, C_RED, C_RST,
-    C_GRN, C_RST, C_RED, C_RST,
-    C_GRN, C_RST, C_RED, C_RST);
-
-    printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
-
-    /* ── Profiles ──────────────────────────────────────────────────────── */
-    printf("  %sPROFILES%s\n", C_YLW, C_RST);
-    printf("    %sset%s   <profile> [--nosafe] Apply preset %s(EC defaults + table values below)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %ssetR%s  <profile> [--nosafe] Apply preset %s(EC defaults + preconfigured CPU TDP override)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("      %s(max, cpuperf, balanced set fans to auto; bypass with --nosafe)%s\n\n", C_DIM, C_RST);
-    printf("      %sProfile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP override (setR only)%s\n", C_BLD, C_RST);
-    printf("      %s─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────%s\n", C_DIM, C_RST);
-    printf("      %smax%s         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W\n", C_RED, C_RST);
-    printf("      %scpuperf%s     ON     performance  performance        45/115W + GPU 70W               %s(no RAPL change)%s\n", C_YLW, C_RST, C_DIM, C_RST);
-    printf("      %sbalanced%s    ON     powersave    balance_performance 45/115W + GPU 70W              PL1 35 / PL2 40W\n", C_GRN, C_RST);
-    printf("      %spowersave%s   OFF    powersave    balance_power      15/30W  + GPU 70W               %s(no RAPL change)%s\n", C_CYN_BLD, C_RST, C_DIM, C_RST);
-    printf("      %seco%s         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W\n\n", C_DIM, C_RST);
-
-    /* ── Keyboard ───────────────────────────────────────────────────────── */
-    printf("  %sKEYBOARD%s\n", C_MAG, C_RST);
-    printf("    %skbc%s   <R G B | preset>   Set keyboard color %s(no arg: list presets)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %skbb%s   <pct>              Set brightness %s(0-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %skbe%s   [effect|stop]      Keyboard backlight effects %s(no arg: shows effect preset list & status)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfn%s    [lock|unlock]      Toggle/set Fn Lock %s(Fn key behavior)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── Fan ────────────────────────────────────────────────────────────── */
-    printf("  %sFAN%s\n", C_YLW, C_RST);
-    printf("    %sfan%s   auto|max           Set both fans %s(EC-controlled / full)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   silent [--nosafe]  Quiet mode %s(forces eco profile first; bypass with --nosafe)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   <pct> --nosafe     Set both fans to duty %s(25-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   cpu|gpu <pct> --nosafe Set individual fan duty %s(25-100%%)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sfan%s   cpu|gpu auto       Restore individual fan to auto %s(independent)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── GPU MUX ───────────────────────────────────────────────────────── */
-    printf("  %sGPU MUX%s %s(UEFI NVRAM, reboot required to apply)%s\n", C_MAG, C_RST, C_DIM, C_RST);
-    printf("    %smux%s                      Show current MUX mode %s(MSHybrid / dGPU)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %smux%s    switch            Toggle to the other mode %s(reboot to apply)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── Privacy ────────────────────────────────────────────────────────── */
-    printf("  %sPRIVACY%s\n", C_CYN, C_RST);
-    printf("    %swebcam%s [on|off]          Toggle/set webcam\n",      C_BLD, C_RST);
-    printf("    %smic%s    [on|off]          Toggle/set internal microphone %s(laptop mic only, needs alsa/amixer)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── Battery ────────────────────────────────────────────────────────── */
-    printf("  %sBATTERY%s\n", C_GRN, C_RST);
-    printf("    %sbat%s                      Show current thresholds\n",       C_BLD, C_RST);
-    printf("    %sbat%s    <start> <stop>    Set charge thresholds %s(custom)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sbat max%s                  standard mode %s(charge to 100%%, resume at 95%%)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── Info ───────────────────────────────────────────────────────────── */
-    printf("  %sINFO%s\n", C_CYN_BLD, C_RST);
-    printf("    %sstatus%s                   Show all current settings\n",  C_BLD, C_RST);
-    printf("    %smonitor%s                  Live CPU/power/fan monitor\n\n", C_BLD, C_RST);
-
-    /* ── NVIDIA ─────────────────────────────────────────────────────────── */
-    printf("  %sNVIDIA%s\n", C_RED, C_RST);
-#ifdef CCTL_NVIDIA
-    printf("    %snvidia%s power    [on|off]           Hardware D0/D3cold control\n", C_BLD, C_RST);
-    printf("    %snvidia%s <on|off>                    Persistent toggle %s(+initramfs rebuild)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s load                        Session load %s(compute modules)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s loadgame                    Session load %s(all modules incl. drm)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s unload                      Session unload + power off\n", C_BLD, C_RST);
-    printf("    %snvidia%s status                      Show GPU status & telemetry\n", C_BLD, C_RST);
-#else
-    printf("    %snvidia%s power    [on|off]           Hardware D0/D3cold control %s(no arg: show state)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-#endif
-    printf("    %snvidia%s clock    [min] <max>|reset  Lock/unlock GPU clocks %s(no arg: show max clock)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %snvidia%s memclock [min] <max>|reset  Lock/unlock memory clocks %s(no arg: show max clock)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── Display ────────────────────────────────────────────────────────── */
-    if (has_display_support()) {
-        printf("  %sDISPLAY%s %s(only X11 session is supported, needs xrandr)%s\n", C_BLU, C_RST, C_DIM, C_RST);
-        printf("    %srr%s    [rate]             List/set refresh rate %s(1=high, 2=low)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-        printf("    %sscale%s <factor|WxH|off>   GPU-side scaling %s(no arg: explain in detail)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-    }
-
-    /* ── Profile Individual Overrides ───────────────────────────────────── */
-    printf("  %sPROFILE INDIVIDUAL OVERRIDES%s\n", C_YLW, C_RST);
-    printf("    %sturbo%s  <on|off> [--nosafe] Turbo boost override %s(on sets fans to auto; bypass with --nosafe)%s\n",  C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sgov%s    <governor>        CPU governor %s(powersave, performance)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %sepp%s    <value>           EPP %s(performance, balance_performance, balance_power, power)%s\n", C_BLD, C_RST, C_DIM, C_RST);
-    printf("    %srapl%s   <pl1> <pl2>       RAPL power limits %s(watts, use 'skip' to omit)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* ── System ─────────────────────────────────────────────────────────── */
-    printf("  %sSYSTEM%s\n", C_CYN_BLD, C_RST);
-    if (!is_installed_systemwide())
-        printf("    %sinstall%s [--force]        Install/upgrade system-wide + passwordless sudo\n", C_BLD, C_RST);
-    printf("    %sdrivers-manage%s          Install, reinstall, or uninstall kernel drivers %s(auto-fetch or offline; sha256-verified)%s\n\n", C_BLD, C_RST, C_DIM, C_RST);
-
-    /* Driver hint — only shown when the TUXEDO/Clevo stack is not loaded */
-    if (!drivers_loaded()) {
-        printf("  %sDRIVERS NOT LOADED%s — some features need them:\n", C_YLW, C_RST);
-        printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    • %sset/setR%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    Fix: run %scctl drivers-manage%s\n\n",
-               C_BLD, C_RST);
-    }
-
-    /* Install hint — only shown when not installed system-wide */
-    if (!is_installed_systemwide()) {
-        printf("  %sNOT INSTALLED%s — run %ssudo ./%s install%s to set up:\n",
-               C_YLW, C_RST, C_BLD, prog, C_RST);
-        printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
-        printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
-        printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
-    }
-
-    printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
+    return !is_installed_systemwide();
 }
+
+static void print_usage(const char *prog);
 
 static int nvidia_is_loaded(void)
 {
@@ -3728,6 +3659,13 @@ static int nvidia_is_loaded(void)
 
 static int nvidia_is_blacklisted(void)
 {
+    /* If a previous run was interrupted during nvidia_load, repair the blacklist */
+    if (access("/etc/modprobe.d/blacklist-nvidia.conf", F_OK) != 0 &&
+        access("/etc/modprobe.d/blacklist-nvidia.conf.bak", F_OK) == 0) {
+        rename("/etc/modprobe.d/blacklist-nvidia.conf.bak",
+               "/etc/modprobe.d/blacklist-nvidia.conf");
+    }
+
     if (access("/etc/modprobe.d/blacklist-nvidia.conf", F_OK) != 0)
         return 0;
     FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "r");
@@ -3747,15 +3685,12 @@ static int nvidia_is_blacklisted(void)
 static int nvidia_gpu_in_use(void)
 {
     if (!nvidia_is_loaded()) return 0;
-    FILE *fp = popen("nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null", "r");
-    if (!fp) return 0;
-    char line[128];
-    int in_use = 0;
-    if (fgets(line, sizeof(line), fp)) {
-        in_use = 1;
-    }
-    pclose(fp);
-    return in_use;
+    char line[128] = {0};
+    char *const args[] = { "nvidia-smi", "--query-compute-apps=pid",
+                           "--format=csv,noheader", NULL };
+    if (run(args, RUN_CAPTURE, line, sizeof(line)) != 0)
+        return 0;
+    return (line[0] != '\0');
 }
 
 /* Detect whether the NVIDIA GPU is driving a connected display (DRM active).
@@ -3804,6 +3739,13 @@ static int nvidia_power_show(void);
 static int nvidia_power_set(int on);
 
 #ifdef CCTL_NVIDIA
+
+/* Unload order = reverse of load; blacklist order = same as unload */
+static const char *const nvidia_modules[] = {
+    "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia"
+};
+#define NV_MODULE_COUNT (sizeof(nvidia_modules) / sizeof(nvidia_modules[0]))
+
 /* Check whether an initramfs image exists in /boot.
  * Returns 1 if found, 0 otherwise. */
 static int initramfs_present(void)
@@ -3923,6 +3865,45 @@ static int rebuild_initramfs(void)
     return -1;
 }
 
+/* Scan /proc/modules and populate loaded[NV_MODULE_COUNT] with 1 for each
+ * nvidia module that is currently loaded. */
+static void nvidia_scan_loaded(int loaded[])
+{
+    memset(loaded, 0, NV_MODULE_COUNT * sizeof(int));
+    FILE *fp = fopen("/proc/modules", "r");
+    if (!fp) return;
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        char name[64];
+        if (sscanf(line, "%63s", name) == 1) {
+            for (size_t i = 0; i < NV_MODULE_COUNT; i++) {
+                if (strcmp(name, nvidia_modules[i]) == 0) {
+                    loaded[i] = 1;
+                    break;
+                }
+            }
+        }
+    }
+    fclose(fp);
+}
+
+/* Write blacklist configuration file for all NVIDIA modules */
+static int nvidia_write_blacklist(void)
+{
+    FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "w");
+    if (!fp) {
+        perror("fopen blacklist-nvidia.conf");
+        return -1;
+    }
+    fprintf(fp, "# Disabled by cctl nvidia off\n");
+    for (size_t i = 0; i < NV_MODULE_COUNT; i++) {
+        fprintf(fp, "blacklist %s\n", nvidia_modules[i]);
+        fprintf(fp, "alias %s off\n", nvidia_modules[i]);
+    }
+    fclose(fp);
+    return 0;
+}
+
 static int try_unload_nvidia(void)
 {
     printf("  Attempting to unload NVIDIA modules...\n");
@@ -3933,35 +3914,17 @@ static int try_unload_nvidia(void)
         return -1;
     }
 
-    const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
-    int loaded[4] = {0};
-
-    /* Single scan of /proc/modules for all nvidia modules */
-    FILE *check = fopen("/proc/modules", "r");
-    if (check) {
-        char line[256];
-        while (fgets(line, sizeof(line), check)) {
-            char name[64];
-            if (sscanf(line, "%63s", name) == 1) {
-                for (size_t i = 0; i < 4; i++) {
-                    if (strcmp(name, modules[i]) == 0) {
-                        loaded[i] = 1;
-                        break;
-                    }
-                }
-            }
-        }
-        fclose(check);
-    }
+    int loaded[NV_MODULE_COUNT];
+    nvidia_scan_loaded(loaded);
 
     int failed = 0;
-    for (size_t i = 0; i < 4; i++) {
+    for (size_t i = 0; i < NV_MODULE_COUNT; i++) {
         if (loaded[i]) {
-            char *const args[] = { "modprobe", "-r", (char *)modules[i], NULL };
+            char *const args[] = { "modprobe", "-r", (char *)nvidia_modules[i], NULL };
             if (run_cmd_silent("modprobe", args) == 0) {
-                printf("  Unloaded %s\n", modules[i]);
+                printf("  Unloaded %s\n", nvidia_modules[i]);
             } else {
-                fprintf(stderr, "  Failed to unload %s\n", modules[i]);
+                fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
                 failed = 1;
             }
         }
@@ -4041,18 +4004,8 @@ static int nvidia_set_off(void)
         return -1;
 
     printf("  Writing blacklist to /etc/modprobe.d/blacklist-nvidia.conf...\n");
-    FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "w");
-    if (!fp) {
-        perror("fopen blacklist-nvidia.conf");
+    if (nvidia_write_blacklist() != 0)
         return -1;
-    }
-    fprintf(fp, "# Disabled by cctl nvidia off\n");
-    const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
-    for (size_t i = 0; i < 4; i++) {
-        fprintf(fp, "blacklist %s\n", modules[i]);
-        fprintf(fp, "alias %s off\n", modules[i]);
-    }
-    fclose(fp);
 
     if (initrd_ready == 1) {
         if (rebuild_initramfs() < 0) {
@@ -4077,27 +4030,19 @@ static int nvidia_set_on(void)
             printf("  NVIDIA is already enabled and modules are loaded.\n");
         } else {
             printf("  NVIDIA is enabled but modules aren't loaded.\n");
-            int confirm = 0;
-            if (!confirm) {
-                printf("  Attempt to load modules now? [y/N] ");
-                char reply[16];
-                if (fgets(reply, sizeof(reply), stdin) && (reply[0] == 'y' || reply[0] == 'Y')) {
-                    confirm = 1;
-                }
-            }
-            if (confirm) try_load_nvidia();
+            printf("  Attempt to load modules now? [y/N] ");
+            char reply[16];
+            if (fgets(reply, sizeof(reply), stdin) && (reply[0] == 'y' || reply[0] == 'Y'))
+                try_load_nvidia();
         }
         return 0;
     }
 
-    int confirm = 0;
-    if (!confirm) {
-        printf("  Unblacklist NVIDIA and rebuild initramfs? [y/N] ");
-        char reply[16];
-        if (!fgets(reply, sizeof(reply), stdin) || (reply[0] != 'y' && reply[0] != 'Y')) {
-            printf("  Aborted.\n");
-            return 0;
-        }
+    printf("  Unblacklist NVIDIA and rebuild initramfs? [y/N] ");
+    char reply[16];
+    if (!fgets(reply, sizeof(reply), stdin) || (reply[0] != 'y' && reply[0] != 'Y')) {
+        printf("  Aborted.\n");
+        return 0;
     }
 
     /* Pre-check: can initramfs be rebuilt if needed? */
@@ -4111,16 +4056,7 @@ static int nvidia_set_on(void)
     if (initrd_ready == 1) {
         if (rebuild_initramfs() < 0) {
             fprintf(stderr, "Error: Initramfs rebuild failed. Restoring blacklist config.\n");
-            FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "w");
-            if (fp) {
-                fprintf(fp, "# Disabled by cctl nvidia off\n");
-                const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
-                for (size_t i = 0; i < 4; i++) {
-                    fprintf(fp, "blacklist %s\n", modules[i]);
-                    fprintf(fp, "alias %s off\n", modules[i]);
-                }
-                fclose(fp);
-            }
+            nvidia_write_blacklist();
             return -1;
         }
     }
@@ -4160,24 +4096,29 @@ static void nvidia_show_status(void)
             run_quiet("nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu,persistence_mode --format=csv,noheader,nounits 2>/dev/null | "
                    "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\\n  Persistence:   \" $7}'");
             
-            FILE *p_fp = popen("nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null", "r");
-            if (p_fp) {
-                char line[256];
-                int has_procs = 0;
-                while (fgets(line, sizeof(line), p_fp)) {
-                    if (!has_procs) {
-                        printf("\n  GPU Processes:\n");
-                        has_procs = 1;
-                    }
+            char procs_buf[1024] = {0};
+            char *const p_args[] = { "nvidia-smi", "--query-compute-apps=pid,name,used_memory",
+                                     "--format=csv,noheader", NULL };
+            int has_procs = 0;
+            if (run(p_args, RUN_CAPTURE, procs_buf, sizeof(procs_buf)) == 0 && procs_buf[0]) {
+                char *line = procs_buf;
+                while (*line) {
+                    char *next = strchr(line, '\n');
+                    if (next) *next = '\0';
                     char pid[32] = {0}, name[128] = {0}, mem[64] = {0};
                     if (sscanf(line, "%31[^,], %127[^,], %63[^\n]", pid, name, mem) >= 2) {
+                        if (!has_procs) {
+                            printf("\n  GPU Processes:\n");
+                            has_procs = 1;
+                        }
                         printf("    PID %-8s %-30s %s\n", pid, name, mem);
                     }
+                    if (!next) break;
+                    line = next + 1;
                 }
-                pclose(p_fp);
-                if (!has_procs) {
-                    printf("  Processes:     none\n");
-                }
+            }
+            if (!has_procs) {
+                printf("  Processes:     none\n");
             }
         }
     }
@@ -4207,8 +4148,14 @@ static int nvidia_load(int load_game)
         }
     }
 
-    /* Temporarily move blacklist aside so modprobe works */
+    /* Temporarily move blacklist aside so modprobe works.
+     * Block signals while the file is swapped so an interrupt or crash doesn't
+     * leave the blacklist missing. */
     printf("  Loading NVIDIA modules (session-only)...\n");
+    sigset_t block_mask, orig_mask;
+    sigfillset(&block_mask);
+    sigprocmask(SIG_BLOCK, &block_mask, &orig_mask);
+
     rename("/etc/modprobe.d/blacklist-nvidia.conf",
            "/etc/modprobe.d/blacklist-nvidia.conf.bak");
 
@@ -4228,6 +4175,8 @@ static int nvidia_load(int load_game)
     /* Restore blacklist immediately */
     rename("/etc/modprobe.d/blacklist-nvidia.conf.bak",
            "/etc/modprobe.d/blacklist-nvidia.conf");
+
+    sigprocmask(SIG_SETMASK, &orig_mask, NULL);
 
     if (ret == 0) {
         if (load_game) {
@@ -4265,37 +4214,19 @@ static int nvidia_unload(void)
     }
 
     printf("  Unloading NVIDIA modules...\n");
-    const char *modules[] = { "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia" };
-    int loaded[4] = {0};
-
-    /* Single scan of /proc/modules for all nvidia modules */
-    FILE *check = fopen("/proc/modules", "r");
-    if (check) {
-        char line[256];
-        while (fgets(line, sizeof(line), check)) {
-            char name[64];
-            if (sscanf(line, "%63s", name) == 1) {
-                for (size_t i = 0; i < 4; i++) {
-                    if (strcmp(name, modules[i]) == 0) {
-                        loaded[i] = 1;
-                        break;
-                    }
-                }
-            }
-        }
-        fclose(check);
-    }
+    int loaded[NV_MODULE_COUNT];
+    nvidia_scan_loaded(loaded);
 
     int failed = 0;
-    for (size_t i = 0; i < 4; i++) {
+    for (size_t i = 0; i < NV_MODULE_COUNT; i++) {
         if (!loaded[i]) continue;
 
         /* Use rmmod directly instead of modprobe -r (avoids blacklist alias interference) */
-        char *const args[] = { "rmmod", (char *)modules[i], NULL };
+        char *const args[] = { "rmmod", (char *)nvidia_modules[i], NULL };
         if (run_cmd("rmmod", args) == 0) {
-            printf("  Unloaded %s\n", modules[i]);
+            printf("  Unloaded %s\n", nvidia_modules[i]);
         } else {
-            fprintf(stderr, "  Failed to unload %s\n", modules[i]);
+            fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
             failed = 1;
         }
     }
@@ -4392,16 +4323,12 @@ static int nvidia_pm_set(int on)
 static int nvidia_pm_is_enabled(void)
 {
     if (!nvidia_is_loaded()) return 0;
-    FILE *fp = popen("nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null", "r");
-    if (!fp) return 0;
-    char line[64];
-    int enabled = 0;
-    if (fgets(line, sizeof(line), fp)) {
-        if (strncasecmp(line, "Enabled", 7) == 0)
-            enabled = 1;
-    }
-    pclose(fp);
-    return enabled;
+    char line[64] = {0};
+    char *const args[] = { "nvidia-smi", "--query-gpu=persistence_mode",
+                           "--format=csv,noheader", NULL };
+    if (run(args, RUN_CAPTURE, line, sizeof(line)) != 0)
+        return 0;
+    return (strncasecmp(line, "Enabled", 7) == 0);
 }
 
 static int nvidia_power_set(int on)
@@ -4455,11 +4382,6 @@ static int nvidia_clock_reset_flag(const char *flag)
     return run_cmd("nvidia-smi", args);
 }
 
-#define nvidia_clock_set(min, max)    nvidia_clock_apply("-lgc", min, max)
-#define nvidia_clock_reset()          nvidia_clock_reset_flag("-rgc")
-#define nvidia_memclock_set(min, max) nvidia_clock_apply("-lmc", min, max)
-#define nvidia_memclock_reset()       nvidia_clock_reset_flag("-rmc")
-
 struct nvidia_clock_info {
     int cur_graphics;
     int cur_memory;
@@ -4483,48 +4405,56 @@ static int nvidia_query_clocks(struct nvidia_clock_info *ci)
     ci->max_sm = -1;
     ci->max_video = -1;
 
-    FILE *fp = popen("nvidia-smi -q -d CLOCK 2>/dev/null", "r");
-    if (!fp) return -1;
+    char buf[4096] = {0};
+    char *const args[] = { "nvidia-smi", "-q", "-d", "CLOCK", NULL };
+    if (run(args, RUN_CAPTURE, buf, sizeof(buf)) != 0)
+        return -1;
 
-    char line[256];
+    char *line = buf;
     int section = 0; /* 0: other, 1: Clocks, 2: Max Clocks */
 
-    while (fgets(line, sizeof(line), fp)) {
+    while (*line) {
+        char *next = strchr(line, '\n');
+        if (next) *next = '\0';
+
         if (strncmp(line, "    ", 4) == 0 && line[4] != ' ' && line[4] != '\t') {
             char *p = line;
             while (*p == ' ' || *p == '\t') p++;
-            if (strncmp(p, "Clocks", 6) == 0 && (p[6] == '\n' || p[6] == '\r' || p[6] == ' ' || p[6] == '\0'))
+            if (strncmp(p, "Clocks", 6) == 0 && (p[6] == '\0' || p[6] == ' ' || p[6] == '\r'))
                 section = 1;
-            else if (strncmp(p, "Max Clocks", 10) == 0 && (p[10] == '\n' || p[10] == '\r' || p[10] == ' ' || p[10] == '\0'))
+            else if (strncmp(p, "Max Clocks", 10) == 0 && (p[10] == '\0' || p[10] == ' ' || p[10] == '\r'))
                 section = 2;
             else
                 section = 0;
+            if (!next) break;
+            line = next + 1;
             continue;
         }
 
         if (section == 1 || section == 2) {
             char *colon = strchr(line, ':');
-            if (!colon) continue;
-            int val = 0;
-            if (sscanf(colon + 1, " %d MHz", &val) != 1)
-                continue;
-
-            if (strstr(line, "Graphics")) {
-                if (section == 1) ci->cur_graphics = val;
-                else ci->max_graphics = val;
-            } else if (strstr(line, "Memory")) {
-                if (section == 1) ci->cur_memory = val;
-                else ci->max_memory = val;
-            } else if (strstr(line, "SM")) {
-                if (section == 1) ci->cur_sm = val;
-                else ci->max_sm = val;
-            } else if (strstr(line, "Video")) {
-                if (section == 1) ci->cur_video = val;
-                else ci->max_video = val;
+            if (colon) {
+                int val = 0;
+                if (sscanf(colon + 1, " %d MHz", &val) == 1) {
+                    if (strstr(line, "Graphics")) {
+                        if (section == 1) ci->cur_graphics = val;
+                        else ci->max_graphics = val;
+                    } else if (strstr(line, "Memory")) {
+                        if (section == 1) ci->cur_memory = val;
+                        else ci->max_memory = val;
+                    } else if (strstr(line, "SM")) {
+                        if (section == 1) ci->cur_sm = val;
+                        else ci->max_sm = val;
+                    } else if (strstr(line, "Video")) {
+                        if (section == 1) ci->cur_video = val;
+                        else ci->max_video = val;
+                    }
+                }
             }
         }
+        if (!next) break;
+        line = next + 1;
     }
-    pclose(fp);
 
     if (ci->max_graphics > 0 || ci->max_memory > 0)
         return 0;
@@ -4555,17 +4485,25 @@ static int nvidia_parse_clock_inputs(int argc, char **argv, int max_supported,
     if (argc == 4) {
         /* Single argument: either "<max>" or "<min>,<max>" */
         const char *arg = argv[3];
-        if (strchr(arg, ',')) {
-            char extra = 0;
-            if (sscanf(arg, "%d,%d%c", &min, &max, &extra) != 2) {
+        const char *comma = strchr(arg, ',');
+        if (comma) {
+            char s1[32], s2[32];
+            size_t len1 = (size_t)(comma - arg);
+            if (len1 >= sizeof(s1) || strlen(comma + 1) >= sizeof(s2)) {
+                fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max>)\n", arg);
+                return -1;
+            }
+            strncpy(s1, arg, len1);
+            s1[len1] = '\0';
+            snprintf(s2, sizeof(s2), "%s", comma + 1);
+            if (safe_atoi(s1, &min) < 0 || safe_atoi(s2, &max) < 0) {
                 fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max>)\n", arg);
                 fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                         cmd_name, cmd_name);
                 return -1;
             }
         } else {
-            char extra = 0;
-            if (sscanf(arg, "%d%c", &max, &extra) != 1) {
+            if (safe_atoi(arg, &max) < 0) {
                 fprintf(stderr, "Error: Invalid clock value '%s'\n", arg);
                 fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                         cmd_name, cmd_name);
@@ -4582,14 +4520,13 @@ static int nvidia_parse_clock_inputs(int argc, char **argv, int max_supported,
         if (slen > 0 && s_min[slen - 1] == ',')
             s_min[slen - 1] = '\0';
 
-        char extra1 = 0, extra2 = 0;
-        if (sscanf(s_min, "%d%c", &min, &extra1) != 1) {
+        if (safe_atoi(s_min, &min) < 0) {
             fprintf(stderr, "Error: Invalid minimum clock '%s'\n", argv[3]);
             fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                     cmd_name, cmd_name);
             return -1;
         }
-        if (sscanf(argv[4], "%d%c", &max, &extra2) != 1) {
+        if (safe_atoi(argv[4], &max) < 0) {
             fprintf(stderr, "Error: Invalid maximum clock '%s'\n", argv[4]);
             fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                     cmd_name, cmd_name);
@@ -4641,24 +4578,41 @@ static int nvidia_clock_display(const char *label, const char *subcmd, int max_v
     return 0;
 }
 
-static int nvidia_clock_show(void)
+struct nvidia_clk_target {
+    const char *name;      /* "clock" or "memclock" */
+    const char *desc;      /* "GPU Graphics Clock" or "GPU Memory Clock" */
+    const char *set_flag;  /* "-lgc" or "-lmc" */
+    const char *rst_flag;  /* "-rgc" or "-rmc" */
+    int def_val, ex_min, ex_max;
+};
+
+static const struct nvidia_clk_target nvidia_clk_targets[] = {
+    { "clock",    "GPU Graphics Clock", "-lgc", "-rgc", 1500, 210, 1500 },
+    { "memclock", "GPU Memory Clock",   "-lmc", "-rmc", 5000, 405, 5000 },
+};
+
+static const struct nvidia_clk_target *nvidia_find_clk_target(const char *name)
 {
-    struct nvidia_clock_info ci;
-    if (nvidia_query_clocks(&ci) != 0 || ci.max_graphics <= 0) {
-        fprintf(stderr, "Error: Unable to query GPU clocks via nvidia-smi\n");
-        return 1;
+    for (size_t i = 0; i < sizeof(nvidia_clk_targets) / sizeof(nvidia_clk_targets[0]); i++) {
+        if (strcmp(name, nvidia_clk_targets[i].name) == 0)
+            return &nvidia_clk_targets[i];
     }
-    return nvidia_clock_display("GPU Graphics Clock", "clock", ci.max_graphics, 1500, 210, 1500);
+    return NULL;
 }
 
-static int nvidia_memclock_show(void)
+static int nvidia_clock_show_target(const struct nvidia_clk_target *tgt)
 {
     struct nvidia_clock_info ci;
-    if (nvidia_query_clocks(&ci) != 0 || ci.max_memory <= 0) {
-        fprintf(stderr, "Error: Unable to query GPU memory clocks via nvidia-smi\n");
+    if (nvidia_query_clocks(&ci) != 0) {
+        fprintf(stderr, "Error: Unable to query %s via nvidia-smi\n", tgt->desc);
         return 1;
     }
-    return nvidia_clock_display("GPU Memory Clock", "memclock", ci.max_memory, 5000, 405, 5000);
+    int max_clk = (strcmp(tgt->name, "clock") == 0) ? ci.max_graphics : ci.max_memory;
+    if (max_clk <= 0) {
+        fprintf(stderr, "Error: Unable to query %s via nvidia-smi\n", tgt->desc);
+        return 1;
+    }
+    return nvidia_clock_display(tgt->desc, tgt->name, max_clk, tgt->def_val, tgt->ex_min, tgt->ex_max);
 }
 
 #ifdef CCTL_NVIDIA
@@ -4678,6 +4632,7 @@ static int cmd_nvidia(int argc, char **argv)
         return 0;
     }
     const char *action = argv[2];
+    const struct nvidia_clk_target *clk_tgt = nvidia_find_clk_target(action);
 
 #ifndef CCTL_NVIDIA
     /* Module/GPU-toggle commands exist only in the private build. In this
@@ -4703,11 +4658,8 @@ static int cmd_nvidia(int argc, char **argv)
     if (strcmp(action, "power") == 0 && argc < 4) {
         return nvidia_power_show();
     }
-    if (strcmp(action, "clock") == 0 && argc < 4) {
-        return nvidia_clock_show();
-    }
-    if (strcmp(action, "memclock") == 0 && argc < 4) {
-        return nvidia_memclock_show();
+    if (clk_tgt && argc < 4) {
+        return nvidia_clock_show_target(clk_tgt);
     }
 
     int clk_min = 0, clk_max = 0;
@@ -4720,32 +4672,20 @@ static int cmd_nvidia(int argc, char **argv)
             fprintf(stderr, "Usage: cctl nvidia power [on|off]\n");
             return 1;
         }
-    } else if (strcmp(action, "clock") == 0) {
+    } else if (clk_tgt) {
         if (strcmp(argv[3], "reset") == 0) {
             if (argc > 4) {
                 fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[4]);
-                fprintf(stderr, "Usage: cctl nvidia clock [min] <max>  |  cctl nvidia clock reset\n");
+                fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
+                        clk_tgt->name, clk_tgt->name);
                 return 1;
             }
             is_reset = 1;
         } else {
             struct nvidia_clock_info ci;
             nvidia_query_clocks(&ci);
-            if (nvidia_parse_clock_inputs(argc, argv, ci.max_graphics, "clock", &clk_min, &clk_max) != 0)
-                return 1;
-        }
-    } else if (strcmp(action, "memclock") == 0) {
-        if (strcmp(argv[3], "reset") == 0) {
-            if (argc > 4) {
-                fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[4]);
-                fprintf(stderr, "Usage: cctl nvidia memclock [min] <max>  |  cctl nvidia memclock reset\n");
-                return 1;
-            }
-            is_reset = 1;
-        } else {
-            struct nvidia_clock_info ci;
-            nvidia_query_clocks(&ci);
-            if (nvidia_parse_clock_inputs(argc, argv, ci.max_memory, "memclock", &clk_min, &clk_max) != 0)
+            int max_supported = (strcmp(clk_tgt->name, "clock") == 0) ? ci.max_graphics : ci.max_memory;
+            if (nvidia_parse_clock_inputs(argc, argv, max_supported, clk_tgt->name, &clk_min, &clk_max) != 0)
                 return 1;
         }
 #ifndef CCTL_NVIDIA
@@ -4757,9 +4697,7 @@ static int cmd_nvidia(int argc, char **argv)
     }
 
     /* All other actions need root */
-    if (geteuid() != 0) {
-        self_elevate(argc, argv);
-    }
+    require_root(argc, argv);
 
 #ifdef CCTL_NVIDIA
     if (strcmp(action, "off") == 0) {
@@ -4779,14 +4717,10 @@ static int cmd_nvidia(int argc, char **argv)
             return nvidia_power_set(1);
         if (strcmp(argv[3], "off") == 0)
             return nvidia_power_set(0);
-    } else if (strcmp(action, "clock") == 0) {
+    } else if (clk_tgt) {
         if (is_reset)
-            return nvidia_clock_reset();
-        return nvidia_clock_set(clk_min, clk_max);
-    } else if (strcmp(action, "memclock") == 0) {
-        if (is_reset)
-            return nvidia_memclock_reset();
-        return nvidia_memclock_set(clk_min, clk_max);
+            return nvidia_clock_reset_flag(clk_tgt->rst_flag);
+        return nvidia_clock_apply(clk_tgt->set_flag, clk_min, clk_max);
     } else {
         fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
         fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
@@ -4901,6 +4835,12 @@ static int cmd_scale(int argc, char **argv)
         return 0;
     }
 
+    if (argc > 3) {
+        fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[3]);
+        fprintf(stderr, "Usage: cctl scale <factor | resolution | off>\n");
+        return 1;
+    }
+
     const char *arg = argv[2];
     if (strcmp(arg, "off") == 0 || strcmp(arg, "reset") == 0)
         return scale_reset();
@@ -4914,7 +4854,7 @@ static int cmd_scale(int argc, char **argv)
     /* If purely numeric (possibly with one dot), treat as factor */
     if (is_factor && *arg) {
         double factor = atof(arg);
-        if (factor <= 0.0 || factor > 1.0) {
+        if (factor < 0.01 || factor > 1.0) {
             fprintf(stderr, "Error: Scale factor must be between 0.01 and 1.0\n");
             return 1;
         }
@@ -4934,6 +4874,10 @@ static int cmd_scale(int argc, char **argv)
         /* Keep even numbers to avoid xrandr issues */
         if (sw % 2) sw--;
         if (sh % 2) sh--;
+        if (sw < 640 || sh < 360) {
+            fprintf(stderr, "Error: Scaled resolution %dx%d is too small (minimum 640x360)\n", sw, sh);
+            return 1;
+        }
         char res[32];
         snprintf(res, sizeof(res), "%dx%d", sw, sh);
         printf("  Factor: %.2f → %s (from %s)\n", factor, res, info.resolution);
@@ -4943,6 +4887,12 @@ static int cmd_scale(int argc, char **argv)
     }
 
     /* Resolution string (contains 'x') */
+    int rw = 0, rh = 0;
+    char extra = 0;
+    if (sscanf(arg, "%dx%d%c", &rw, &rh, &extra) != 2 || rw < 640 || rh < 360) {
+        fprintf(stderr, "Error: Invalid or too small resolution '%s' (minimum 640x360)\n", arg);
+        return 1;
+    }
     int rc = scale_set(arg);
     if (rc == 0) printf("Done.\n");
     return rc;
@@ -4970,21 +4920,9 @@ static int cmd_monitor(int argc, char **argv)
 static int cmd_set(int argc, char **argv)
 {
     int with_rapl = (strcmp(argv[1], "setr") == 0);
-    int nosafe = 0;
-    const char *profile = NULL;
+    int nosafe = extract_flag(&argc, argv, "--nosafe");
 
-    for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--nosafe") == 0)
-            nosafe = 1;
-        else if (!profile)
-            profile = argv[i];
-        else {
-            fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[i]);
-            return 1;
-        }
-    }
-
-    if (!profile) {
+    if (argc < 3) {
         printf("%sUsage:%s %scctl %s <profile> [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, with_rapl ? "setr" : "set", C_RST);
         printf("%sValid Profiles:%s\n", C_YLW, C_RST);
@@ -4998,15 +4936,22 @@ static int cmd_set(int argc, char **argv)
         return 0;
     }
 
+    if (argc > 3)
+        return fail("Unexpected extra argument '%s'", argv[3]);
+
+    const char *profile = argv[2];
     const struct profile_def *p = find_profile(profile);
     if (!p) {
         fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
-        fprintf(stderr, "Valid profiles: max, cpuperf, balanced, powersave, eco\n");
+        fprintf(stderr, "Valid profiles: ");
+        for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
+            fprintf(stderr, "%s%s", PROFILES[i].name,
+                    i + 1 < sizeof(PROFILES) / sizeof(PROFILES[0]) ? ", " : "\n");
+        }
         return 1;
     }
 
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    require_root(argc, argv);
 
     if (p->fan_safety && !nosafe) {
         printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
@@ -5029,20 +4974,9 @@ static int cmd_set(int argc, char **argv)
 
 static int cmd_fan(int argc, char **argv)
 {
-    int nosafe = 0;
-    const char *mode = NULL;
-    const char *val_str = NULL;
+    int nosafe = extract_flag(&argc, argv, "--nosafe");
 
-    for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--nosafe") == 0)
-            nosafe = 1;
-        else if (!mode)
-            mode = argv[i];
-        else if (!val_str)
-            val_str = argv[i];
-    }
-
-    if (!mode) {
+    if (argc < 3) {
         printf("%sUsage:%s %scctl fan <mode> [pct] [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("%sValid Modes:%s\n", C_YLW, C_RST);
@@ -5055,8 +4989,16 @@ static int cmd_fan(int argc, char **argv)
         return 0;
     }
 
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    if (argc > 4) {
+        fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[4]);
+        fprintf(stderr, "Usage: cctl fan <mode> [pct] [--nosafe]\n");
+        return 1;
+    }
+
+    const char *mode = argv[2];
+    const char *val_str = (argc >= 4) ? argv[3] : NULL;
+
+    require_root(argc, argv);
 
     int rc = 0;
 
@@ -5172,13 +5114,10 @@ static int cmd_turbo(int argc, char **argv)
         enabled = 1;
     else if (strcmp(action, "off") == 0)
         enabled = 0;
-    else {
-        fprintf(stderr, "Error: Invalid turbo action '%s' (use on or off)\n", action);
-        return 1;
-    }
+    else
+        return fail("Invalid turbo action '%s' (use on or off)", action);
 
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    require_root(argc, argv);
 
     if (enabled && !nosafe) {
         printf("Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
@@ -5201,10 +5140,8 @@ static int cmd_fnlock(int argc, char **argv)
             rc = set_fnlock(0);
         else if (strcmp(argv[2], "toggle") == 0)
             rc = fnlock_toggle();
-        else {
-            fprintf(stderr, "Error: Invalid fn action '%s' (use lock, unlock, on, off, or omit arg to toggle)\n", argv[2]);
-            return 1;
-        }
+        else
+            return fail("Invalid fn action '%s' (use lock, unlock, on, off, or omit arg to toggle)", argv[2]);
     } else {
         rc = fnlock_toggle();
     }
@@ -5222,12 +5159,10 @@ static int cmd_gov(int argc, char **argv)
         return 0;
     }
     const char *gov = argv[2];
-    if (strcmp(gov, "powersave") != 0 && strcmp(gov, "performance") != 0) {
-        fprintf(stderr, "Error: Invalid governor '%s' (use powersave or performance)\n", gov);
-        return 1;
-    }
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    if (strcmp(gov, "powersave") != 0 && strcmp(gov, "performance") != 0)
+        return fail("Invalid governor '%s' (use powersave or performance)", gov);
+
+    require_root(argc, argv);
     int rc = set_governor(gov);
     if (rc == 0) printf("Done.\n");
     return rc;
@@ -5254,8 +5189,7 @@ static int cmd_epp(int argc, char **argv)
         fprintf(stderr, "Valid values: performance, balance_performance, balance_power, power\n");
         return 1;
     }
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    require_root(argc, argv);
     int rc = set_epp(epp);
     if (rc == 0) printf("Done.\n");
     return rc;
@@ -5279,6 +5213,9 @@ static int cmd_rapl(int argc, char **argv)
         return 0;
     }
 
+    if (argc > 4)
+        return fail("Unexpected extra argument '%s'", argv[4]);
+
     int pl1 = 0, pl2 = 0;
     int skip_pl1 = 0, skip_pl2 = 0;
     int pl1_cap = rapl_pl1_ceiling(); /* 45W; 90W only while mode == max */
@@ -5287,26 +5224,18 @@ static int cmd_rapl(int argc, char **argv)
      * must not be applied to it. Two arguments parse as PL1 then PL2;
      * "skip" omits one side. */
     if (argc < 4) {
-        if (strcmp(argv[2], "skip") == 0) {
-            fprintf(stderr, "Error: Nothing to set — give a PL2 wattage\n");
-            return 1;
-        }
-        if (safe_atoi(argv[2], &pl2) < 0 || pl2 < 1 || pl2 > RAPL_PL2_MAX_WATTS) {
-            fprintf(stderr, "Error: Invalid PL2 value '%s' (use a wattage 1-%d)\n",
-                    argv[2], RAPL_PL2_MAX_WATTS);
-            return 1;
-        }
+        if (strcmp(argv[2], "skip") == 0)
+            return fail("Nothing to set — give a PL2 wattage");
+        if (safe_atoi(argv[2], &pl2) < 0 || pl2 < 1 || pl2 > RAPL_PL2_MAX_WATTS)
+            return fail("Invalid PL2 value '%s' (use a wattage 1-%d)", argv[2], RAPL_PL2_MAX_WATTS);
         skip_pl1 = 1;
     } else {
         /* Parse PL1 */
         if (strcmp(argv[2], "skip") == 0) {
             skip_pl1 = 1;
         } else {
-            if (safe_atoi(argv[2], &pl1) < 0 || pl1 < 1) {
-                fprintf(stderr, "Error: Invalid PL1 value '%s' (use a wattage 1-%d or 'skip')\n",
-                        argv[2], pl1_cap);
-                return 1;
-            }
+            if (safe_atoi(argv[2], &pl1) < 0 || pl1 < 1)
+                return fail("Invalid PL1 value '%s' (use a wattage 1-%d or 'skip')", argv[2], pl1_cap);
             if (pl1 > pl1_cap) {
                 fprintf(stderr, "Error: PL1 %dW exceeds the %dW limit for the current mode\n",
                         pl1, pl1_cap);
@@ -5321,27 +5250,18 @@ static int cmd_rapl(int argc, char **argv)
         if (strcmp(argv[3], "skip") == 0) {
             skip_pl2 = 1;
         } else {
-            if (safe_atoi(argv[3], &pl2) < 0 || pl2 < 1) {
-                fprintf(stderr, "Error: Invalid PL2 value '%s' (use a wattage 1-%d or 'skip')\n",
-                        argv[3], RAPL_PL2_MAX_WATTS);
-                return 1;
-            }
-            if (pl2 > RAPL_PL2_MAX_WATTS) {
-                fprintf(stderr, "Error: PL2 %dW exceeds the %dW platform limit\n",
-                        pl2, RAPL_PL2_MAX_WATTS);
-                return 1;
-            }
+            if (safe_atoi(argv[3], &pl2) < 0 || pl2 < 1)
+                return fail("Invalid PL2 value '%s' (use a wattage 1-%d or 'skip')", argv[3], RAPL_PL2_MAX_WATTS);
+            if (pl2 > RAPL_PL2_MAX_WATTS)
+                return fail("PL2 %dW exceeds the %dW platform limit", pl2, RAPL_PL2_MAX_WATTS);
         }
     }
 
     /* Must set at least one limit */
-    if (skip_pl1 && skip_pl2) {
-        fprintf(stderr, "Error: Nothing to set — both PL1 and PL2 are skipped\n");
-        return 1;
-    }
+    if (skip_pl1 && skip_pl2)
+        return fail("Nothing to set — both PL1 and PL2 are skipped");
 
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    require_root(argc, argv);
 
     /* Pass ≤ 0 to skip (set_rapl_limits treats pl1_w ≤ 0 as skip) */
     int rc = set_rapl_limits(skip_pl1 ? -1 : pl1, skip_pl2 ? -1 : pl2);
@@ -5356,8 +5276,7 @@ static int cmd_kbc(int argc, char **argv)
         return 0;
     }
 
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    require_root(argc, argv);
     kbe_stop(1);
     /* If 3 numeric args → RGB mode */
     if (argc >= 5) {
@@ -5384,12 +5303,10 @@ static int cmd_kbb(int argc, char **argv)
         return 0;
     }
     int pct;
-    if (safe_atoi(argv[2], &pct) < 0 || pct < 0 || pct > 100) {
-        fprintf(stderr, "Error: Brightness must be 0-100%%\n");
-        return 1;
-    }
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    if (safe_atoi(argv[2], &pct) < 0 || pct < 0 || pct > 100)
+        return fail("Brightness must be 0-100%%");
+
+    require_root(argc, argv);
     kbe_stop(1);
     int rc = kbd_set_brightness(pct);
     if (rc == 0) printf("Done.\n");
@@ -5406,84 +5323,50 @@ static int cmd_kbe(int argc, char **argv)
         if (geteuid() != 0 && access(KBE_STATE_PATH, F_OK) == 0 &&
             access(KBE_STATE_PATH, R_OK) != 0)
             self_elevate(argc, argv);
-        pid_t pid = 0;
-        char effect[32] = {0};
-        int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
-        if (kbe_is_running(&pid, effect, sizeof(effect), &orig_r, &orig_g, &orig_b, &orig_bri)) {
+        struct kbe_state ks;
+        if (kbe_is_running(&ks)) {
             printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
-            printf("  %sStatus:%s              %s%s%s (active, PID %d)\n", C_CYN, C_RST, C_GRN, effect, C_RST, (int)pid);
-            if (strcmp(effect, "temp") == 0 || strcmp(effect, "temperature") == 0) {
+            printf("  %sStatus:%s              %s%s%s (active, PID %d)\n", C_CYN, C_RST, C_GRN, ks.effect, C_RST, (int)ks.pid);
+            const struct kbe_effect_def *cur = kbe_find_effect(ks.effect);
+            if (cur && strcmp(cur->name, "temp") == 0) {
                 int t = read_cpu_temp();
                 if (t > 0)
                     printf("  %sLive CPU Temp:%s       %s%d°C%s\n", C_CYN, C_RST, t >= 85 ? C_RED : (t >= 70 ? C_YLW : C_GRN), t, C_RST);
             }
-            printf("  %sOriginal Color:%s      RGB(%d, %d, %d)\n", C_CYN, C_RST, orig_r, orig_g, orig_b);
-            int bri_pct = (orig_bri * 100 + 127) / 255;
-            printf("  %sOriginal Brightness:%s %d%% (raw %d)\n\n", C_CYN, C_RST, bri_pct, orig_bri);
+            printf("  %sOriginal Color:%s      RGB(%d, %d, %d)\n", C_CYN, C_RST, ks.orig_r, ks.orig_g, ks.orig_b);
+            int bri_pct = (ks.orig_bri * 100 + 127) / 255;
+            printf("  %sOriginal Brightness:%s %d%% (raw %d)\n\n", C_CYN, C_RST, bri_pct, ks.orig_bri);
         } else {
             printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
             printf("  %sStatus:%s              %snone%s (stopped)\n\n", C_CYN, C_RST, C_DIM, C_RST);
         }
         printf("%sAvailable Effects:%s\n", C_YLW, C_RST);
-        printf("  %s%-16s%s %s\n", C_CYN, "breathe", C_RST, "Smooth fade in/out (uses current color)");
-        printf("  %s%-16s%s %s\n", C_CYN, "breathe-cycle", C_RST, "Smooth breathe shifting through colors");
-        printf("  %s%-16s%s %s\n", C_CYN, "cycle", C_RST, "Smooth continuous rainbow cycle");
-        printf("  %s%-16s%s %s\n", C_CYN, "flash", C_RST, "Strobe flash bursts (uses current color)");
-        printf("  %s%-16s%s %s\n", C_CYN, "flash-cycle", C_RST, "Strobe flash bursts cycling colors");
-        printf("  %s%-16s%s %s\n", C_CYN, "candle", C_RST, "Realistic flickering candle flame");
-        printf("  %s%-16s%s %s\n", C_CYN, "pulse", C_RST, "Heartbeat double-pulse (uses current color)");
-        printf("  %s%-16s%s %s\n", C_CYN, "pulse-cycle", C_RST, "Heartbeat double-pulse cycling colors");
-        printf("  %s%-16s%s %s\n", C_CYN, "police", C_RST, "Emergency red and blue alternating strobe");
-        printf("  %s%-16s%s %s\n", C_CYN, "fire", C_RST, "Dynamic warm flickering campfire flames");
-        printf("  %s%-16s%s %s\n", C_CYN, "aurora", C_RST, "Northern Lights emerald, cyan, and violet drift");
-        printf("  %s%-16s%s %s\n", C_CYN, "storm", C_RST, "Dark moody sky with electric lightning strikes");
-        printf("  %s%-16s%s %s\n", C_CYN, "starlight", C_RST, "Midnight sky with twinkling star shimmers");
-        printf("  %s%-16s%s %s\n\n", C_CYN, "temp", C_RST, "Live CPU thermal heatmap (cyan→green→yellow→red)");
-        printf("%sUsage:%s %scctl kbe <effect>  |  cctl kbe stop%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        for (size_t i = 0; i < sizeof(kbe_effects) / sizeof(kbe_effects[0]); i++) {
+            printf("  %s%-16s%s %s\n", C_CYN, kbe_effects[i].name, C_RST, kbe_effects[i].desc);
+        }
+        printf("\n%sUsage:%s %scctl kbe <effect>  |  cctl kbe stop%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         return 0;
     }
 
-    if (geteuid() != 0) {
-        self_elevate(argc, argv);
-    }
+    require_root(argc, argv);
 
     const char *sub = argv[2];
     if (strcmp(sub, "stop") == 0 || strcmp(sub, "off") == 0) {
         return kbe_stop(0);
     }
 
-    if (strcmp(sub, "breathe") != 0 && strcmp(sub, "breath") != 0 &&
-        strcmp(sub, "breathe-cycle") != 0 && strcmp(sub, "breathe+colorchange") != 0 &&
-        strcmp(sub, "breathe_cycle") != 0 && strcmp(sub, "breathecycle") != 0 &&
-        strcmp(sub, "cycle") != 0 && strcmp(sub, "rainbow") != 0 &&
-        strcmp(sub, "spectrum") != 0 && strcmp(sub, "slow-cycle") != 0 &&
-        strcmp(sub, "slow_colorchanging") != 0 &&
-        strcmp(sub, "flash") != 0 && strcmp(sub, "strobe") != 0 &&
-        strcmp(sub, "flash-cycle") != 0 && strcmp(sub, "flash+colorchange") != 0 &&
-        strcmp(sub, "flash_cycle") != 0 && strcmp(sub, "flashcycle") != 0 &&
-        strcmp(sub, "candle") != 0 && strcmp(sub, "flicker") != 0 &&
-        strcmp(sub, "pulse") != 0 && strcmp(sub, "heartbeat") != 0 &&
-        strcmp(sub, "pulse-cycle") != 0 && strcmp(sub, "pulse+colorchange") != 0 &&
-        strcmp(sub, "pulse_cycle") != 0 && strcmp(sub, "pulsecycle") != 0 &&
-        strcmp(sub, "heartbeat-cycle") != 0 &&
-        strcmp(sub, "police") != 0 && strcmp(sub, "siren") != 0 &&
-        strcmp(sub, "cop") != 0 && strcmp(sub, "emergency") != 0 &&
-        strcmp(sub, "fire") != 0 && strcmp(sub, "flame") != 0 &&
-        strcmp(sub, "embers") != 0 && strcmp(sub, "burn") != 0 &&
-        strcmp(sub, "aurora") != 0 && strcmp(sub, "arora") != 0 &&
-        strcmp(sub, "northern-lights") != 0 && strcmp(sub, "borealis") != 0 &&
-        strcmp(sub, "storm") != 0 && strcmp(sub, "lightning") != 0 &&
-        strcmp(sub, "thunder") != 0 &&
-        strcmp(sub, "starlight") != 0 && strcmp(sub, "stars") != 0 &&
-        strcmp(sub, "star") != 0 && strcmp(sub, "twinkle") != 0 &&
-        strcmp(sub, "temp") != 0 && strcmp(sub, "temperature") != 0 &&
-        strcmp(sub, "thermal") != 0 && strcmp(sub, "heatmap") != 0) {
+    const struct kbe_effect_def *fx = kbe_find_effect(sub);
+    if (!fx) {
         fprintf(stderr, "Error: Unknown keyboard effect '%s'\n", sub);
-        fprintf(stderr, "Available effects: breathe, breathe-cycle, cycle, flash, flash-cycle, candle, pulse, pulse-cycle, police, fire, aurora, storm, starlight, temp\n");
+        fprintf(stderr, "Available effects: ");
+        for (size_t i = 0; i < sizeof(kbe_effects) / sizeof(kbe_effects[0]); i++) {
+            fprintf(stderr, "%s%s", kbe_effects[i].name,
+                    i + 1 < sizeof(kbe_effects) / sizeof(kbe_effects[0]) ? ", " : "\n");
+        }
         return 1;
     }
 
-    return kbe_start(sub);
+    return kbe_start(fx->name);
 }
 
 static int cmd_webcam(int argc, char **argv)
@@ -5541,25 +5424,20 @@ static int cmd_bat(int argc, char **argv)
      * so thresholds cannot actually be turned off — the old off/default
      * aliases implied an impossible "off" and were removed). */
     if (strcmp(argv[2], "max") == 0) {
-        if (geteuid() != 0)
-            self_elevate(argc, argv);
+        require_root(argc, argv);
         int rc = bat_set(0, 0);
         if (rc == 0) printf("Done.\n");
         return rc;
     }
 
     /* set <start> <end> */
-    if (argc < 4) {
-        fprintf(stderr, "Error: Usage: bat <start> <end> or bat max\n");
-        return 1;
-    }
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    if (argc < 4)
+        return fail("Usage: bat <start> <end> or bat max");
+
+    require_root(argc, argv);
     int start, end;
-    if (safe_atoi(argv[2], &start) < 0 || safe_atoi(argv[3], &end) < 0) {
-        fprintf(stderr, "Error: Invalid threshold values\n");
-        return 1;
-    }
+    if (safe_atoi(argv[2], &start) < 0 || safe_atoi(argv[3], &end) < 0)
+        return fail("Invalid threshold values");
     int rc = bat_set(start, end);
     if (rc == 0) printf("Done.\n");
     return rc;
@@ -5570,15 +5448,13 @@ static int get_installed_microversion(void)
     if (access("/usr/local/bin/cctl", X_OK) != 0)
         return -1; /* Not installed */
 
-    FILE *fp = popen("/usr/local/bin/cctl --microversion 2>/dev/null", "r");
-    if (!fp) return 0;
+    char buf[32] = {0};
+    char *const args[] = { "/usr/local/bin/cctl", "--microversion", NULL };
+    if (run(args, RUN_CAPTURE, buf, sizeof(buf)) != 0)
+        return 0;
 
-    char buf[32];
     int ver = 0;
-    if (fgets(buf, sizeof(buf), fp)) {
-        safe_atoi(buf, &ver);
-    }
-    pclose(fp);
+    safe_atoi(buf, &ver);
     return ver;
 }
 
@@ -5603,14 +5479,12 @@ static int sudoers_user_is_safe(const char *s)
 static int cmd_install(int argc, char **argv)
 {
     int force = (argc >= 3 && strcmp(argv[2], "--force") == 0);
-    if (argc > 3 || (argc == 3 && !force)) {
-        fprintf(stderr, "Error: 'cctl install' does not accept arguments.\n");
-        return 1;
-    }
+    if (argc > 3 || (argc == 3 && !force))
+        return fail("'cctl install' does not accept arguments");
 
     /* needs_root=0 in the command table: main() does NOT pre-elevate.
      * The readlink/microversion checks below run unprivileged;
-     * self_elevate() re-execs us as root only after they pass — do not
+     * require_root() re-execs us as root only after they pass — do not
      * assume EUID==0 at this point. */
     char src[PATH_MAX];
     if (get_self_exe(src, sizeof(src)) < 0) {
@@ -5632,8 +5506,7 @@ static int cmd_install(int argc, char **argv)
         return 0;
     }
 
-    if (geteuid() != 0)
-        self_elevate(argc, argv);
+    require_root(argc, argv);
 
     /* Confirmation prompt: simple enter is not allowed, must type y or n */
     if (installed_ver == CCTL_MICROVERSION)
@@ -5809,27 +5682,10 @@ static int binary_dir(char *out, size_t sz)
  * (no shell → no quoting problems with odd paths). 0 = success. */
 static int file_sha256(const char *path, char out[65])
 {
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return -1;
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
-    if (pid == 0) {
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-        char *const args[] = { "sha256sum", (char *)path, NULL };
-        execvp("sha256sum", args);
-        _exit(127);
-    }
-    close(pipefd[1]);
-    char buf[256] = {0};
-    ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
-    close(pipefd[0]);
-    int status = 0;
-    waitpid(pid, &status, 0);
-    if (n < 64 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+    char *const args[] = { "sha256sum", (char *)path, NULL };
+    char buf[256];
+    if (run(args, RUN_CAPTURE, buf, sizeof(buf)) != 0 || strlen(buf) < 64)
+        return -1;
     for (int i = 0; i < 64; i++) {
         if (!isxdigit((unsigned char)buf[i])) return -1;
         out[i] = (char)tolower((unsigned char)buf[i]);
@@ -6121,60 +5977,251 @@ cleanup:
 
 static int cmd_mux(int argc, char **argv)
 {
-    if (argc >= 3 && strcmp(argv[2], "switch") == 0) {
-        if (geteuid() != 0)
-            self_elevate(argc, argv);
-        return mux_switch();
+    if (argc >= 3) {
+        if (strcmp(argv[2], "switch") == 0) {
+            if (argc > 3)
+                return fail("Unexpected extra argument '%s'", argv[3]);
+            require_root(argc, argv);
+            return mux_switch();
+        }
+        fprintf(stderr, "Error: Unknown mux subcommand '%s'\n", argv[2]);
+        fprintf(stderr, "Usage: cctl mux  |  cctl mux switch\n");
+        return 1;
     }
 
     /* 'cctl mux' with no subcommand — show current mode + pending */
-    int nvram = mux_read();
-    if (nvram < 0) {
-        fprintf(stderr, "GPU MUX: N/A (NVRAM variable not found or unrecognized)\n");
-        return 1;
-    }
-    int running = mux_running_mode();
-    const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_MAG;
-    if (running >= 0 && nvram != running)
-        printf("GPU MUX: %s%s%s  %s← %s pending (reboot to apply)%s\n",
-               col, mux_mode_str(running), C_RST,
-               C_YLW, mux_mode_str(nvram), C_RST);
-    else
-        printf("GPU MUX: %s%s%s\n", col, mux_mode_str(nvram), C_RST);
-    return 0;
+    return mux_show_internal("GPU MUX: ");
 }
+
+enum cmd_section {
+    SEC_PROFILES = 1,
+    SEC_KEYBOARD,
+    SEC_FAN,
+    SEC_MUX,
+    SEC_PRIVACY,
+    SEC_BATTERY,
+    SEC_INFO,
+    SEC_NVIDIA,
+    SEC_DISPLAY,
+    SEC_OVERRIDES,
+    SEC_SYSTEM
+};
 
 struct command {
     const char *name;
     int needs_root;
     int (*handler)(int argc, char **argv);
+    enum cmd_section section;
+    const char *usage;
+    const char *desc;
+    int (*visible)(void);
 };
 
 static const struct command commands[] = {
-    { "status",  1, cmd_status },
-    { "rr",      0, cmd_rr },
-    { "scale",   0, cmd_scale },
-    { "mic",     0, cmd_mic },
-    { "monitor", 1, cmd_monitor },
-    { "set",     0, cmd_set },     /* root required for apply, checked in handler */
-    { "setr",    0, cmd_set },     /* root required for apply, checked in handler */
-    { "fan",     0, cmd_fan },     /* root required for apply, checked in handler */
-    { "turbo",   0, cmd_turbo },   /* root required for apply, checked in handler */
-    { "fn",      1, cmd_fnlock },
-    { "gov",     0, cmd_gov },     /* root required for set, checked in handler */
-    { "epp",     0, cmd_epp },     /* root required for set, checked in handler */
-    { "rapl",    0, cmd_rapl },    /* root required for set, checked in handler */
-    { "kbc",     0, cmd_kbc },
-    { "kbb",     0, cmd_kbb },     /* root required for set, checked in handler */
-    { "kbe",     0, cmd_kbe },
-    { "webcam",  1, cmd_webcam },
-    { "bat",     0, cmd_bat },     /* root required for set, checked in handler */
-    { "nvidia",  0, cmd_nvidia },
-    { "install", 0, cmd_install },
-    { "mux",     0, cmd_mux },      /* root required for switch, checked in handler */
-    { "drivers-manage", 0, cmd_drivers_install },
+    /* Profiles */
+    { "set",            0, cmd_set,             SEC_PROFILES,  "<profile> [--nosafe]",            "Apply preset (EC defaults + table values below)", NULL },
+    { "setr",           0, cmd_set,             SEC_PROFILES,  "<profile> [--nosafe]",            "Apply preset (EC defaults + preconfigured CPU TDP override)", NULL },
 
+    /* Keyboard */
+    { "kbc",            0, cmd_kbc,             SEC_KEYBOARD,  "<R G B | preset>",                "Set keyboard color (no arg: list presets)", NULL },
+    { "kbb",            0, cmd_kbb,             SEC_KEYBOARD,  "<pct>",                           "Set brightness (0-100%)", NULL },
+    { "kbe",            0, cmd_kbe,             SEC_KEYBOARD,  "[effect|stop]",                   "Keyboard backlight effects (no arg: shows effect preset list & status)", NULL },
+    { "fn",             1, cmd_fnlock,          SEC_KEYBOARD,  "[lock|unlock]",                   "Toggle/set Fn Lock (Fn key behavior)", NULL },
+
+    /* Fan */
+    { "fan",            0, cmd_fan,             SEC_FAN,       "auto|max",                        "Set both fans (EC-controlled / full)", NULL },
+    { "fan",            0, cmd_fan,             SEC_FAN,       "silent [--nosafe]",               "Quiet mode (forces eco profile first; bypass with --nosafe)", NULL },
+    { "fan",            0, cmd_fan,             SEC_FAN,       "<pct> --nosafe",                  "Set both fans to duty (25-100%)", NULL },
+    { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu <pct> --nosafe",          "Set individual fan duty (25-100%)", NULL },
+    { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu auto",                    "Restore individual fan to auto (independent)", NULL },
+
+    /* GPU MUX */
+    { "mux",            0, cmd_mux,             SEC_MUX,       "",                                "Show current MUX mode (MSHybrid / dGPU)", NULL },
+    { "mux",            0, cmd_mux,             SEC_MUX,       "switch",                          "Toggle to the other mode (reboot to apply)", NULL },
+
+    /* Privacy */
+    { "webcam",         1, cmd_webcam,          SEC_PRIVACY,   "[on|off]",                        "Toggle/set webcam", NULL },
+    { "mic",            0, cmd_mic,             SEC_PRIVACY,   "[on|off]",                        "Toggle/set internal microphone (laptop mic only, needs alsa/amixer)", NULL },
+
+    /* Battery */
+    { "bat",            0, cmd_bat,             SEC_BATTERY,   "",                                "Show current thresholds", NULL },
+    { "bat",            0, cmd_bat,             SEC_BATTERY,   "<start> <stop>",                  "Set charge thresholds (custom)", NULL },
+    { "bat",            0, cmd_bat,             SEC_BATTERY,   "max",                             "standard mode (charge to 100%, resume at 95%)", NULL },
+
+    /* Info */
+    { "status",         1, cmd_status,          SEC_INFO,      "",                                "Show all current settings", NULL },
+    { "monitor",        1, cmd_monitor,         SEC_INFO,      "",                                "Live CPU/power/fan monitor", NULL },
+
+    /* NVIDIA */
+#ifdef CCTL_NVIDIA
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "power    [on|off]",               "Hardware D0/D3cold control", NULL },
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "<on|off>",                        "Persistent toggle (+initramfs rebuild)", NULL },
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "load",                            "Session load (compute modules)", NULL },
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "loadgame",                        "Session load (all modules incl. drm)", NULL },
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "unload",                          "Session unload + power off", NULL },
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "status",                          "Show GPU status & telemetry", NULL },
+#else
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "power    [on|off]",               "Hardware D0/D3cold control (no arg: show state)", NULL },
+#endif
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "clock    [min] <max>|reset",      "Lock/unlock GPU clocks (no arg: show max clock)", NULL },
+    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "memclock [min] <max>|reset",      "Lock/unlock memory clocks (no arg: show max clock)", NULL },
+
+    /* Display */
+    { "rr",             0, cmd_rr,              SEC_DISPLAY,   "[rate]",                          "List/set refresh rate (1=high, 2=low)", has_display_support },
+    { "scale",          0, cmd_scale,           SEC_DISPLAY,   "<factor|WxH|off>",                "GPU-side scaling (no arg: explain in detail)", has_display_support },
+
+    /* Overrides */
+    { "turbo",          0, cmd_turbo,           SEC_OVERRIDES, "<on|off> [--nosafe]",            "Turbo boost override (on sets fans to auto; bypass with --nosafe)", NULL },
+    { "gov",            0, cmd_gov,             SEC_OVERRIDES, "<governor>",                      "CPU governor (powersave, performance)", NULL },
+    { "epp",            0, cmd_epp,             SEC_OVERRIDES, "<value>",                         "EPP (performance, balance_performance, balance_power, power)", NULL },
+    { "rapl",           0, cmd_rapl,            SEC_OVERRIDES, "<pl1> <pl2>",                     "RAPL power limits (watts, use 'skip' to omit)", NULL },
+
+    /* System */
+    { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force]",                       "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
+    { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (auto-fetch or offline; sha256-verified)", NULL },
 };
+
+struct section_def {
+    enum cmd_section section;
+    const char *title;
+    enum prof_color header_color;
+    const char *subtitle;
+};
+
+static const struct section_def sections[] = {
+    { SEC_PROFILES,  "PROFILES",                    PROF_COL_YLW,     NULL },
+    { SEC_KEYBOARD,  "KEYBOARD",                    PROF_COL_MAG,     NULL },
+    { SEC_FAN,       "FAN",                         PROF_COL_YLW,     NULL },
+    { SEC_MUX,       "GPU MUX",                     PROF_COL_MAG,     "(UEFI NVRAM, reboot required to apply)" },
+    { SEC_PRIVACY,   "PRIVACY",                     PROF_COL_CYN,     NULL },
+    { SEC_BATTERY,   "BATTERY",                     PROF_COL_GRN,     NULL },
+    { SEC_INFO,      "INFO",                        PROF_COL_CYN_BLD, NULL },
+    { SEC_NVIDIA,    "NVIDIA",                      PROF_COL_RED,     NULL },
+    { SEC_DISPLAY,   "DISPLAY",                     PROF_COL_BLU,     "(only X11 session is supported, needs xrandr)" },
+    { SEC_OVERRIDES, "PROFILE INDIVIDUAL OVERRIDES", PROF_COL_YLW,     NULL },
+    { SEC_SYSTEM,    "SYSTEM",                      PROF_COL_CYN_BLD, NULL },
+};
+
+static void print_help_desc(const char *desc)
+{
+    const char *paren = strchr(desc, '(');
+    if (!paren) {
+        printf("%s\n", desc);
+    } else {
+        printf("%.*s%s%s%s\n", (int)(paren - desc), desc, C_DIM, paren, C_RST);
+    }
+}
+
+static void print_help_command(const struct command *cmd)
+{
+    int target_col = (strcmp(cmd->name, "nvidia") == 0) ? 39 : 29;
+    if (strcmp(cmd->name, "set") == 0 || strcmp(cmd->name, "setr") == 0 || strcmp(cmd->name, "turbo") == 0)
+        target_col = 31;
+
+    int col = 4;
+    printf("    %s%s%s", C_BLD, cmd->name, C_RST);
+    col += (int)strlen(cmd->name);
+
+    if (cmd->usage && cmd->usage[0]) {
+        int name_col = 6;
+        if (strcmp(cmd->name, "mic") == 0 || strcmp(cmd->name, "gov") == 0 ||
+            strcmp(cmd->name, "epp") == 0 || strcmp(cmd->name, "turbo") == 0 ||
+            strcmp(cmd->name, "nvidia") == 0 || strcmp(cmd->name, "mux") == 0 ||
+            strcmp(cmd->name, "rapl") == 0 ||
+            (strcmp(cmd->name, "bat") == 0 && strcmp(cmd->usage, "max") != 0))
+            name_col = 7;
+        else if (strcmp(cmd->name, "bat") == 0 && strcmp(cmd->usage, "max") == 0)
+            name_col = 4;
+
+        int name_len = (int)strlen(cmd->name);
+        int gap = name_col > name_len ? name_col - name_len : 1;
+        for (int i = 0; i < gap; i++) { putchar(' '); col++; }
+        printf("%s", cmd->usage);
+        col += (int)strlen(cmd->usage);
+    }
+
+    if (col < target_col) {
+        for (int i = col; i < target_col; i++) putchar(' ');
+    } else {
+        putchar(' ');
+    }
+
+    print_help_desc(cmd->desc);
+}
+
+static void print_usage(const char *prog)
+{
+    const char *base = strrchr(prog, '/');
+    prog = base ? base + 1 : prog;
+
+    /* ASCII art generated via:
+     * curl "https://asciified.thelicato.io/api/v2/ascii?text=COLORCONTROL&font=slant" */
+    printf(
+    "\n"
+    "   %s____ ___  _     ___  ____  %s %s____ ___  _   _ _____ ____   ___  _     %s\n"
+    "  %s/ ___/ _ \\| |   / _ \\|  _ \\ %s%s/ ___/ _ \\| \\ | |_   _|  _ \\ / _ \\| |    %s\n"
+    " %s| |  | | | | |  | | | | |_) |%s%s |  | | | |  \\| | | | | |_) | | | | |    %s\n"
+    " %s| |__| |_| | |__| |_| |  _ <%s%s| |__| |_| | |\\  | | | |  _ <| |_| | |___ %s\n"
+    "  %s\\____\\___/|_____\\___/|_| \\_\\%s%s\\____\\___/|_| \\_| |_| |_| \\_\\___/|_____|%s\n"
+    "\n",
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST,
+    C_GRN, C_RST, C_RED, C_RST);
+
+    printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
+
+    for (size_t s = 0; s < sizeof(sections) / sizeof(sections[0]); s++) {
+        const struct section_def *sec = &sections[s];
+        if (sec->section == SEC_DISPLAY && !has_display_support())
+            continue;
+
+        if (sec->subtitle)
+            printf("  %s%s%s %s%s%s\n", prof_color_str(sec->header_color), sec->title, C_RST, C_DIM, sec->subtitle, C_RST);
+        else
+            printf("  %s%s%s\n", prof_color_str(sec->header_color), sec->title, C_RST);
+
+        if (sec->section == SEC_PROFILES) {
+            for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+                const struct command *cmd = &commands[i];
+                if (cmd->section != sec->section) continue;
+                print_help_command(cmd);
+                printf("\n");
+            }
+            printf("      %s(max, cpuperf, balanced set fans to auto; bypass with --nosafe)%s\n\n", C_DIM, C_RST);
+            print_profile_table();
+            continue;
+        }
+
+        for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+            const struct command *cmd = &commands[i];
+            if (cmd->section != sec->section) continue;
+            if (cmd->visible && !cmd->visible()) continue;
+            print_help_command(cmd);
+        }
+        printf("\n");
+    }
+
+    if (!drivers_loaded()) {
+        printf("  %sDRIVERS NOT LOADED%s — some features need them:\n", C_YLW, C_RST);
+        printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        printf("    • %sset/setR%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        printf("    Fix: run %scctl drivers-manage%s\n\n",
+               C_BLD, C_RST);
+    }
+
+    if (!is_installed_systemwide()) {
+        printf("  %sNOT INSTALLED%s — run %ssudo ./%s install%s to set up:\n",
+               C_YLW, C_RST, C_BLD, prog, C_RST);
+        printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
+        printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
+        printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
+    }
+
+    printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
+}
 
 int main(int argc, char **argv)
 {
@@ -6188,26 +6235,6 @@ int main(int argc, char **argv)
     if (geteuid() == 0)
         setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
 
-    /* Pin to E-cores to keep off P-cores if hybrid architecture is detected */
-    {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        int pinned_count = 0;
-        int max_cpus = (int)sysconf(_SC_NPROCESSORS_CONF);
-        if (max_cpus <= 0) max_cpus = 64;
-
-        for (int i = 0; i < max_cpus; i++) {
-            if (i >= CPU_SETSIZE) continue; /* cannot represent in cpu_set_t */
-            if (is_cpu_e_core(i)) {
-                CPU_SET((unsigned)i, &cpuset);
-                pinned_count++;
-                if (pinned_count >= 2) break; // pin to up to 2 E-cores
-            }
-        }
-        if (pinned_count > 0) {
-            sched_setaffinity(0, sizeof(cpuset), &cpuset);
-        }
-    }
     atexit(ec_release_ports);
 
     if (argc < 2) {
@@ -6248,19 +6275,18 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < num_cmds; i++) {
         if (strcmp(commands[i].name, argv[1]) == 0) {
             cmd_found = 1;
-            if (commands[i].needs_root && geteuid() != 0) {
-                self_elevate(argc, argv);
-            }
+            if (commands[i].needs_root)
+                require_root(argc, argv);
             rc = commands[i].handler(argc, argv);
             break;
         }
     }
 
     if (!cmd_found) {
-        fprintf(stderr, "Error: Unknown command '%s'\n", argv[1]);
+        fail("Unknown command '%s'", argv[1]);
         print_usage(argv[0]);
         return 1;
     }
 
-    return rc;
+    return (rc != 0) ? 1 : 0;
 }
