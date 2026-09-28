@@ -42,7 +42,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100033
+#define CCTL_MICROVERSION 100034
 #endif
 
 /* ========================================================================
@@ -142,18 +142,25 @@ static int fail(const char *fmt, ...)
 
 #define require_root(argc, argv) self_elevate(argc, argv)
 
-static int extract_flag(int *argc, char **argv, const char *flag)
+/* Parse --nosafe flag and collect up to max_args positional arguments starting at argv[2].
+ * Returns number of positional arguments collected, or -1 on unexpected extra argument. */
+static int parse_flags(int argc, char **argv, int *nosafe, const char **args, int max_args)
 {
-    int found = 0, w = 0;
-    for (int r = 0; r < *argc; r++) {
-        if (strcmp(argv[r], flag) == 0)
-            found = 1;
-        else
-            argv[w++] = argv[r];
+    int count = 0;
+    if (nosafe) *nosafe = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--nosafe") == 0) {
+            if (nosafe) *nosafe = 1;
+        } else {
+            if (count < max_args) {
+                args[count++] = argv[i];
+            } else {
+                fail("Unexpected extra argument '%s'", argv[i]);
+                return -1;
+            }
+        }
     }
-    *argc = w;
-    argv[w] = NULL;
-    return found;
+    return count;
 }
 
 /* Resolve the absolute path to this running executable */
@@ -4920,9 +4927,12 @@ static int cmd_monitor(int argc, char **argv)
 static int cmd_set(int argc, char **argv)
 {
     int with_rapl = (strcmp(argv[1], "setr") == 0);
-    int nosafe = extract_flag(&argc, argv, "--nosafe");
+    int nosafe = 0;
+    const char *pos[1] = {NULL};
+    int npos = parse_flags(argc, argv, &nosafe, pos, 1);
+    if (npos < 0) return 1;
 
-    if (argc < 3) {
+    if (npos == 0) {
         printf("%sUsage:%s %scctl %s <profile> [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, with_rapl ? "setr" : "set", C_RST);
         printf("%sValid Profiles:%s\n", C_YLW, C_RST);
@@ -4936,10 +4946,7 @@ static int cmd_set(int argc, char **argv)
         return 0;
     }
 
-    if (argc > 3)
-        return fail("Unexpected extra argument '%s'", argv[3]);
-
-    const char *profile = argv[2];
+    const char *profile = pos[0];
     const struct profile_def *p = find_profile(profile);
     if (!p) {
         fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
@@ -4974,9 +4981,12 @@ static int cmd_set(int argc, char **argv)
 
 static int cmd_fan(int argc, char **argv)
 {
-    int nosafe = extract_flag(&argc, argv, "--nosafe");
+    int nosafe = 0;
+    const char *pos[2] = {NULL, NULL};
+    int npos = parse_flags(argc, argv, &nosafe, pos, 2);
+    if (npos < 0) return 1;
 
-    if (argc < 3) {
+    if (npos == 0) {
         printf("%sUsage:%s %scctl fan <mode> [pct] [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("%sValid Modes:%s\n", C_YLW, C_RST);
@@ -4989,14 +4999,8 @@ static int cmd_fan(int argc, char **argv)
         return 0;
     }
 
-    if (argc > 4) {
-        fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[4]);
-        fprintf(stderr, "Usage: cctl fan <mode> [pct] [--nosafe]\n");
-        return 1;
-    }
-
-    const char *mode = argv[2];
-    const char *val_str = (argc >= 4) ? argv[3] : NULL;
+    const char *mode = pos[0];
+    const char *val_str = (npos >= 2) ? pos[1] : NULL;
 
     require_root(argc, argv);
 
@@ -5088,16 +5092,11 @@ static int cmd_fan(int argc, char **argv)
 static int cmd_turbo(int argc, char **argv)
 {
     int nosafe = 0;
-    const char *action = NULL;
+    const char *pos[1] = {NULL};
+    int npos = parse_flags(argc, argv, &nosafe, pos, 1);
+    if (npos < 0) return 1;
 
-    for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--nosafe") == 0)
-            nosafe = 1;
-        else if (!action)
-            action = argv[i];
-    }
-
-    if (!action) {
+    if (npos == 0) {
         long no_turbo = read_sysfs_long(TURBO_PATH, -1);
         if (no_turbo >= 0)
             printf("%sCurrent Turbo:%s %s%s%s\n\n",
@@ -5109,6 +5108,8 @@ static int cmd_turbo(int argc, char **argv)
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         return 0;
     }
+
+    const char *action = pos[0];
     int enabled;
     if (strcmp(action, "on") == 0)
         enabled = 1;
