@@ -42,7 +42,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100035
+#define CCTL_MICROVERSION 100036
 #endif
 
 /* ========================================================================
@@ -86,6 +86,11 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
     }
 
     if (pid == 0) {
+        /* Don't inherit any blocked signal mask from the parent */
+        sigset_t none;
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, NULL);
+
         if (flags & RUN_CAPTURE) {
             close(pipefd[0]);
             dup2(pipefd[1], STDOUT_FILENO);
@@ -111,9 +116,16 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
         close(pipefd[1]);
         size_t total = 0;
         if (out && out_sz > 0) {
-            ssize_t n;
-            while ((n = read(pipefd[0], out + total, out_sz - 1 - total)) > 0) {
-                total += (size_t)n;
+            while (total < out_sz - 1) {
+                ssize_t n = read(pipefd[0], out + total, out_sz - 1 - total);
+                if (n > 0) {
+                    total += (size_t)n;
+                } else if (n < 0) {
+                    if (errno == EINTR) continue;
+                    break;
+                } else {
+                    break;
+                }
             }
             out[total] = '\0';
         }
@@ -122,11 +134,9 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
 
     int status = 0;
     waitpid(pid, &status, 0);
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-#define run_cmd(cmd, argv)        run((char *const *)(argv), 0, NULL, 0)
-#define run_cmd_silent(cmd, argv) run((char *const *)(argv), RUN_SILENT, NULL, 0)
 static void run_quiet(const char *cmd) { int r = system(cmd); (void)r; }
 
 static int fail(const char *fmt, ...)
@@ -1535,10 +1545,10 @@ static int mic_set(int enabled)
         char card_str[16];
         snprintf(card_str, sizeof(card_str), "%d", card);
         char *const args[] = { "amixer", "-c", card_str, "sset", "Capture", (char *)verb, NULL };
-        rc = run_cmd_silent("amixer", args);
+        rc = run(args, RUN_SILENT, NULL, 0);
     } else {
         char *const args[] = { "amixer", "sset", "Capture", (char *)verb, NULL };
-        rc = run_cmd_silent("amixer", args);
+        rc = run(args, RUN_SILENT, NULL, 0);
     }
     if (rc != 0) {
         fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
@@ -1734,7 +1744,7 @@ static int rr_set(const char *rate)
         "xrandr", "--output", info.output, "--mode", info.resolution,
         "--rate", (char *)rate, NULL
     };
-    if (run_cmd_silent("xrandr", args) != 0) {
+    if (run(args, RUN_SILENT, NULL, 0) != 0) {
         fprintf(stderr, "Error: Failed to set refresh rate to %sHz\n", rate);
         return -1;
     }
@@ -2836,22 +2846,17 @@ static void fx_pulse_cycle(int fd, int r, int g, int b, int *step)
 static void fx_police(int fd, int r, int g, int b, int *step)
 {
     (void)r; (void)g; (void)b; (void)step;
-    for (int k = 0; k < 2 && g_kbe_running; k++) {
-        kbe_write_frame(fd, 255, 0, 0);
-        kbe_sleep_ms(60);
-        if (!g_kbe_running) return;
-        kbe_write_frame(fd, 0, 0, 0);
-        kbe_sleep_ms(50);
+    const uint8_t colors[2][3] = { {255, 0, 0}, {0, 0, 255} };
+    for (int c = 0; c < 2 && g_kbe_running; c++) {
+        for (int k = 0; k < 2 && g_kbe_running; k++) {
+            kbe_write_frame(fd, colors[c][0], colors[c][1], colors[c][2]);
+            kbe_sleep_ms(60);
+            if (!g_kbe_running) return;
+            kbe_write_frame(fd, 0, 0, 0);
+            kbe_sleep_ms(50);
+        }
+        kbe_sleep_ms(70);
     }
-    kbe_sleep_ms(70);
-    for (int k = 0; k < 2 && g_kbe_running; k++) {
-        kbe_write_frame(fd, 0, 0, 255);
-        kbe_sleep_ms(60);
-        if (!g_kbe_running) return;
-        kbe_write_frame(fd, 0, 0, 0);
-        kbe_sleep_ms(50);
-    }
-    kbe_sleep_ms(70);
 }
 
 static void fx_fire(int fd, int r, int g, int b, int *step)
@@ -3212,7 +3217,7 @@ static int ensure_ec_sys(void)
     attempted = 1;
 
     char *const args[] = { "modprobe", "ec_sys", NULL };
-    if (run_cmd_silent("modprobe", args) != 0)
+    if (run(args, RUN_SILENT, NULL, 0) != 0)
         return -1;
     /* Give udev a moment to create the file */
     usleep(200000);
@@ -3850,22 +3855,22 @@ static int rebuild_initramfs(void)
     if (access("/usr/bin/mkinitcpio", X_OK) == 0) {
         printf("  Rebuilding initramfs with mkinitcpio (this may take a minute)...\n");
         char *const args[] = { "mkinitcpio", "-P", NULL };
-        return run_cmd("/usr/bin/mkinitcpio", args);
+        return run(args, 0, NULL, 0);
     }
     if (access("/usr/bin/dracut", X_OK) == 0) {
         printf("  Rebuilding initramfs with dracut (this may take a minute)...\n");
         char *const args[] = { "dracut", "--force", NULL };
-        return run_cmd("/usr/bin/dracut", args);
+        return run(args, 0, NULL, 0);
     }
     if (access("/usr/sbin/update-initramfs", X_OK) == 0) {
         printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
         char *const args[] = { "update-initramfs", "-u", NULL };
-        return run_cmd("/usr/sbin/update-initramfs", args);
+        return run(args, 0, NULL, 0);
     }
     if (access("/sbin/update-initramfs", X_OK) == 0) {
         printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
         char *const args[] = { "update-initramfs", "-u", NULL };
-        return run_cmd("/sbin/update-initramfs", args);
+        return run(args, 0, NULL, 0);
     }
     /* Should never reach here if initramfs_rebuild_ready() was called first */
     fprintf(stderr, "Error: No initramfs tool found (mkinitcpio/dracut/update-initramfs).\n");
@@ -3928,7 +3933,7 @@ static int try_unload_nvidia(void)
     for (size_t i = 0; i < NV_MODULE_COUNT; i++) {
         if (loaded[i]) {
             char *const args[] = { "modprobe", "-r", (char *)nvidia_modules[i], NULL };
-            if (run_cmd_silent("modprobe", args) == 0) {
+            if (run(args, RUN_SILENT, NULL, 0) == 0) {
                 printf("  Unloaded %s\n", nvidia_modules[i]);
             } else {
                 fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
@@ -3943,7 +3948,7 @@ static int try_load_nvidia(void)
 {
     printf("  Attempting to load NVIDIA modules...\n");
     char *const args[] = { "modprobe", "nvidia", NULL };
-    if (run_cmd_silent("modprobe", args) == 0) {
+    if (run(args, RUN_SILENT, NULL, 0) == 0) {
         printf("  NVIDIA modules loaded successfully.\n");
         return 0;
     }
@@ -4131,6 +4136,21 @@ static void nvidia_show_status(void)
     }
 }
 
+static void nvidia_pci_set_control(const char *val, const char *msg)
+{
+    char pci_path[512];
+    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
+        char ctrl_path[576];
+        snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
+        FILE *fp = fopen(ctrl_path, "w");
+        if (fp) {
+            fprintf(fp, "%s", val);
+            fclose(fp);
+            printf("  GPU %s.\n", msg);
+        }
+    }
+}
+
 static int nvidia_load(int load_game)
 {
     if (!nvidia_is_blacklisted()) {
@@ -4143,39 +4163,32 @@ static int nvidia_load(int load_game)
     }
 
     /* Wake GPU from D3cold if needed */
-    char pci_path[512];
-    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
-        char ctrl_path[576];
-        snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
-        FILE *fp = fopen(ctrl_path, "w");
-        if (fp) {
-            fprintf(fp, "on");
-            fclose(fp);
-            printf("  GPU powered on (D0).\n");
-        }
-    }
+    nvidia_pci_set_control("on", "powered on (D0)");
 
     /* Temporarily move blacklist aside so modprobe works.
-     * Block signals while the file is swapped so an interrupt or crash doesn't
+     * Block termination signals while the file is swapped so an interrupt doesn't
      * leave the blacklist missing. */
     printf("  Loading NVIDIA modules (session-only)...\n");
     sigset_t block_mask, orig_mask;
-    sigfillset(&block_mask);
+    sigemptyset(&block_mask);
+    sigaddset(&block_mask, SIGHUP);
+    sigaddset(&block_mask, SIGINT);
+    sigaddset(&block_mask, SIGTERM);
     sigprocmask(SIG_BLOCK, &block_mask, &orig_mask);
 
     rename("/etc/modprobe.d/blacklist-nvidia.conf",
            "/etc/modprobe.d/blacklist-nvidia.conf.bak");
 
     char *const args_nv[] = { "modprobe", "nvidia", NULL };
-    int ret = run_cmd("modprobe", args_nv);
+    int ret = run(args_nv, 0, NULL, 0);
     if (ret == 0) {
         char *const args_uvm[] = { "modprobe", "nvidia_uvm", NULL };
-        run_cmd("modprobe", args_uvm);
+        run(args_uvm, 0, NULL, 0);
         if (load_game) {
             char *const args_modeset[] = { "modprobe", "nvidia_modeset", NULL };
-            run_cmd("modprobe", args_modeset);
+            run(args_modeset, 0, NULL, 0);
             char *const args_drm[] = { "modprobe", "nvidia_drm", NULL };
-            run_cmd("modprobe", args_drm);
+            run(args_drm, 0, NULL, 0);
         }
     }
 
@@ -4230,7 +4243,7 @@ static int nvidia_unload(void)
 
         /* Use rmmod directly instead of modprobe -r (avoids blacklist alias interference) */
         char *const args[] = { "rmmod", (char *)nvidia_modules[i], NULL };
-        if (run_cmd("rmmod", args) == 0) {
+        if (run(args, 0, NULL, 0) == 0) {
             printf("  Unloaded %s\n", nvidia_modules[i]);
         } else {
             fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
@@ -4245,17 +4258,7 @@ static int nvidia_unload(void)
     }
 
     /* Power off the GPU via PCI runtime PM */
-    char pci_path[512];
-    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
-        char ctrl_path[576];
-        snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
-        FILE *fp = fopen(ctrl_path, "w");
-        if (fp) {
-            fprintf(fp, "auto");
-            fclose(fp);
-            printf("  GPU powered off (D3cold).\n");
-        }
-    }
+    nvidia_pci_set_control("auto", "powered off (D3cold)");
     return failed ? -1 : 0;
 }
 #endif /* CCTL_NVIDIA */
@@ -4323,7 +4326,7 @@ static int nvidia_power_show(void)
 static int nvidia_pm_set(int on)
 {
     char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
-    return run_cmd("nvidia-smi", args);
+    return run(args, 0, NULL, 0);
 }
 
 /* Check if NVIDIA persistence mode is currently enabled */
@@ -4380,13 +4383,13 @@ static int nvidia_clock_apply(const char *flag, int min, int max)
     char range[32];
     snprintf(range, sizeof(range), "%d,%d", min, max);
     char *const args[] = { "nvidia-smi", (char *)flag, range, NULL };
-    return run_cmd("nvidia-smi", args);
+    return run(args, 0, NULL, 0);
 }
 
 static int nvidia_clock_reset_flag(const char *flag)
 {
     char *const args[] = { "nvidia-smi", (char *)flag, NULL };
-    return run_cmd("nvidia-smi", args);
+    return run(args, 0, NULL, 0);
 }
 
 struct nvidia_clock_info {
@@ -4738,7 +4741,8 @@ static int cmd_nvidia(int argc, char **argv)
 
 static int cmd_status(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    if (argc > 2)
+        return fail("Unexpected extra argument '%s'", argv[2]);
     show_status();
     return 0;
 }
@@ -4772,19 +4776,15 @@ static int cmd_rr(int argc, char **argv)
 static int scale_set(const char *resolution)
 {
     struct display_info info;
-    if (query_display_info(&info) < 0) {
-        fprintf(stderr, "Error: failed to query display info\n");
-        return -1;
-    }
+    if (query_display_info(&info) < 0)
+        return fail("failed to query display info");
 
     char *const args[] = {
         "xrandr", "--output", info.output, "--mode", info.resolution,
         "--scale-from", (char *)resolution, NULL
     };
-    if (run_cmd_silent("xrandr", args) != 0) {
-        fprintf(stderr, "Error: Failed to set scale to %s\n", resolution);
-        return -1;
-    }
+    if (run(args, RUN_SILENT, NULL, 0) != 0)
+        return fail("Failed to set scale to %s", resolution);
     printf("  Scale: %s → %s (GPU upscaled)\n", resolution, info.resolution);
     return 0;
 }
@@ -4792,19 +4792,15 @@ static int scale_set(const char *resolution)
 static int scale_reset(void)
 {
     struct display_info info;
-    if (query_display_info(&info) < 0) {
-        fprintf(stderr, "Error: failed to query display info\n");
-        return -1;
-    }
+    if (query_display_info(&info) < 0)
+        return fail("failed to query display info");
 
     char *const args[] = {
         "xrandr", "--output", info.output, "--mode", info.resolution,
         "--scale", "1x1", NULL
     };
-    if (run_cmd_silent("xrandr", args) != 0) {
-        fprintf(stderr, "Error: Failed to reset scale\n");
-        return -1;
-    }
+    if (run(args, RUN_SILENT, NULL, 0) != 0)
+        return fail("Failed to reset scale");
     printf("  Scale: native (1x1)\n");
     return 0;
 }
@@ -4842,49 +4838,34 @@ static int cmd_scale(int argc, char **argv)
         return 0;
     }
 
-    if (argc > 3) {
-        fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[3]);
-        fprintf(stderr, "Usage: cctl scale <factor | resolution | off>\n");
-        return 1;
-    }
+    if (argc > 3)
+        return fail("Unexpected extra argument '%s'", argv[3]);
 
     const char *arg = argv[2];
     if (strcmp(arg, "off") == 0 || strcmp(arg, "reset") == 0)
         return scale_reset();
 
     /* Check if argument is a number (factor) or a resolution string */
-    int is_factor = 1;
-    for (const char *p = arg; *p; p++) {
-        if (*p == 'x') { is_factor = 0; break; }
-        if (!isdigit((unsigned char)*p) && *p != '.' && *p != '-') { is_factor = 0; break; }
-    }
-    /* If purely numeric (possibly with one dot), treat as factor */
-    if (is_factor && *arg) {
-        double factor = atof(arg);
-        if (factor < 0.01 || factor > 1.0) {
-            fprintf(stderr, "Error: Scale factor must be between 0.01 and 1.0\n");
-            return 1;
-        }
+    char *end = NULL;
+    errno = 0;
+    double factor = strtod(arg, &end);
+    if (end != arg && *end == '\0') {
+        if (factor < 0.01 || factor > 1.0)
+            return fail("Scale factor must be between 0.01 and 1.0");
         struct display_info info;
-        if (query_display_info(&info) < 0) {
-            fprintf(stderr, "Error: failed to query display info\n");
-            return -1;
-        }
+        if (query_display_info(&info) < 0)
+            return fail("failed to query display info");
         /* Parse native resolution */
         int w, h;
-        if (sscanf(info.resolution, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
-            fprintf(stderr, "Error: cannot parse native resolution '%s'\n", info.resolution);
-            return -1;
-        }
+        if (sscanf(info.resolution, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0)
+            return fail("cannot parse native resolution '%s'", info.resolution);
         int sw = (int)(w * factor);
         int sh = (int)(h * factor);
         /* Keep even numbers to avoid xrandr issues */
         if (sw % 2) sw--;
         if (sh % 2) sh--;
-        if (sw < 640 || sh < 360) {
-            fprintf(stderr, "Error: Scaled resolution %dx%d is too small (minimum 640x360)\n", sw, sh);
-            return 1;
-        }
+        if (sw < 640 || sh < 360)
+            return fail("Scaled resolution %dx%d is too small (minimum 640x360)", sw, sh);
         char res[32];
         snprintf(res, sizeof(res), "%dx%d", sw, sh);
         printf("  Factor: %.2f → %s (from %s)\n", factor, res, info.resolution);
@@ -4896,10 +4877,8 @@ static int cmd_scale(int argc, char **argv)
     /* Resolution string (contains 'x') */
     int rw = 0, rh = 0;
     char extra = 0;
-    if (sscanf(arg, "%dx%d%c", &rw, &rh, &extra) != 2 || rw < 640 || rh < 360) {
-        fprintf(stderr, "Error: Invalid or too small resolution '%s' (minimum 640x360)\n", arg);
-        return 1;
-    }
+    if (sscanf(arg, "%dx%d%c", &rw, &rh, &extra) != 2 || rw < 640 || rh < 360)
+        return fail("Invalid or too small resolution '%s' (minimum 640x360)", arg);
     int rc = scale_set(arg);
     if (rc == 0) printf("Done.\n");
     return rc;
@@ -4920,7 +4899,8 @@ static int cmd_mic(int argc, char **argv)
 
 static int cmd_monitor(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    if (argc > 2)
+        return fail("Unexpected extra argument '%s'", argv[2]);
     return cpumonitor();
 }
 
@@ -5028,57 +5008,43 @@ static int cmd_fan(int argc, char **argv)
         printf("Setting both fans to SILENT...\n");
         rc = fan_silent_all();
     } else if (strcmp(mode, "cpu") == 0) {
-        if (!val_str) {
-            fprintf(stderr, "Error: Missing duty percentage or 'auto'\n");
-            return 1;
-        }
+        if (!val_str)
+            return fail("Missing duty percentage or 'auto'");
         if (strcmp(val_str, "auto") == 0) {
             printf("Setting CPU fan to AUTO...\n");
             rc = legacy_fan_auto(FAN_CPU);
         } else {
             int pct;
-            if (safe_atoi(val_str, &pct) < 0) {
-                fprintf(stderr, "Error: Invalid duty percentage '%s' (use 25-100 or 'auto')\n", val_str);
-                return 1;
-            }
-            if (!nosafe) {
-                fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n", pct);
-                return 1;
-            }
+            if (safe_atoi(val_str, &pct) < 0)
+                return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
+            if (!nosafe)
+                return fail("Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)", pct);
             rc = fan_set_duty(FAN_CPU, pct);
         }
     } else if (strcmp(mode, "gpu") == 0) {
-        if (!val_str) {
-            fprintf(stderr, "Error: Missing duty percentage or 'auto'\n");
-            return 1;
-        }
+        if (!val_str)
+            return fail("Missing duty percentage or 'auto'");
         if (strcmp(val_str, "auto") == 0) {
             printf("Setting GPU fan to AUTO...\n");
             rc = legacy_fan_auto(FAN_GPU);
         } else {
             int pct;
-            if (safe_atoi(val_str, &pct) < 0) {
-                fprintf(stderr, "Error: Invalid duty percentage '%s' (use 25-100 or 'auto')\n", val_str);
-                return 1;
-            }
-            if (!nosafe) {
-                fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n", pct);
-                return 1;
-            }
+            if (safe_atoi(val_str, &pct) < 0)
+                return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
+            if (!nosafe)
+                return fail("Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)", pct);
             rc = fan_set_duty(FAN_GPU, pct);
         }
     } else {
         /* Try as a plain number — apply to both fans */
         int pct;
         if (safe_atoi(mode, &pct) >= 0 && pct >= 25 && pct <= 100) {
-            if (!nosafe) {
-                fprintf(stderr, "Error: Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n", pct);
-                return 1;
-            }
+            if (!nosafe)
+                return fail("Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)", pct);
             printf("Setting both fans to %d%%...\n", pct);
             rc = fan_set_duty(0, pct);
         } else {
-            fprintf(stderr, "Error: Unknown fan mode '%s'\n", mode);
+            fail("Unknown fan mode '%s'", mode);
             fprintf(stderr, "Valid modes: auto [cpu|gpu], max, silent, cpu <pct|auto>, gpu <pct|auto>, or <pct> --nosafe\n");
             return 1;
         }
@@ -5534,7 +5500,7 @@ static int cmd_install(int argc, char **argv)
 
     /* 1. Copy binary to /usr/local/bin/cctl with mode 0755 */
     char *const args[] = { "install", "-m", "755", src, "/usr/local/bin/cctl", NULL };
-    if (run_cmd("install", args) != 0) {
+    if (run(args, 0, NULL, 0) != 0) {
         fprintf(stderr, "Error: failed to install binary to /usr/local/bin/cctl\n");
         return 1;
     }
@@ -5574,7 +5540,7 @@ static int cmd_install(int argc, char **argv)
     if (access(sudoers, R_OK) == 0) {
         char *const bak_args[] = { "/bin/cp", "-p",
                                    (char *)sudoers, (char *)sudoers_bak, NULL };
-        if (run_cmd("/bin/cp", bak_args) != 0)
+        if (run(bak_args, 0, NULL, 0) != 0)
             fprintf(stderr, "Warning: could not back up existing sudoers rule to %s\n",
                     sudoers_bak);
     }
@@ -5604,7 +5570,7 @@ static int cmd_install(int argc, char **argv)
     if (visudo_path) {
         char *const v_args[] = { "visudo", "-c", "-f",
                                  (char *)sudoers_tmp, NULL };
-        if (run_cmd(visudo_path, v_args) != 0) {
+        if (run(v_args, 0, NULL, 0) != 0) {
             fprintf(stderr,
                     "Error: visudo rejected the generated sudoers rule — "
                     "keeping the existing one.\n");
@@ -5702,12 +5668,12 @@ static int download_file(const char *url, const char *dest)
         char *const args[] = { "curl", "-fsSL", "--connect-timeout", "10",
                                "--max-time", "300", "-o", (char *)dest,
                                (char *)url, NULL };
-        if (run_cmd("curl", args) == 0) return 0;
+        if (run(args, 0, NULL, 0) == 0) return 0;
     }
     if (command_exists("wget")) {
         char *const args[] = { "wget", "-q", "--timeout=10", "-O",
                                (char *)dest, (char *)url, NULL };
-        if (run_cmd("wget", args) == 0) return 0;
+        if (run(args, 0, NULL, 0) == 0) return 0;
     }
     return -1;
 }
@@ -5718,7 +5684,7 @@ static void remove_tree(const char *path)
 {
     if (!path || strncmp(path, "/tmp/cctl-", 10) != 0) return;
     char *const args[] = { "rm", "-rf", (char *)path, NULL };
-    int r = run_cmd("rm", args);
+    int r = run(args, 0, NULL, 0);
     (void)r;
 }
 
@@ -5761,7 +5727,7 @@ static int cache_store(const char *verified_file)
     char tmp[PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s/.new", DRIVERS_CACHE_DIR);
     char *const cp_args[] = { "cp", "--", (char *)verified_file, tmp, NULL };
-    if (run_cmd("cp", cp_args) != 0) {
+    if (run(cp_args, 0, NULL, 0) != 0) {
         unlink(tmp);
         fprintf(stderr, "Note: cannot copy %s into %s\n", verified_file, DRIVERS_CACHE_DIR);
         return -1;
@@ -5931,7 +5897,7 @@ static int cmd_drivers_install(int argc, char **argv)
         }
         snprintf(tarball, sizeof(tarball), "%s/%s", tmpdir, DRIVERS_TARBALL);
         char *const cp_args[] = { "cp", "--", src, tarball, NULL };
-        if (run_cmd("cp", cp_args) != 0) {
+        if (run(cp_args, 0, NULL, 0) != 0) {
             fprintf(stderr, "Error: failed to copy %s into %s\n", src, tmpdir);
             goto cleanup;
         }
@@ -5948,7 +5914,7 @@ static int cmd_drivers_install(int argc, char **argv)
     /* Extract into the private temp dir and run the verified installer. */
     {
         char *const tar_args[] = { "tar", "-xzf", tarball, "-C", tmpdir, NULL };
-        if (run_cmd("tar", tar_args) != 0) {
+        if (run(tar_args, 0, NULL, 0) != 0) {
             fprintf(stderr, "Error: failed to extract %s\n", tarball);
             goto cleanup;
         }
@@ -5963,7 +5929,7 @@ static int cmd_drivers_install(int argc, char **argv)
     printf("Launching driver installer (verified sources)...\n");
     {
         char *const sh_args[] = { "bash", script, NULL };
-        if (run_cmd("bash", sh_args) != 0) {
+        if (run(sh_args, 0, NULL, 0) != 0) {
             fprintf(stderr, "Driver installer exited with an error.\n");
             goto cleanup;
         }
