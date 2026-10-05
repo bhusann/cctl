@@ -65,23 +65,44 @@ cctl status                # view all current settings
 
 `set <profile> [--nosafe]` applies preset (EC defaults + table values below).
 
-`setR <profile> [--nosafe]` applies preset (EC defaults + preconfigured CPU TDP override).
+Optional user profiles can be added to `/etc/cctl/profiles.conf`, one profile per line:
+
+```text
+# name gpu_profile turbo governor epp
+quietwork 1 0 powersave balance_power
+```
+
+GPU profile must be 0–3, turbo 0 or 1, and governor/EPP values must be supported
+by cctl. Profiles leave RAPL limits unchanged; use `cctl rapl` to set them.
+Custom profiles are listed by `cctl set` and `cctl --help` and use the normal
+`set` safety behavior.
+
+For supported settings commands, append `--dry-run` to print the planned sysfs or
+EC changes without applying them:
+
+```bash
+cctl set balanced --dry-run
+cctl fan cpu 60 --nosafe --dry-run
+cctl rapl 30 50 --dry-run
+```
+
+Dry-run is available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
 
 ```
-Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP (set)  RAPL CPU TDP override (setR only)
-─────────── ────── ──────────── ────────────────── ────────────────────────────── ────────────────────────────────
-max         ON     performance  performance        90/115W + GPU 100W              PL1 45 / PL2 90W
-cpuperf     ON     performance  performance        45/115W + GPU 70W               (no RAPL change)
-balanced    ON     powersave    balance_performance 45/115W + GPU 70W              PL1 35 / PL2 40W
-powersave   OFF    powersave    balance_power      15/30W  + GPU 70W               (no RAPL change)
-eco         OFF    powersave    power              15/30W  + GPU 70W               PL1 9 / PL2 10W
+Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP
+─────────── ────── ──────────── ────────────────── ──────────────────────────────
+max         ON     performance  performance        90/115W + GPU 100W
+cpuperf     ON     performance  performance        45/115W + GPU 70W
+balanced    ON     powersave    balance_performance 45/115W + GPU 70W
+powersave   OFF    powersave    balance_power      15/30W  + GPU 70W
+eco         OFF    powersave    power              15/30W  + GPU 70W
 ```
 
 > **Fan Safety Defaults & Safety Disclaimer**: `--nosafe` is a flag that bypasses cctl's fan safety and keeps your current fan state instead of letting cctl change it. The safety exists because if fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat — so to prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass that reset. Setting manual fan duty (`cctl fan <pct> --nosafe` or `cctl fan cpu|gpu <pct> --nosafe`) strictly requires `--nosafe`.
 >
 > ⚠️ **Safety Notice & Disclaimer**: Safety defaults (running without `--nosafe`) are strongly recommended for daily use to protect your hardware. The `--nosafe` flag is intended strictly for experimenting or one-time use for a specific purpose — **not for daily or regular use**. Overriding safety mechanisms can lead to severe overheating, thermal throttling, or hardware stress; the author is not responsible for any damage or instability caused by using this flag.
 >
-> **`set max` vs `setR max`**: Plain `set max` leaves RAPL untouched, running at OEM platform limits (PL1 90W / PL2 115W CPU, 100W GPU). `setR max` caps sustained CPU draw to 45W (burst to 90W) to leave thermal headroom for the GPU.
+> `set` leaves existing RAPL limits unchanged. Use `cctl rapl <pl1> <pl2>` when you want to set CPU power limits explicitly.
 
 
 ---
@@ -136,8 +157,9 @@ cctl bat max                    # Standard: charge to 100%, resume at 95%
 
 ### Info
 ```bash
-cctl status                     # Print all current settings (profiles, GPU MUX, telemetry)
-cctl monitor                    # Live CPU/power/fan/memory monitor (color-coded)
+cctl status [--json]            # Print all current settings; --json emits a JSON object
+cctl monitor [--json]           # Live monitor; --json emits one JSON sample per line
+cctl capabilities [--json]      # Show controls detected on this system
 cctl --version                  # Print version and exit (also -V)
 ```
 
@@ -295,8 +317,10 @@ Or do it step by step:
 
 ## Developer Notes
 
+- **Source layout** — `cctl.c` includes subsystem fragments in a fixed order: core, power controls, platform/privacy/status, keyboard, monitor, runtime helpers, NVIDIA, command handlers, and driver/install commands. They remain one translation unit so hardware helpers stay private and link behavior is unchanged; edit the owning fragment instead of growing the main file.
+
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
-- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while max mode is active: recorded by the last `cctl set max` / `cctl setR max`; shown as `Mode:` in `cctl status`, and `EC default` when no profile has been applied yet.
+- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while max mode is active: recorded by the last `cctl set max`; shown as `Mode:` in `cctl status`, and `EC default` when no profile has been applied yet.
 
 - **Direct EC Port I/O Fan Control & Protocol Quirks (Legacy Method)** — `cctl` uses direct port I/O (`ioperm`, `inb`/`outb` on port `0x66` command and `0x62` data) for individual fan control (`cctl fan cpu <pct>`, `cctl fan gpu <pct>`), Max, and Silent modes. This preserves the ability to adjust a single fan independently without kicking the other fan off its automatic EC thermal curve (which the `tuxedo_io` `W_CL_FANSPEED` ioctl cannot do, as it forces all channels into fixed manual mode).
   - **Hardware Handshake:** All writes require polling Input Buffer Full (IBF, bit 1 of port `0x66`): wait until `((inb(0x66) >> 1) & 1) == 0` before sending each command or data byte.
