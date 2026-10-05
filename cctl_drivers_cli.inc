@@ -396,6 +396,7 @@ struct command {
 static const struct command commands[] = {
     /* Profiles */
     { "set",            0, cmd_set,             SEC_PROFILES,  "<profile> [--nosafe]",            "Apply a power profile", NULL },
+    { "editconf",       0, cmd_editconf,        SEC_PROFILES,  "",                                "Edit custom profiles with your configured editor", NULL },
 
     /* Keyboard */
     { "kbc",            0, cmd_kbc,             SEC_KEYBOARD,  "<R G B | preset>",                "Set keyboard color (no arg: list presets)", NULL },
@@ -430,14 +431,11 @@ static const struct command commands[] = {
 
     /* NVIDIA */
 #ifdef CCTL_NVIDIA
-    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "power    [on|off]",               "Hardware D0/D3cold control", NULL },
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "<on|off>",                        "Persistent toggle (+initramfs rebuild)", NULL },
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "load",                            "Session load (compute modules)", NULL },
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "loadgame",                        "Session load (all modules incl. drm)", NULL },
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "unload",                          "Session unload + power off", NULL },
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "status",                          "Show GPU status & telemetry", NULL },
-#else
-    { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "power    [on|off]",               "Hardware D0/D3cold control (no arg: show state)", NULL },
 #endif
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "clock    [min] <max>|reset",      "Lock/unlock GPU clocks (no arg: show max clock)", NULL },
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "memclock [min] <max>|reset",      "Lock/unlock memory clocks (no arg: show max clock)", NULL },

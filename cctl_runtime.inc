@@ -26,6 +26,7 @@ static int not_installed_systemwide(void)
 
 static void print_usage(const char *prog);
 
+#ifdef CCTL_NVIDIA
 static int nvidia_is_loaded(void)
 {
     FILE *fp = fopen("/proc/modules", "r");
@@ -44,3 +45,4 @@ static int nvidia_is_loaded(void)
     fclose(fp);
     return loaded;
 }
+#endif

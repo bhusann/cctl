@@ -36,7 +36,7 @@ cctl: $(SOURCES) $(INCLUDES)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 # ── Experimental build with NVIDIA GPU management compiled in ─────────────
-# Adds the nvidia module/GPU-toggle commands: on/off/load/unload/loadgame/status/power.
+# Adds the nvidia module/GPU-toggle commands: on/off/load/unload/loadgame/status.
 experimental: $(SOURCES) $(INCLUDES)
 	$(CC) $(CFLAGS) -DCCTL_NVIDIA -o $@ $< $(LDFLAGS)
 

@@ -172,6 +172,73 @@ static int cmd_capabilities(int argc, char **argv)
     return 0;
 }
 
+static int create_profile_conf(void)
+{
+    char tmp_path[] = "/tmp/cctl-profiles.XXXXXX";
+    int fd = mkstemp(tmp_path);
+    if (fd < 0) return -1;
+
+    static const char header[] =
+        "# Custom profiles: one profile per line; use 'skip' to leave a setting unchanged.\n"
+        "# name ec_profile_code turbo governor epp pl1_watts pl2_watts\n";
+    size_t offset = 0;
+    while (offset < sizeof(header) - 1) {
+        ssize_t n = write(fd, header + offset, sizeof(header) - 1 - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            close(fd);
+            unlink(tmp_path);
+            return -1;
+        }
+        offset += (size_t)n;
+    }
+    int chmod_rc = fchmod(fd, 0600);
+    int close_rc = close(fd);
+    if (chmod_rc < 0 || close_rc < 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+
+    char *const install_root[] = {
+        "install", "-D", "-m", "0644", tmp_path, USER_PROFILE_FILE, NULL
+    };
+    char *const install_user[] = {
+        "sudo", "install", "-D", "-m", "0644", tmp_path, USER_PROFILE_FILE, NULL
+    };
+    int rc = run(geteuid() == 0 ? install_root : install_user, RUN_SILENT, NULL, 0);
+    unlink(tmp_path);
+    return rc;
+}
+
+static int cmd_editconf(int argc, char **argv)
+{
+    if (argc > 2)
+        return fail("Unexpected extra argument '%s'", argv[2]);
+
+    const char *editor = getenv("SUDO_EDITOR");
+    if (!editor || !*editor) editor = getenv("VISUAL");
+    if (!editor || !*editor) editor = getenv("EDITOR");
+    if (!editor || !*editor) {
+        if (command_exists("nano")) editor = "nano";
+        else if (command_exists("micro")) editor = "micro";
+        else return fail("No editor configured and neither nano nor micro is installed; "
+                         "set SUDO_EDITOR, VISUAL, or EDITOR");
+    }
+    if (setenv("SUDO_EDITOR", editor, 1) != 0)
+        return fail("Could not set the configured editor for sudoedit");
+
+    if (access(USER_PROFILE_FILE, F_OK) != 0 && errno == ENOENT) {
+        if (create_profile_conf() != 0)
+            return fail("Could not create %s", USER_PROFILE_FILE);
+    }
+
+    char *const edit_args[] = { "sudoedit", USER_PROFILE_FILE, NULL };
+    int rc = run(edit_args, 0, NULL, 0);
+    if (rc != 0)
+        return fail("Editor exited with status %d", rc);
+    return 0;
+}
+
 static int cmd_set(int argc, char **argv)
 {
     int nosafe = 0;

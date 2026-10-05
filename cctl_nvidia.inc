@@ -18,8 +18,6 @@
  *   nvidia clock reset       — Unlock GPU clocks (-rgc), persistence untouched.
  *   nvidia memclock <min,max>— Auto-enable persistence + lock memory clocks (-lmc).
  *   nvidia memclock reset    — Unlock memory clocks (-rmc), persistence untouched.
- *   nvidia power [on|off]    — Direct PCI runtime PM control (D0/D3cold).
- *                               Useful when no nvidia driver is loaded.
  * ======================================================================== */
 
 static int nvidia_is_blacklisted(void)
@@ -97,11 +95,8 @@ static int nvidia_display_in_use(void)
 
 #endif /* CCTL_NVIDIA */
 
-/* Forward declarations: common PCI power helpers (defined after the
- * CCTL_NVIDIA block so both builds share them). */
+/* Forward declaration for the private load/unload PCI power helper. */
 static int nvidia_find_pci_address(char *buf, size_t bufsz);
-static int nvidia_power_show(void);
-static int nvidia_power_set(int on);
 
 #ifdef CCTL_NVIDIA
 
@@ -274,7 +269,12 @@ static int try_unload_nvidia(void)
     printf("  Attempting to unload NVIDIA modules...\n");
     if (nvidia_gpu_in_use()) {
         fprintf(stderr, "Error: GPU is actively in use by running processes:\n");
-        run_quiet("nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | awk -F', ' '{print \"    PID \" $1 \": \" $2}'");
+        char *const query_args[] = {
+            "sh", "-c",
+            "nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | awk -F', ' '{print \"    PID \" $1 \": \" $2}'",
+            NULL
+        };
+        run_quiet(query_args);
         fprintf(stderr, "Cannot unload modules while GPU is in use.\n");
         return -1;
     }
@@ -458,8 +458,13 @@ static void nvidia_show_status(void)
     if (loaded) {
         if (access("/usr/bin/nvidia-smi", X_OK) == 0) {
             printf("\n%s--- NVIDIA GPU Telemetry ---%s\n", C_YLW, C_RST);
-            run_quiet("nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu,persistence_mode --format=csv,noheader,nounits 2>/dev/null | "
-                   "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\\n  Persistence:   \" $7}'");
+            char *const telemetry_args[] = {
+                "sh", "-c",
+                "nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu,persistence_mode --format=csv,noheader,nounits 2>/dev/null | "
+                "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\\n  Persistence:   \" $7}'",
+                NULL
+            };
+            run_quiet(telemetry_args);
 
             char procs_buf[1024] = {0};
             char *const p_args[] = { "nvidia-smi", "--query-compute-apps=pid,name,used_memory",
@@ -616,12 +621,7 @@ static int nvidia_unload(void)
 }
 #endif /* CCTL_NVIDIA */
 
-/* ========================================================================
- * NVIDIA PCI POWER (available in all builds)
- * Direct PCI runtime PM control (D0/D3cold). No driver modules required.
- * ======================================================================== */
-
-/* Find the nvidia GPU PCI sysfs path (vendor 0x10de, VGA class 0x0300xx) */
+/* Find the NVIDIA GPU PCI sysfs path for the private load/unload commands. */
 static int nvidia_find_pci_address(char *buf, size_t bufsz)
 {
     DIR *d = opendir("/sys/bus/pci/devices");
@@ -658,75 +658,11 @@ static int nvidia_find_pci_address(char *buf, size_t bufsz)
     return -1;
 }
 
-/* Show current GPU PCI power state (no root needed). Returns 0 on success. */
-static int nvidia_power_show(void)
-{
-    char pci_path[512];
-    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
-        fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
-        return 1;
-    }
-    char state_path[576];
-    snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
-    char state[16] = "unknown";
-    read_sysfs_str(state_path, state, sizeof(state));
-    printf("  GPU power: %s%s%s\n",
-           strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
-    return 0;
-}
-
 /* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
 static int nvidia_pm_set(int on)
 {
     char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
     return run(args, 0, NULL, 0);
-}
-
-/* Check if NVIDIA persistence mode is currently enabled */
-static int nvidia_pm_is_enabled(void)
-{
-    if (!nvidia_is_loaded()) return 0;
-    char line[64] = {0};
-    char *const args[] = { "nvidia-smi", "--query-gpu=persistence_mode",
-                           "--format=csv,noheader", NULL };
-    if (run(args, RUN_CAPTURE, line, sizeof(line)) != 0)
-        return 0;
-    return (strncasecmp(line, "Enabled", 7) == 0);
-}
-
-static int nvidia_power_set(int on)
-{
-    char pci_path[512];
-    if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) != 0) {
-        fprintf(stderr, "  Error: No NVIDIA GPU found on PCI bus.\n");
-        return 1;
-    }
-
-    /* If turning off and persistence mode is enabled, disable it first so the
-     * driver releases the GPU and allows PCI runtime PM to enter D3cold. */
-    if (!on && nvidia_pm_is_enabled()) {
-        nvidia_pm_set(0);
-    }
-
-    char ctrl_path[576], state_path[576];
-    snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
-    snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
-
-    if (write_sysfs(ctrl_path, on ? "on" : "auto") < 0) {
-        perror("  Failed to write PCI power control");
-        return 1;
-    }
-
-    /* Wait for PCI runtime PM to transition power state */
-    usleep(200000); /* 200ms */
-
-    /* Read back power state */
-    char state[16] = "unknown";
-    read_sysfs_str(state_path, state, sizeof(state));
-
-    printf("  GPU power: %s%s%s\n",
-           strcmp(state, "D3cold") == 0 ? C_DIM : C_GRN, state, C_RST);
-    return 0;
 }
 
 static int nvidia_clock_apply(const char *flag, int min, int max)
@@ -979,9 +915,9 @@ static int nvidia_clock_show_target(const struct nvidia_clk_target *tgt)
 }
 
 #ifdef CCTL_NVIDIA
-#define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|power|clock|memclock}"
+#define NVIDIA_USAGE_STR "nvidia {on|off|load|loadgame|unload|status|clock|memclock}"
 #else
-#define NVIDIA_USAGE_STR "nvidia {power|clock|memclock}"
+#define NVIDIA_USAGE_STR "nvidia {clock|memclock}"
 #endif
 
 static int cmd_nvidia(int argc, char **argv)
@@ -989,7 +925,9 @@ static int cmd_nvidia(int argc, char **argv)
     if (argc < 3) {
         printf("%sUsage:%s %scctl %s%s\n\n", C_BLD, C_RST, C_CYN_BLD, NVIDIA_USAGE_STR, C_RST);
         printf("%sCommands:%s\n", C_YLW, C_RST);
-        printf("  %s%-10s%s Hardware D0/D3cold power control (no arg: show state)\n", C_CYN, "power", C_RST);
+#ifdef CCTL_NVIDIA
+        printf("  %s%-10s%s Show GPU status & telemetry\n", C_CYN, "status", C_RST);
+#endif
         printf("  %s%-10s%s Lock/unlock GPU core clocks (no arg: show max clock)\n", C_CYN, "clock", C_RST);
         printf("  %s%-10s%s Lock/unlock GPU memory clocks (no arg: show max clock)\n", C_CYN, "memclock", C_RST);
         return 0;
@@ -1018,9 +956,6 @@ static int cmd_nvidia(int argc, char **argv)
 #endif
 
     /* Queries without arguments run unprivileged (no root needed, all builds) */
-    if (strcmp(action, "power") == 0 && argc < 4) {
-        return nvidia_power_show();
-    }
     if (clk_tgt && argc < 4) {
         return nvidia_clock_show_target(clk_tgt);
     }
@@ -1029,13 +964,7 @@ static int cmd_nvidia(int argc, char **argv)
     int is_reset = 0;
 
     /* Validate arguments before requesting root elevation */
-    if (strcmp(action, "power") == 0) {
-        if (strcmp(argv[3], "on") != 0 && strcmp(argv[3], "off") != 0) {
-            fprintf(stderr, "Error: Unknown nvidia power argument '%s'\n", argv[3]);
-            fprintf(stderr, "Usage: cctl nvidia power [on|off]\n");
-            return 1;
-        }
-    } else if (clk_tgt) {
+    if (clk_tgt) {
         if (strcmp(argv[3], "reset") == 0) {
             if (argc > 4) {
                 fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[4]);
@@ -1075,12 +1004,7 @@ static int cmd_nvidia(int argc, char **argv)
         return nvidia_unload();
     } else
 #endif
-    if (strcmp(action, "power") == 0) {
-        if (strcmp(argv[3], "on") == 0)
-            return nvidia_power_set(1);
-        if (strcmp(argv[3], "off") == 0)
-            return nvidia_power_set(0);
-    } else if (clk_tgt) {
+    if (clk_tgt) {
         if (is_reset)
             return nvidia_clock_reset_flag(clk_tgt->rst_flag);
         return nvidia_clock_apply(clk_tgt->set_flag, clk_min, clk_max);

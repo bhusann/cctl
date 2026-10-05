@@ -178,6 +178,8 @@ static void kbd_show_presets(void)
  * KEYBOARD EFFECTS (kbe)
  * ======================================================================== */
 
+static void get_mem_usage(long *used_mb, long *total_mb);
+
 #define KBE_LOCK_PATH   "/run/cctl_kbe.lock"
 #define KBE_STATE_PATH  "/run/cctl_kbe.state"
 
@@ -709,29 +711,129 @@ static void fx_storm(int fd, int r, int g, int b, int *step)
     kbe_sleep_ms(60);
 }
 
-static void fx_starlight(int fd, int r, int g, int b, int *step)
+static void kbe_sos_step(int fd, int r, int g, int b, int *step)
 {
-    (void)r; (void)g; (void)b;
-    static int star_twinkle_steps = 0, star_peak_white = 220;
-    if (star_twinkle_steps <= 0) {
-        int sky_bri = 35 + ((int)kbe_breathe_lut[*step % 128] * 25) / 255;
-        kbe_write_frame(fd, (sky_bri * 12) / 60, (sky_bri * 20) / 60, sky_bri);
-        kbe_sleep_ms(30);
-        (*step)++;
-        if ((rand() % 30) == 0) {
-            star_twinkle_steps = 14;
-            star_peak_white = 180 + (rand() % 75);
+    /* Morse SOS: ... --- ...; one unit is five 30 ms frames. */
+    static const uint8_t sos_units[] = {
+        1, 1, 1, 1, 1, 3, 3, 1, 3, 1, 3, 3, 1, 1, 1, 1, 1, 7
+    };
+    /* 34 Morse units at five frames per unit make a 170-frame cycle. */
+    int frame = *step % 170;
+    *step = (frame + 1) % 170;
+    int segment = 0;
+    for (size_t i = 0; i < sizeof(sos_units); i++) {
+        int duration = sos_units[i] * 5;
+        if (frame < duration) {
+            segment = (int)i;
+            break;
         }
-    } else {
-        int progress = 7 - abs(star_twinkle_steps - 7);
-        int factor = (progress * 255) / 7;
-        int tr = 12 + ((star_peak_white - 12) * factor) / 255;
-        int tg = 20 + ((star_peak_white - 20) * factor) / 255;
-        int tb = 55 + ((255 - 55) * factor) / 255;
-        kbe_write_frame(fd, tr, tg, tb);
-        kbe_sleep_ms(25);
-        star_twinkle_steps--;
+        frame -= duration;
     }
+    if ((segment % 2) == 0)
+        kbe_write_frame(fd, r, g, b);
+    else
+        kbe_write_frame(fd, 0, 0, 0);
+    kbe_sleep_ms(30);
+}
+
+static void fx_sos(int fd, int r, int g, int b, int *step)
+{
+    kbe_sos_step(fd, r, g, b, step);
+}
+
+static void fx_firecrackers(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b; (void)step;
+    enum { FIRECRACKERS_NIGHT, FIRECRACKERS_LAUNCH, FIRECRACKERS_APEX,
+           FIRECRACKERS_DETONATE, FIRECRACKERS_DECAY, FIRECRACKERS_PAUSE };
+    static int phase = FIRECRACKERS_NIGHT;
+    static int frame = 0, night_frames = -1, salvo_remaining = 0;
+    static int hue = 0, decay_brightness = 255, decay_frames = 10;
+    static int pause_ms = 0;
+
+    if (phase == FIRECRACKERS_NIGHT) {
+        if (night_frames < 0) {
+            int wait_ms = 800 + rand() % 1400;
+            night_frames = (wait_ms + 29) / 30;
+            int roll = rand() % 100;
+            salvo_remaining = roll < 70 ? 1 : 2 + rand() % 2;
+        }
+        kbe_write_frame(fd, 2, 4, 12);
+        kbe_sleep_ms(30);
+        if (--night_frames <= 0) {
+            phase = FIRECRACKERS_LAUNCH;
+            frame = 0;
+        }
+        return;
+    }
+
+    if (phase == FIRECRACKERS_LAUNCH) {
+        int factor = (frame * 150) / 4; /* 0% to about 60% in five frames */
+        int cr, cg, cb;
+        kbe_hue_to_rgb(30, factor, &cr, &cg, &cb);
+        kbe_write_frame(fd, cr, cg, cb);
+        kbe_sleep_ms(30);
+        if (++frame >= 5) {
+            phase = FIRECRACKERS_APEX;
+            frame = 0;
+        }
+        return;
+    }
+
+    if (phase == FIRECRACKERS_APEX) {
+        kbe_write_frame(fd, 0, 0, 0);
+        kbe_sleep_ms(30 + rand() % 21);
+        hue = rand() % 360; /* new spark color for every cracker */
+        phase = FIRECRACKERS_DETONATE;
+        return;
+    }
+
+    if (phase == FIRECRACKERS_DETONATE) {
+        kbe_write_frame(fd, 255, 255, 255);
+        kbe_sleep_ms(40);
+        decay_brightness = 255;
+        decay_frames = 10 + rand() % 3;
+        frame = 0;
+        phase = FIRECRACKERS_DECAY;
+        return;
+    }
+
+    if (phase == FIRECRACKERS_DECAY) {
+        if (frame > 0)
+            decay_brightness = (decay_brightness * 7) / 10;
+        decay_brightness += (rand() % 77) - 38; /* roughly ±15% flicker */
+        if (decay_brightness < 0) decay_brightness = 0;
+        if (decay_brightness > 255) decay_brightness = 255;
+        if (frame + 1 >= decay_frames && decay_brightness > 15)
+            decay_brightness = 15;
+        int cr, cg, cb;
+        kbe_hue_to_rgb(hue, decay_brightness, &cr, &cg, &cb);
+        kbe_write_frame(fd, cr, cg, cb);
+        kbe_sleep_ms(30);
+        if (++frame >= decay_frames) {
+            frame = 0;
+            if (--salvo_remaining > 0) {
+                pause_ms = 100 + rand() % 151;
+                phase = FIRECRACKERS_PAUSE;
+            } else {
+                night_frames = -1;
+                phase = FIRECRACKERS_NIGHT;
+            }
+        }
+        return;
+    }
+
+    if (phase == FIRECRACKERS_PAUSE) {
+        kbe_write_frame(fd, 2, 4, 12);
+        kbe_sleep_ms(pause_ms);
+        phase = FIRECRACKERS_LAUNCH;
+        frame = 0;
+    }
+}
+
+static int kbe_color_lerp(int start, int end, int ratio)
+{
+    return start + ((end - start) * ratio) / 255;
 }
 
 static void fx_temp(int fd, int r, int g, int b, int *step)
@@ -740,28 +842,34 @@ static void fx_temp(int fd, int r, int g, int b, int *step)
     static int cur_temp_val = -1;
     static int tgt_r = 0, tgt_g = 220, tgt_b = 255;
     static int smooth_r = 0, smooth_g = 220, smooth_b = 255;
+    static int sos_step = 0;
 
     if ((*step % 20) == 0 || cur_temp_val < 0) {
         int t = read_cpu_temp();
         if (t > 0) cur_temp_val = t;
         else if (cur_temp_val < 0) cur_temp_val = 50;
 
-        if (cur_temp_val <= 40) {
+        if (cur_temp_val < 40) {
             tgt_r = 0; tgt_g = 220; tgt_b = 255;
         } else if (cur_temp_val <= 60) {
             int ratio = ((cur_temp_val - 40) * 255) / 20;
-            tgt_r = 0;
-            tgt_g = 220 + ((255 - 220) * ratio) / 255;
-            tgt_b = 255 - ((255 - 40) * ratio) / 255;
+            tgt_r = kbe_color_lerp(128, 0, ratio);
+            tgt_g = kbe_color_lerp(255, 128, ratio);
+            tgt_b = 0;
         } else if (cur_temp_val <= 75) {
             int ratio = ((cur_temp_val - 60) * 255) / 15;
-            tgt_r = (255 * ratio) / 255;
-            tgt_g = 255 - ((255 - 220) * ratio) / 255;
-            tgt_b = 40 - (40 * ratio) / 255;
+            tgt_r = kbe_color_lerp(0, 255, ratio);
+            tgt_g = kbe_color_lerp(128, 255, ratio);
+            tgt_b = 0;
         } else if (cur_temp_val <= 85) {
             int ratio = ((cur_temp_val - 75) * 255) / 10;
             tgt_r = 255;
-            tgt_g = 220 - ((220 - 40) * ratio) / 255;
+            tgt_g = kbe_color_lerp(255, 128, ratio);
+            tgt_b = 0;
+        } else if (cur_temp_val < 90) {
+            int ratio = ((cur_temp_val - 85) * 255) / 5;
+            tgt_r = 255;
+            tgt_g = kbe_color_lerp(128, 0, ratio);
             tgt_b = 0;
         } else {
             tgt_r = 255; tgt_g = 0; tgt_b = 0;
@@ -772,11 +880,63 @@ static void fx_temp(int fd, int r, int g, int b, int *step)
     smooth_g = (smooth_g * 8 + tgt_g * 2) / 10;
     smooth_b = (smooth_b * 8 + tgt_b * 2) / 10;
 
-    int out_r = smooth_r;
-    int out_g = smooth_g;
-    int out_b = smooth_b;
-
     if (cur_temp_val >= 90) {
+        kbe_sos_step(fd, 255, 0, 0, &sos_step);
+        (*step)++;
+        return;
+    }
+    sos_step = 0;
+
+    kbe_write_frame(fd, smooth_r, smooth_g, smooth_b);
+    kbe_sleep_ms(30);
+    (*step)++;
+}
+
+static void fx_ram(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b;
+    static int used_percent = -1;
+    static int tgt_r = 0, tgt_g = 220, tgt_b = 255;
+    static int smooth_r = 0, smooth_g = 220, smooth_b = 255;
+
+    if ((*step % 20) == 0 || used_percent < 0) {
+        long used_mb = 0, total_mb = 0;
+        get_mem_usage(&used_mb, &total_mb);
+        if (total_mb > 0) {
+            used_percent = (int)((used_mb * 100) / total_mb);
+            if (used_percent < 0) used_percent = 0;
+            if (used_percent > 100) used_percent = 100;
+        } else if (used_percent < 0) {
+            used_percent = 50;
+        }
+
+        if (used_percent <= 25) {
+            tgt_r = 0; tgt_g = 220; tgt_b = 255;
+        } else if (used_percent <= 50) {
+            int ratio = ((used_percent - 25) * 255) / 25;
+            tgt_r = 0;
+            tgt_g = 220 + (35 * ratio) / 255;
+            tgt_b = 255 - (195 * ratio) / 255;
+        } else if (used_percent <= 70) {
+            int ratio = ((used_percent - 50) * 255) / 20;
+            tgt_r = (255 * ratio) / 255;
+            tgt_g = 255 - (45 * ratio) / 255;
+            tgt_b = 60 - (60 * ratio) / 255;
+        } else if (used_percent <= 85) {
+            int ratio = ((used_percent - 70) * 255) / 15;
+            tgt_r = 255;
+            tgt_g = 210 - (210 * ratio) / 255;
+            tgt_b = 0;
+        } else {
+            tgt_r = 255; tgt_g = 0; tgt_b = 0;
+        }
+    }
+
+    smooth_r = (smooth_r * 8 + tgt_r * 2) / 10;
+    smooth_g = (smooth_g * 8 + tgt_g * 2) / 10;
+    smooth_b = (smooth_b * 8 + tgt_b * 2) / 10;
+    int out_r = smooth_r, out_g = smooth_g, out_b = smooth_b;
+    if (used_percent >= 95) {
         int pulse_bri = (int)kbe_breathe_lut[*step % 128];
         out_r = (out_r * (128 + pulse_bri / 2)) / 255;
     }
@@ -806,8 +966,10 @@ static const struct kbe_effect_def kbe_effects[] = {
     { "fire",          { "flame", "embers", "burn", NULL },                                            fx_fire,          "Dynamic warm flickering campfire flames" },
     { "aurora",        { "arora", "northern-lights", "borealis", NULL },                               fx_aurora,        "Northern Lights emerald, cyan, and violet drift" },
     { "storm",         { "lightning", "thunder", NULL },                                               fx_storm,         "Dark moody sky with electric lightning strikes" },
-    { "starlight",     { "stars", "star", "twinkle", NULL },                                           fx_starlight,     "Midnight sky with twinkling star shimmers" },
-    { "temp",          { "temperature", "thermal", "heatmap", NULL },                                  fx_temp,          "Live CPU thermal heatmap (cyan→green→yellow→red)" },
+    { "temp",          { "temperature", "thermal", "heatmap", NULL },                                  fx_temp,          "CPU: cyan <40°C, green→yellow→orange→red as it warms; red SOS at 90°C+" },
+    { "ram",           { "memory", "mem", NULL },                                                       fx_ram,           "RAM: cyan ≤25%, gradual green→yellow→orange→red; pulses at 95%+" },
+    { "sos",           { NULL },                                                                         fx_sos,           "Morse SOS signal in the current color" },
+    { "firecrackers",  { "fireworks", NULL },                                                           fx_firecrackers, "Orange launch trails, white flashes, and colored ember salvos" },
 };
 
 static const struct kbe_effect_def *kbe_find_effect(const char *name)

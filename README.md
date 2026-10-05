@@ -93,33 +93,52 @@ eco         0               OFF    powersave    power              15/30W  + GPU
 > Built-in profiles and custom profiles without RAPL values leave existing limits unchanged. Custom profiles can set PL1/PL2 in `profiles.conf`; use `cctl rapl <pl1> <pl2>` to change them separately.
 
 
-Optional user profiles can be added to `/etc/cctl/profiles.conf`, one profile per line:
+### Custom Profiles
+
+You can add your own power profiles in `/etc/cctl/profiles.conf`. To open or
+create the file, run:
+
+```bash
+cctl editconf
+```
+
+This opens the file with your configured editor (`SUDO_EDITOR`, `VISUAL`, or
+`EDITOR`). If none is set, cctl tries `nano`, then `micro`. A new file includes
+a commented line showing the fields.
+
+Add one profile per line, with fields in this order:
 
 ```text
 # name ec_profile_code turbo governor epp pl1_watts pl2_watts
-render 2 1 performance performance 90 115
-# Any setting can use "skip" to leave it unchanged:
-quietwork skip skip powersave skip skip skip
-render_pl2 1 0 powersave balance_power skip 70
+quietwork 1 0 powersave balance_power skip skip
+highcpu 2 1 performance performance 90 115
 ```
 
-The EC profile code is a mode selector, not a performance ranking: code 0 is
-silent, code 1 is powersave, code 2 is high performance, and code 3 is standard
-mode. Code 2 allows up to 90W PL1 / 115W PL2 for the CPU and 100W for the GPU.
-Code 3 defaults are 45W/115W CPU and 70W GPU, so code 3 is not the
-highest-power code.
+The first value is the profile name. The remaining values set the EC mode,
+Turbo, CPU governor, EPP, and optional CPU power limits (PL1 and PL2). Write
+`skip` for any value you want cctl to leave unchanged. You can also use the
+original five-field format by leaving off both PL1 and PL2 values.
 
-EC profile code must be 0–3, turbo 0 or 1, and governor/EPP values must be
-supported by cctl; run `cctl gov` and `cctl epp` to see the accepted governor
-and EPP values. PL1 above 45W and up to 90W is allowed only with EC code 2;
-other codes allow PL1 up to 45W. PL2 must be 1–115W. Use `skip` for any field
-to leave that setting unchanged. If a profile line has a typo or invalid value,
-cctl ignores that line and the profile will not appear in `cctl set` or
-`cctl --help`. Omitting both RAPL fields also leaves the existing limits
-unchanged, preserving the original five-field format. Custom profiles use the
-normal `set` fan-safety behavior. Skipped or unset fields appear as `--` in the
-help table; configured custom RAPL values appear in the EC TDP column, for
-example `PL1 90W / PL2 115W (custom)`.
+EC profile codes select modes; they are not a ranking:
+
+- `0` — Silent
+- `1` — Powersave
+- `2` — High performance
+- `3` — Standard mode
+
+Code `2` is the only mode that allows PL1 above 45W: PL1 can be up to 90W and
+PL2 can be 1–115W. Other codes allow PL1 up to 45W. Code `3` has standard
+defaults of 45W/115W CPU and 70W GPU; it is not the highest-power mode. Code
+`2` supports up to 100W GPU power.
+
+EC code must be 0–3, and Turbo must be 0 or 1. Governor and EPP values must be
+supported; run `cctl gov` and `cctl epp` to see available values. PL1 must be
+within its mode limit, and PL2 must be 1–115W. If a line has a typo or invalid
+value, cctl skips it, so the profile will not appear in `cctl set` or
+`cctl --help`.
+Custom profiles use the normal fan-safety behavior. Skipped or unset values
+show as `--` in the help table; custom PL1/PL2 values appear in the EC TDP
+column, for example `PL1 90W / PL2 115W (custom)`.
 
 ---
 
@@ -135,7 +154,13 @@ cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/
 
 Color presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
 
-Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `fire` `aurora` `storm` `starlight` `temp`
+Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `fire` `aurora` `storm` `temp` `ram` `sos` `firecrackers`
+
+- `temp`: CPU temperature is cyan below 40°C. From 40°C it shifts gradually
+  from light green to dark green, then through yellow and orange to red as it
+  warms. At 90°C or higher, it flashes a red SOS signal.
+- `ram`: RAM usage shifts gradually from cyan (up to 25%) through green,
+  yellow, and orange to red (above 85%). Red pulses at 95% or higher.
 
 *Manual Status Check*: Run `cctl kbe` to view the current active effect.
 
@@ -181,7 +206,6 @@ cctl --version                  # Print version and exit (also -V)
 
 ### NVIDIA GPU
 ```bash
-cctl nvidia power [on|off]              # Hardware D0/D3cold control; no arg shows state
 cctl nvidia clock [min] <max> | reset   # Lock/unlock GPU clocks (no arg shows max clock; min defaults to 0)
 cctl nvidia memclock [min] <max> | reset # Lock/unlock memory clocks (no arg shows max clock; min defaults to 0)
 ```
