@@ -23,7 +23,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          # For manual dispatch, build the selected source ref (such as master)
+          # and attach the assets to release_tag. Release and tag events build
+          # the tagged commit directly.
+          ref: ${{ github.ref }}
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y build-essential

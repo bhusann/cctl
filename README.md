@@ -18,7 +18,7 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
 * **CPUs:** Intel CPUs
 * **Keyboard:** Single-zone RGB keyboard (tested)
 
-> **Note:** Built specifically for Colorful Evol P15 series laptops. Other laptop models or other Clevo/TUXEDO variants may have different EC register layouts, fan byte orders, or GPU profile slots — use at your own risk.
+> **Note:** Built specifically for Colorful Evol P15 series laptops. Other laptop models or other Clevo/TUXEDO variants may have different EC register layouts, fan byte orders, or EC profile codes — use at your own risk.
 
 ---
 
@@ -77,33 +77,49 @@ cctl rapl 30 50 --dry-run
 Dry-run is available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
 
 ```
-Profile     Turbo  Governor     EPP                EC default CPU & GPU TDP
-─────────── ────── ──────────── ────────────────── ──────────────────────────────
-max         ON     performance  performance        90/115W + GPU 100W
-cpuperf     ON     performance  performance        45/115W + GPU 70W
-balanced    ON     powersave    balance_performance 45/115W + GPU 70W
-powersave   OFF    powersave    balance_power      15/30W  + GPU 70W
-eco         OFF    powersave    power              15/30W  + GPU 70W
+Profile     EC profile code Turbo  Governor     EPP                EC default CPU & GPU TDP
+─────────── ─────────────── ────── ──────────── ────────────────── ──────────────────────────────
+max         2               ON     performance  performance        90/115W + GPU 100W
+cpuperf     3               ON     performance  performance        45/115W + GPU 70W
+balanced    3               ON     powersave    balance_performance 45/115W + GPU 70W
+powersave   1               OFF    powersave    balance_power      15/30W  + GPU 70W
+eco         0               OFF    powersave    power              15/30W  + GPU 70W
 ```
 
 > **Fan Safety Defaults & Safety Disclaimer**: `--nosafe` is a flag that bypasses cctl's fan safety and keeps your current fan state instead of letting cctl change it. The safety exists because if fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat — so to prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass that reset. Setting manual fan duty (`cctl fan <pct> --nosafe` or `cctl fan cpu|gpu <pct> --nosafe`) strictly requires `--nosafe`.
 >
 > ⚠️ **Safety Notice & Disclaimer**: Safety defaults (running without `--nosafe`) are strongly recommended for daily use to protect your hardware. The `--nosafe` flag is intended strictly for experimenting or one-time use for a specific purpose — **not for daily or regular use**. Overriding safety mechanisms can lead to severe overheating, thermal throttling, or hardware stress; the author is not responsible for any damage or instability caused by using this flag.
 >
-> `set` leaves existing RAPL limits unchanged. Use `cctl rapl <pl1> <pl2>` when you want to set CPU power limits explicitly.
+> Built-in profiles and custom profiles without RAPL values leave existing limits unchanged. Custom profiles can set PL1/PL2 in `profiles.conf`; use `cctl rapl <pl1> <pl2>` to change them separately.
 
 
 Optional user profiles can be added to `/etc/cctl/profiles.conf`, one profile per line:
 
 ```text
-# name gpu_profile turbo governor epp
-quietwork 1 0 powersave balance_power
+# name ec_profile_code turbo governor epp pl1_watts pl2_watts
+render 2 1 performance performance 90 115
+# Any setting can use "skip" to leave it unchanged:
+quietwork skip skip powersave skip skip skip
+render_pl2 1 0 powersave balance_power skip 70
 ```
 
-GPU profile must be 0–3, turbo 0 or 1, and governor/EPP values must be supported
-by cctl. Profiles leave RAPL limits unchanged; use `cctl rapl` to set them.
-Custom profiles are listed by `cctl set` and `cctl --help` and use the normal
-`set` safety behavior.
+The EC profile code is a mode selector, not a performance ranking: code 0 is
+silent, code 1 is powersave, code 2 is high performance, and code 3 is standard
+mode. Code 2 allows up to 90W PL1 / 115W PL2 for the CPU and 100W for the GPU.
+Code 3 defaults are 45W/115W CPU and 70W GPU, so code 3 is not the
+highest-power code.
+
+EC profile code must be 0–3, turbo 0 or 1, and governor/EPP values must be
+supported by cctl; run `cctl gov` and `cctl epp` to see the accepted governor
+and EPP values. PL1 above 45W and up to 90W is allowed only with EC code 2;
+other codes allow PL1 up to 45W. PL2 must be 1–115W. Use `skip` for any field
+to leave that setting unchanged. If a profile line has a typo or invalid value,
+cctl ignores that line and the profile will not appear in `cctl set` or
+`cctl --help`. Omitting both RAPL fields also leaves the existing limits
+unchanged, preserving the original five-field format. Custom profiles use the
+normal `set` fan-safety behavior. Skipped or unset fields appear as `--` in the
+help table; configured custom RAPL values appear in the EC TDP column, for
+example `PL1 90W / PL2 115W (custom)`.
 
 ---
 
@@ -140,7 +156,7 @@ cctl mux                        # Show current MUX mode (MSHybrid / dGPU) & pend
 cctl mux switch                 # Toggle MUX mode (stages in UEFI NVRAM, reboot to apply)
 ```
 
-> **X11 quirk:** After switching to **dGPU** mode the display may come up at **40 Hz instead of 165** — run `cctl rr 165` to set it back. *(X11 sessions only.)*
+> **X11 hardware quirk:** In **dGPU** mode, the internal display starts at **40 Hz on every boot**, whether dGPU mode was selected in BIOS or with `cctl mux switch`. Run `cctl rr 165` to use the full 165 Hz refresh rate. To apply it automatically, add `cctl rr 165` to your desktop environment's autostart/startup applications. *(X11 sessions only; the autostart method depends on your desktop environment.)*
 
 ### Privacy
 ```bash
@@ -178,7 +194,7 @@ cctl nvidia memclock [min] <max> | reset # Lock/unlock memory clocks (no arg sho
 ```bash
 cctl rr                         # List all supported refresh rates
 cctl rr [1|2|<rate>]            # Set refresh rate (1=highest, 2=lowest, or explicit value like 60 or 144)
-cctl scale <factor|WxH|off>    # GPU scaling (0.75, 1920x1080, or off to reset)
+cctl scale <factor|WxH|off>    # X11 display scaling (0.75, 1920x1080, or off to reset)
 ```
 
 ### Profile Individual Overrides
@@ -189,7 +205,7 @@ cctl epp <preference>           # performance, balance_performance, balance_powe
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 ```
 >
-> **RAPL limits:** PL2 ≤ 115 W always. PL1 ≤ 45 W — up to **90 W while max mode is active**.
+> **RAPL limits:** PL2 ≤ 115 W always. PL1 ≤ 45 W normally, up to **90 W while EC profile code 2 is active**.
 
 ---
 
@@ -206,7 +222,7 @@ The Makefile respects `CC`, `CFLAGS`, `LDFLAGS`, `PREFIX`, `BINDIR`, and `DESTDI
 
 ## Kernel Drivers
 
-The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is required for fan control, keyboard backlight, battery thresholds, and EC GPU profile slots. The installer handles DKMS registration, build, and modprobe config.
+The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is required for fan control, keyboard backlight, battery thresholds, and EC profile codes. The installer handles DKMS registration, build, and modprobe config.
 
 **Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball.
 
@@ -257,6 +273,11 @@ sudo rm -f /usr/local/bin/cctl
 
 # Remove passwordless sudo rule (+ backup)
 sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak
+
+# Optional: remove custom profiles you created
+sudo rm -f /etc/cctl/profiles.conf
+# If the directory is empty afterward, you can remove it too
+sudo rmdir /etc/cctl 2>/dev/null || true
 
 # Optional: remove the persistent driver cache. Kept by default on purpose —
 # it is what makes `cctl drivers-manage` able to reinstall/uninstall the
@@ -320,7 +341,7 @@ Or do it step by step:
 - **Source layout** — `cctl.c` includes subsystem fragments in a fixed order: core, power controls, platform/privacy/status, keyboard, monitor, runtime helpers, NVIDIA, command handlers, and driver/install commands. They remain one translation unit so hardware helpers stay private and link behavior is unchanged; edit the owning fragment instead of growing the main file.
 
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
-- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while max mode is active: recorded by the last `cctl set max`; shown as `Mode:` in `cctl status`, and `EC default` when no profile has been applied yet.
+- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while EC profile code 2 is active; the active profile is recorded and shown as `Mode:` in `cctl status`, and `EC default` appears when no profile has been applied yet.
 
 - **Direct EC Port I/O Fan Control & Protocol Quirks (Legacy Method)** — `cctl` uses direct port I/O (`ioperm`, `inb`/`outb` on port `0x66` command and `0x62` data) for individual fan control (`cctl fan cpu <pct>`, `cctl fan gpu <pct>`), Max, and Silent modes. This preserves the ability to adjust a single fan independently without kicking the other fan off its automatic EC thermal curve (which the `tuxedo_io` `W_CL_FANSPEED` ioctl cannot do, as it forces all channels into fixed manual mode).
   - **Hardware Handshake:** All writes require polling Input Buffer Full (IBF, bit 1 of port `0x66`): wait until `((inb(0x66) >> 1) & 1) == 0` before sending each command or data byte.
@@ -384,7 +405,7 @@ Or do it step by step:
   - `dGPU` (panel wired directly to NVIDIA GeForce RTX card; Intel iGPU is unmapped from PCI display class).
   - The hardware MUX state cannot be flipped on-the-fly inside an active OS session (ACPI `_DSM` methods on this Insyde board hang the display subsystem). Instead, switching is staged via the UEFI NVRAM variable `Setup-a04a27f4-df00-4d42-b552-39511302113d` at file offset 430 (`0x03` = MSHybrid, `0x02` = dGPU). The new mode is latched during POST upon reboot.
   - **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
-- **dGPU mode boots at 40 Hz (X11)** — Happens on warm *and* cold boots, so it is not EC state. The panel's EDID is identical in both MUX modes: the base block's first (preferred) DTD is 2560x1440 @ **40 Hz**, while the 165 Hz timing lives in the DisplayID extension. The nvidia X driver takes the base-block preferred timing as the initial mode (boots 40); modesetting over i915 in MSHybrid prefers the DisplayID timing (boots 165). Not a capability problem — xrandr lists both rates in dGPU mode. Fix: `cctl rr 165` (user-facing note in the GPU MUX section).
+- **dGPU mode boots at 40 Hz (X11)** — Happens on every boot when dGPU mode is selected, whether selected in BIOS or with `cctl mux switch`; it is not EC state. The panel's EDID is identical in both MUX modes: the base block's first (preferred) DTD is 2560x1440 @ **40 Hz**, while the 165 Hz timing lives in the DisplayID extension. The nvidia X driver takes the base-block preferred timing as the initial mode (boots 40); modesetting over i915 in MSHybrid prefers the DisplayID timing (boots 165). Not a capability problem — xrandr lists both rates in dGPU mode. Run `cctl rr 165` to restore 165 Hz, or add that command to your desktop environment's autostart/startup applications to apply it automatically.
 - **Keyboard effect state (`kbe`)** — Run `cctl kbe` to view the active effect, PID, and preserved base state (it re-elevates automatically — the `/run/cctl_kbe.state` file is root-only; `sudo cat` it directly if you prefer).
 - **Release tarball provenance** — The `drivers.tar.gz` attached to releases is fetched straight from the mirror — never rebuilt — and the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`.
 - **drivers-manage source order** — how `cctl drivers-manage` finds `drivers.tar.gz` (first match wins):

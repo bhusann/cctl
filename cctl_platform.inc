@@ -686,7 +686,7 @@ static void status_system(void)
 
     /* 1. Mode */
     char m_prof[32] = {0}, m_how[16] = {0};
-    if (mode_read(m_prof, sizeof(m_prof), m_how, sizeof(m_how)) == 0)
+    if (mode_read(m_prof, sizeof(m_prof), m_how, sizeof(m_how), NULL) == 0)
         row("Mode:", "%s%s%s %s(%s)%s", C_CYN, m_prof, C_RST, C_DIM, m_how, C_RST);
     else
         row("Mode:", "%sEC default%s", C_DIM, C_RST);

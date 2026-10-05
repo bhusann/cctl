@@ -374,10 +374,11 @@ static int safe_atoi(const char *str, int *out)
 /* ========================================================================
  * ACTIVE PROFILE MODE (/run/cctl/mode)
  * ========================================================================
- * `cctl set` records the active profile (line 1) and method (line 2).
+ * `cctl set` records the active profile (line 1), method (line 2), and EC
+ * profile code (line 3).
  * `cctl status` displays it, and the
- * RAPL PL1 ceiling consults it (90W unlocked only while mode == max,
- * matching the EC max profile's power budget). GPU watts are deliberately
+ * RAPL PL1 ceiling consults it (90W unlocked only while EC profile code 2
+ * is active). GPU watts are deliberately
  * NEVER read for this — the mode file is the single source of truth.
  * /run is tmpfs, cleared on reboot, so a missing file simply means
  * "EC default" (no profile applied since boot).
@@ -390,7 +391,7 @@ static int safe_atoi(const char *str, int *out)
 #endif
 #define MODE_DIR  "/run/cctl"
 
-static int mode_write(const char *profile, const char *method)
+static int mode_write(const char *profile, const char *method, int ec_profile_code)
 {
     if (mkdir(MODE_DIR, 0700) != 0 && errno != EEXIST)
         return -1;
@@ -398,7 +399,8 @@ static int mode_write(const char *profile, const char *method)
     int fd = open(MODE_FILE, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
     if (fd < 0) return -1;
     char buf[64];
-    int len = snprintf(buf, sizeof(buf), "%s\n%s\n", profile, method);
+    int len = snprintf(buf, sizeof(buf), "%s\n%s\n%d\n", profile, method,
+                       ec_profile_code);
     ssize_t w = write(fd, buf, (size_t)len);
     close(fd);
     if (w != len) { unlink(MODE_FILE); return -1; }
@@ -407,11 +409,13 @@ static int mode_write(const char *profile, const char *method)
 
 /* Returns 0 and fills profile/method when a valid mode file exists,
  * -1 otherwise (no file / empty / corrupt). */
-static int mode_read(char *profile, size_t psz, char *method, size_t msz)
+static int mode_read(char *profile, size_t psz, char *method, size_t msz,
+                     int *ec_profile_code)
 {
     if (psz == 0 || msz == 0) return -1;
     profile[0] = '\0';
     method[0] = '\0';
+    if (ec_profile_code) *ec_profile_code = -1;
     int fd = open(MODE_FILE, O_RDONLY | O_NOFOLLOW);
     if (fd < 0) return -1;
     FILE *fp = fdopen(fd, "r");
@@ -425,17 +429,25 @@ static int mode_read(char *profile, size_t psz, char *method, size_t msz)
         line[strcspn(line, "\r\n")] = '\0';
         snprintf(method, msz, "%.*s", (int)msz - 1, line);
     }
+    if (ec_profile_code && fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        int code;
+        if (safe_atoi(line, &code) == 0 && code >= 0 && code <= 3)
+            *ec_profile_code = code;
+    }
     fclose(fp); /* also closes fd */
     return profile[0] ? 0 : -1;
 }
 
-/* RAPL PL1 ceiling in watts: 45 normally; 90 only while the recorded
- * active mode is "max" (EC max profile = 90/115W CPU + 100W GPU budget). */
+/* RAPL PL1 ceiling in watts: 45 normally; 90 only while EC profile code 2
+ * is active (the high-power EC profile). */
 static int rapl_pl1_ceiling(void)
 {
     char profile[32] = {0}, method[16] = {0};
-    if (mode_read(profile, sizeof(profile), method, sizeof(method)) == 0 &&
-        strcmp(profile, "max") == 0)
+    int ec_profile_code = -1;
+    if (mode_read(profile, sizeof(profile), method, sizeof(method),
+                  &ec_profile_code) == 0 &&
+        (strcmp(profile, "max") == 0 || ec_profile_code == 2))
         return 90;
     return 45;
 }

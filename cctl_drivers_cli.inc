@@ -360,7 +360,13 @@ static int cmd_mux(int argc, char **argv)
     }
 
     /* 'cctl mux' with no subcommand — show current mode + pending */
-    return mux_show_internal("GPU MUX: ");
+    int rc = mux_show_internal("GPU MUX: ");
+    if (mux_running_mode() == MUX_VAL_DGPU && has_display_support()) {
+        struct display_info info;
+        if (query_display_info(&info) == 0 && strtod(info.current_rate, NULL) == 40.0)
+            printf("  Current refresh rate is 40 Hz. To use 165 Hz, run: cctl rr 165\n");
+    }
+    return rc;
 }
 
 enum cmd_section {

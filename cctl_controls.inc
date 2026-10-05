@@ -90,8 +90,8 @@ static int set_epp(const char *val)
  * ======================================================================== */
 
 /* RAPL ceilings (watts): PL2 hard max 115W (OEM platform limit); PL1 hard
- * max 45W — raised to 90W ONLY while mode == max (see rapl_pl1_ceiling(),
- * fed by /run/cctl/mode; GPU wattage is never read for this). */
+ * max 45W — raised to 90W only while EC profile code 2 is active (see
+ * rapl_pl1_ceiling(), fed by /run/cctl/mode). */
 #define RAPL_PL1_MAX_WATTS      45
 #define RAPL_PL1_MAX_WATTS_MAX  90
 #define RAPL_PL2_MAX_WATTS     115
@@ -118,15 +118,13 @@ static int read_rapl_current(int *pl1, int *pl2)
     return (*pl1 >= 0 || *pl2 >= 0) ? 0 : -1;
 }
 
-/* Set RAPL power limits. Pass pl1_w <= 0 to skip PL1. */
-static int set_rapl_limits(int pl1_w, int pl2_w)
+/* Set RAPL power limits. Pass pl1_w/pl2_w <= 0 to skip that limit. */
+static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 {
-    /* Defense in depth: enforce the same ceilings as cmd_rapl even if a
-     * caller bypasses it (negative still means "skip"). */
-    int pl1_cap = rapl_pl1_ceiling();
+    /* Defense in depth: enforce the caller's current-mode or profile ceiling. */
     if (pl1_w > pl1_cap || pl2_w > RAPL_PL2_MAX_WATTS) {
         fprintf(stderr, "Error: RAPL out of range (PL1 max %dW%s, PL2 max %dW)\n",
-                pl1_cap, pl1_cap > RAPL_PL1_MAX_WATTS ? " in max mode" : "",
+                pl1_cap, pl1_cap > RAPL_PL1_MAX_WATTS ? " with EC profile code 2" : "",
                 RAPL_PL2_MAX_WATTS);
         return -1;
     }
@@ -227,7 +225,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w)
 
 static const char *gpu_profile_name(int profile)
 {
-    static const char *names[] = { "quiet", "standard", "performance", "turbo" };
+    static const char *names[] = { "silent", "powersave", "high performance", "standard" };
     if (profile >= 0 && profile <= 3) return names[profile];
     return "unknown";
 }
@@ -260,7 +258,7 @@ static int tuxedo_ioctl(unsigned long req, void *arg)
 static int set_gpu_profile_tuxedo(int profile)
 {
     if (dry_run) {
-        printf("Dry run: set GPU profile %s (%d)\n", gpu_profile_name(profile), profile);
+        printf("Dry run: set EC profile code %s (%d)\n", gpu_profile_name(profile), profile);
         return 0;
     }
     return tuxedo_ioctl(W_CL_PERF_PROFILE, &profile);
@@ -269,16 +267,16 @@ static int set_gpu_profile_tuxedo(int profile)
 static int set_gpu_profile(int profile)
 {
     if (profile < 0 || profile > 3) {
-        fprintf(stderr, "Error: Invalid GPU profile %d (must be 0-3)\n", profile);
+        fprintf(stderr, "Error: Invalid EC profile code %d (must be 0-3)\n", profile);
         return -1;
     }
 
-    printf("  GPU profile: %s (%d)\n", gpu_profile_name(profile), profile);
+    printf("  EC profile code: %s (%d)\n", gpu_profile_name(profile), profile);
 
     if (set_gpu_profile_tuxedo(profile) == 0)
         return 0;
 
-    fprintf(stderr, "  Warning: tuxedo_io not available, GPU profile not set\n");
+    fprintf(stderr, "  Warning: tuxedo_io not available, EC profile code not set\n");
     return 0; /* non-fatal: CPU settings still applied */
 }
 
@@ -438,7 +436,7 @@ static int legacy_fan_auto_all(void)
  *
  * max (perf_gpu):
  *   GPU=2(performance), turbo=ON, governor=performance, EPP=performance,
- *   display=auto; RAPL limits are left unchanged by profiles.
+ *   display=auto; built-in profiles leave RAPL limits unchanged.
  *
  * cpuperf (perf_cpu):
  *   GPU=3(turbo), turbo=ON, governor=performance, EPP=performance,
@@ -499,14 +497,16 @@ struct profile_def {
     int fan_safety;
     uint8_t pulse_r, pulse_g, pulse_b;
     const char *ec_tdp;
+    int rapl_pl1;
+    int rapl_pl2;
 };
 
 static const struct profile_def PROFILES[] = {
-    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         1, 255,   0,   0, "90/115W + GPU 100W" },
-    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "performance", "performance",         1, 255, 110,   0, "45/115W + GPU 70W" },
-    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 1, 200,  50, 255, "45/115W + GPU 70W" },
-    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",       0,   0, 255,   0, "15/30W  + GPU 70W" },
-    { "eco",       "Ultra Powersave",                  PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                0,  80, 180, 255, "15/30W  + GPU 70W" },
+    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         1, 255,   0,   0, "90/115W + GPU 100W", 0, 0 },
+    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "performance", "performance",         1, 255, 110,   0, "45/115W + GPU 70W",  0, 0 },
+    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 1, 200,  50, 255, "45/115W + GPU 70W",  0, 0 },
+    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",       0,   0, 255,   0, "15/30W  + GPU 70W", 0, 0 },
+    { "eco",       "Ultra Powersave",                  PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                0,  80, 180, 255, "15/30W  + GPU 70W", 0, 0 },
 };
 
 #define USER_PROFILE_FILE "/etc/cctl/profiles.conf"
@@ -546,15 +546,31 @@ static void load_user_profiles(void)
     };
     char line[256];
     while (user_profile_count < MAX_USER_PROFILES && fgets(line, sizeof(line), fp)) {
-        char name[32], gov[32], epp[32], extra[2];
-        int gpu, turbo;
+        char name[32], gpu_text[16], turbo_text[16], gov[32], epp[32];
+        char pl1_text[16] = "skip", pl2_text[16] = "skip", extra[2];
+        int gpu = -1, turbo = -1, pl1 = -1, pl2 = -1;
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
-        if (sscanf(line, "%31s %d %d %31s %31s %1s",
-                   name, &gpu, &turbo, gov, epp, extra) != 5)
+        int fields = sscanf(line, "%31s %15s %15s %31s %31s %15s %15s %1s",
+                            name, gpu_text, turbo_text, gov, epp,
+                            pl1_text, pl2_text, extra);
+        if (fields != 5 && fields != 7)
             continue;
-        if (!profile_name_valid(name) || gpu < 0 || gpu > 3 || (turbo != 0 && turbo != 1) ||
-            !profile_value_in(gov, governors) || !profile_value_in(epp, epps))
+        if (!profile_name_valid(name))
             continue;
+        if (strcmp(gpu_text, "skip") != 0 &&
+            (safe_atoi(gpu_text, &gpu) < 0 || gpu < 0 || gpu > 3)) continue;
+        if (strcmp(turbo_text, "skip") != 0 &&
+            (safe_atoi(turbo_text, &turbo) < 0 || (turbo != 0 && turbo != 1))) continue;
+        if (strcmp(gov, "skip") != 0 && !profile_value_in(gov, governors)) continue;
+        if (strcmp(epp, "skip") != 0 && !profile_value_in(epp, epps)) continue;
+        if (fields == 7) {
+            int pl1_max = gpu == 2 || gpu < 0 ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
+            if ((strcmp(pl1_text, "skip") != 0 &&
+                 (safe_atoi(pl1_text, &pl1) < 0 || pl1 < 1 || pl1 > pl1_max)) ||
+                (strcmp(pl2_text, "skip") != 0 &&
+                 (safe_atoi(pl2_text, &pl2) < 0 || pl2 < 1 || pl2 > RAPL_PL2_MAX_WATTS)))
+                continue;
+        }
         int duplicate = 0;
         for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++)
             if (strcmp(PROFILES[i].name, name) == 0) duplicate = 1;
@@ -564,14 +580,17 @@ static void load_user_profiles(void)
 
         int i = user_profile_count++;
         snprintf(user_profile_names[i], sizeof(user_profile_names[i]), "%s", name);
-        snprintf(user_profile_governors[i], sizeof(user_profile_governors[i]), "%s", gov);
-        snprintf(user_profile_epps[i], sizeof(user_profile_epps[i]), "%s", epp);
+        snprintf(user_profile_governors[i], sizeof(user_profile_governors[i]), "%s",
+                 strcmp(gov, "skip") == 0 ? "skip" : gov);
+        snprintf(user_profile_epps[i], sizeof(user_profile_epps[i]), "%s",
+                 strcmp(epp, "skip") == 0 ? "skip" : epp);
         user_profiles[i] = (struct profile_def) {
             .name = user_profile_names[i], .label = user_profile_names[i],
             .color = PROF_COL_BLU, .help_desc = "User-defined profile",
             .gpu_profile = gpu, .turbo = turbo,
             .gov = user_profile_governors[i], .epp = user_profile_epps[i], .fan_safety = 1,
-            .pulse_r = 0, .pulse_g = 0, .pulse_b = 0, .ec_tdp = "custom"
+            .pulse_r = 0, .pulse_g = 0, .pulse_b = 0, .ec_tdp = "custom",
+            .rapl_pl1 = pl1, .rapl_pl2 = pl2
         };
     }
     fclose(fp);
@@ -589,15 +608,17 @@ static void print_profile_table(void)
         size_t len = strlen(user_profiles[i].name);
         if (len > name_width) name_width = len;
     }
-    printf("      %s%-*s %-6s %-12s %-18s %s%s\n", C_BLD, (int)name_width,
-           "Profile", "Turbo", "Governor", "EPP", "EC default CPU & GPU TDP", C_RST);
+    printf("      %s%-*s %-15s %-6s %-12s %-18s %s%s\n", C_BLD, (int)name_width,
+           "Profile", "EC profile code", "Turbo", "Governor", "EPP",
+           "EC default CPU & GPU TDP", C_RST);
     printf("      %s", C_DIM);
     for (size_t i = 0; i < name_width; i++) printf("─");
-    printf(" ────── ──────────── ────────────────── ──────────────────────────────%s\n", C_RST);
+    printf(" ─────────────── ────── ──────────── ────────────────── ──────────────────────────────%s\n", C_RST);
     for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
         const struct profile_def *p = &PROFILES[i];
-        printf("      %s%-*s%s %-6s %-12s %-18s %s\n",
+        printf("      %s%-*s%s %-15d %-6s %-12s %-18s %s\n",
                prof_color_str(p->color), (int)name_width, p->name, C_RST,
+               p->gpu_profile,
                p->turbo ? "ON" : "OFF",
                p->gov,
                p->epp,
@@ -605,10 +626,27 @@ static void print_profile_table(void)
     }
     for (int i = 0; i < user_profile_count; i++) {
         const struct profile_def *p = &user_profiles[i];
-        printf("      %s%-*s%s %-6s %-12s %-18s %s\n",
+        char tdp[64];
+        snprintf(tdp, sizeof(tdp), "%s", p->ec_tdp);
+        if (p->rapl_pl1 <= 0 && p->rapl_pl2 <= 0)
+            snprintf(tdp, sizeof(tdp), "--");
+        if (p->rapl_pl1 > 0 || p->rapl_pl2 > 0) {
+            char pl1[16], pl2[16];
+            if (p->rapl_pl1 > 0) snprintf(pl1, sizeof(pl1), "%dW", p->rapl_pl1);
+            else snprintf(pl1, sizeof(pl1), "--");
+            if (p->rapl_pl2 > 0) snprintf(pl2, sizeof(pl2), "%dW", p->rapl_pl2);
+            else snprintf(pl2, sizeof(pl2), "--");
+            snprintf(tdp, sizeof(tdp), "PL1 %s / PL2 %s (custom)", pl1, pl2);
+        }
+        char ec_code[16];
+        if (p->gpu_profile >= 0) snprintf(ec_code, sizeof(ec_code), "%d", p->gpu_profile);
+        else snprintf(ec_code, sizeof(ec_code), "--");
+        printf("      %s%-*s%s %-15s %-6s %-12s %-18s %s\n",
                prof_color_str(p->color), (int)name_width, p->name, C_RST,
-               p->turbo ? "ON" : "OFF",
-               p->gov, p->epp, p->ec_tdp);
+               ec_code,
+               p->turbo < 0 ? "--" : (p->turbo ? "ON" : "OFF"),
+               strcmp(p->gov, "skip") == 0 ? "--" : p->gov,
+               strcmp(p->epp, "skip") == 0 ? "--" : p->epp, tdp);
     }
     printf("\n");
 }
@@ -630,10 +668,17 @@ static int profile_apply(const struct profile_def *p)
 {
     int err = 0;
     printf("Applying: %s\n", p->label);
-    set_gpu_profile(p->gpu_profile); /* non-fatal: CPU settings still apply without tuxedo_io */
-    if (set_turbo(p->turbo) < 0) err++;
-    if (set_governor(p->gov) < 0) err++;
-    if (set_epp(p->epp) < 0) err++;
+    if (p->gpu_profile >= 0)
+        set_gpu_profile(p->gpu_profile); /* non-fatal: CPU settings still apply without tuxedo_io */
+    if (p->turbo >= 0 && set_turbo(p->turbo) < 0) err++;
+    if (strcmp(p->gov, "skip") != 0 && set_governor(p->gov) < 0) err++;
+    if (strcmp(p->epp, "skip") != 0 && set_epp(p->epp) < 0) err++;
+    if ((p->rapl_pl1 > 0 || p->rapl_pl2 > 0) &&
+        set_rapl_limits(p->rapl_pl1, p->rapl_pl2,
+                        p->gpu_profile >= 0
+                            ? (p->gpu_profile == 2 ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS)
+                            : rapl_pl1_ceiling()) < 0)
+        err++;
     return err ? -1 : 0;
 }
 

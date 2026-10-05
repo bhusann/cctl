@@ -14,7 +14,7 @@ static int scale_set(const char *resolution)
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to set scale to %s", resolution);
-    printf("  Scale: %s → %s (GPU upscaled)\n", resolution, info.resolution);
+    printf("  Display scale: %s → %s\n", resolution, info.resolution);
     return 0;
 }
 
@@ -37,9 +37,9 @@ static int scale_reset(void)
 static void scale_show_details(void)
 {
     printf("%sUsage:%s %scctl scale <factor | resolution | off>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("GPU-side scaling renders the desktop/games at a lower internal resolution\n"
-           "and stretches it up to native panel resolution using hardware GPU scaler,\n"
-           "boosting performance or enlarging UI with zero CPU overhead.\n\n");
+    printf("The internal display does not offer these lower resolutions as native modes.\n"
+           "cctl uses X11 display scaling to show the desktop at a requested size\n"
+           "while keeping the panel at its native resolution.\n\n");
 
     struct display_info info;
     if (has_display_support() && query_display_info(&info) == 0 && info.resolution[0]) {
@@ -54,9 +54,9 @@ static void scale_show_details(void)
     printf("  %s%-15s%s Restore native 1:1 display resolution\n\n", C_CYN, "off | reset", C_RST);
 
     printf("%sExamples:%s\n", C_YLW, C_RST);
-    printf("  %scctl scale 0.75%s         Render at 75%% resolution (1080p equivalent on 1440p panel)\n", C_CYN, C_RST);
-    printf("  %scctl scale 1920x1080%s    Render at explicit 1920x1080 resolution\n", C_CYN, C_RST);
-    printf("  %scctl scale 0.5%s          Render at 50%% resolution (large UI / maximum fps)\n", C_CYN, C_RST);
+    printf("  %scctl scale 0.75%s         Set display scale to 75%% (1080p area on a 1440p panel)\n", C_CYN, C_RST);
+    printf("  %scctl scale 1920x1080%s    Set display scale using a 1920x1080 area\n", C_CYN, C_RST);
+    printf("  %scctl scale 0.5%s          Set display scale to 50%%\n", C_CYN, C_RST);
     printf("  %scctl scale off%s          Reset back to native display resolution\n", C_CYN, C_RST);
 }
 
@@ -214,10 +214,23 @@ static int cmd_set(int argc, char **argv)
 
     if (dry_run) {
         printf("Dry run: profile %s\n", p->name);
-        printf("  GPU profile: %s (%d)\n", gpu_profile_name(p->gpu_profile), p->gpu_profile);
+        if (p->gpu_profile >= 0)
+            printf("  EC profile code: %s (%d)\n", gpu_profile_name(p->gpu_profile), p->gpu_profile);
+        else printf("  EC profile code: --\n");
         printf("  Turbo: %s; governor: %s; EPP: %s\n",
-               p->turbo ? "on" : "off", p->gov, p->epp);
-        printf("  RAPL limits: unchanged (use cctl rapl to change them)\n");
+               p->turbo < 0 ? "--" : (p->turbo ? "on" : "off"),
+               strcmp(p->gov, "skip") == 0 ? "--" : p->gov,
+               strcmp(p->epp, "skip") == 0 ? "--" : p->epp);
+        if (p->rapl_pl1 > 0 || p->rapl_pl2 > 0) {
+            char pl1[16], pl2[16];
+            if (p->rapl_pl1 > 0) snprintf(pl1, sizeof(pl1), "%dW", p->rapl_pl1);
+            else snprintf(pl1, sizeof(pl1), "unchanged");
+            if (p->rapl_pl2 > 0) snprintf(pl2, sizeof(pl2), "%dW", p->rapl_pl2);
+            else snprintf(pl2, sizeof(pl2), "unchanged");
+            printf("  RAPL limits: PL1 %s; PL2 %s (preview only)\n", pl1, pl2);
+        } else {
+            printf("  RAPL limits: unchanged (use cctl rapl to change them)\n");
+        }
         if (p->fan_safety && !nosafe)
             printf("  Fans: restore automatic control (safety default)\n");
         return 0;
@@ -236,7 +249,15 @@ static int cmd_set(int argc, char **argv)
         /* Record the active profile only once
          * the profile actually landed, so `status` and the RAPL ceiling
          * never report a mode that failed to apply. */
-        if (mode_write(profile, "set") < 0)
+        int active_ec_code = p->gpu_profile;
+        if (active_ec_code < 0) {
+            char old_profile[64], old_method[32];
+            int old_ec_code = -1;
+            if (mode_read(old_profile, sizeof(old_profile), old_method, sizeof(old_method),
+                          &old_ec_code) == 0)
+                active_ec_code = old_ec_code;
+        }
+        if (mode_write(profile, "set", active_ec_code) < 0)
             fprintf(stderr, "Warning: could not record active mode in %s\n", MODE_FILE);
         kbe_profile_pulse(profile);
         print_done();
@@ -460,7 +481,7 @@ static int cmd_rapl(int argc, char **argv)
         printf("       %scctl rapl skip <pl2>%s      (set PL2 only)\n", C_CYN_BLD, C_RST);
         printf("       %scctl rapl <pl1> skip%s      (set PL1 only)\n", C_CYN_BLD, C_RST);
         printf("       %scctl rapl <pl2>%s           (one value = PL2 only)\n\n", C_CYN_BLD, C_RST);
-        printf("  %sLimits:%s PL1 1-%dW (up to %dW while Mode is max), PL2 1-%dW\n",
+        printf("  %sLimits:%s PL1 1-%dW (up to %dW with EC profile code 2), PL2 1-%dW\n",
                 C_DIM, C_RST, RAPL_PL1_MAX_WATTS, RAPL_PL1_MAX_WATTS_MAX, RAPL_PL2_MAX_WATTS);
         return 0;
     }
@@ -470,7 +491,7 @@ static int cmd_rapl(int argc, char **argv)
 
     int pl1 = 0, pl2 = 0;
     int skip_pl1 = 0, skip_pl2 = 0;
-    int pl1_cap = rapl_pl1_ceiling(); /* 45W; 90W only while mode == max */
+    int pl1_cap = rapl_pl1_ceiling(); /* 45W; 90W only while EC profile code 2 */
 
     /* A single argument is PL2-only (`cctl rapl 110`), so the PL1 ceiling
      * must not be applied to it. Two arguments parse as PL1 then PL2;
@@ -492,7 +513,7 @@ static int cmd_rapl(int argc, char **argv)
                 fprintf(stderr, "Error: PL1 %dW exceeds the %dW limit for the current mode\n",
                         pl1, pl1_cap);
                 if (pl1_cap == RAPL_PL1_MAX_WATTS)
-                    fprintf(stderr, "       90W PL1 unlocks only while 'cctl set max' is active "
+                    fprintf(stderr, "       90W PL1 is supported only in 'max' mode (EC profile code 2) "
                                     "(see Mode in 'cctl status')\n");
                 return 1;
             }
@@ -516,7 +537,8 @@ static int cmd_rapl(int argc, char **argv)
     require_root(argc, argv);
 
     /* Pass ≤ 0 to skip (set_rapl_limits treats pl1_w ≤ 0 as skip) */
-    int rc = set_rapl_limits(skip_pl1 ? -1 : pl1, skip_pl2 ? -1 : pl2);
+    int rc = set_rapl_limits(skip_pl1 ? -1 : pl1, skip_pl2 ? -1 : pl2,
+                             rapl_pl1_ceiling());
     if (rc == 0) print_done();
     return rc;
 }
