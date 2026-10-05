@@ -831,6 +831,222 @@ static int sudoers_user_is_safe(const char *s)
     return 1;
 }
 
+static int cctl_uninstall_yes(const char *prompt)
+{
+    char answer[64];
+    printf("%s", prompt);
+    fflush(stdout);
+    if (!fgets(answer, sizeof(answer), stdin)) {
+        puts("Cancelled.");
+        return 0;
+    }
+    answer[strcspn(answer, "\r\n")] = '\0';
+    if (strcmp(answer, "yes") != 0) {
+        puts("Cancelled; type the full word 'yes' to confirm.");
+        return 0;
+    }
+    return 1;
+}
+
+/* Uninstall only files owned by cctl. Refuse symlinks, non-regular files,
+ * non-root-owned files, and directories that could redirect cleanup. */
+static int cctl_uninstall_check_file(const char *path)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0)
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISREG(st.st_mode) || st.st_uid != 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+static int cctl_uninstall_check_dir(const char *path, struct stat *out)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0)
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISDIR(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0022) != 0) {
+        errno = EPERM;
+        return -1;
+    }
+    if (out) *out = st;
+    return 1;
+}
+
+static int cctl_uninstall_validate_tree(const char *path, dev_t device)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    if (st.st_dev != device || st.st_uid != 0) { errno = EPERM; return -1; }
+    if (S_ISLNK(st.st_mode) || S_ISREG(st.st_mode)) return 0;
+    if (!S_ISDIR(st.st_mode) || (st.st_mode & 0022) != 0) {
+        errno = EPERM;
+        return -1;
+    }
+
+    DIR *dir = opendir(path);
+    if (!dir) return -1;
+    int failed = 0;
+    struct dirent *entry;
+    for (;;) {
+        errno = 0;
+        entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) failed = 1;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        char child[PATH_MAX];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child) ||
+            cctl_uninstall_validate_tree(child, device) != 0) {
+            failed = 1;
+            break;
+        }
+    }
+    closedir(dir);
+    if (failed && errno == 0) errno = EPERM;
+    return failed ? -1 : 0;
+}
+
+static int cctl_uninstall_remove_tree(const char *path, dev_t device)
+{
+    DIR *dir = opendir(path);
+    if (!dir) return -1;
+    int failed = 0;
+    struct dirent *entry;
+    for (;;) {
+        errno = 0;
+        entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) failed = 1;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        char child[PATH_MAX];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) { errno = ENAMETOOLONG; failed = 1; break; }
+        struct stat st;
+        if (lstat(child, &st) != 0) { failed = 1; break; }
+        if (st.st_dev != device) { errno = EPERM; failed = 1; break; }
+        if (S_ISDIR(st.st_mode)) {
+            if (cctl_uninstall_remove_tree(child, device) != 0) {
+                failed = 1;
+                break;
+            }
+        } else if (unlink(child) != 0) {
+            failed = 1;
+            break;
+        }
+    }
+    closedir(dir);
+    if (failed) return -1;
+    return rmdir(path);
+}
+
+static int cctl_uninstall_remove_file(const char *path)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0)
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISREG(st.st_mode) || st.st_uid != 0) { errno = EPERM; return -1; }
+    return unlink(path);
+}
+
+static int cmd_uninstall(int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 2)
+        return fail("'cctl uninstall' does not accept arguments");
+    if (!is_installed_systemwide())
+        return fail("'cctl uninstall' is available only from the installed /usr/local/bin/cctl binary");
+
+    int module_stack_loaded = drivers_loaded();
+
+    static const char *const files[] = {
+        USER_PROFILE_FILE,
+        "/etc/sudoers.d/cctl",
+        "/etc/sudoers.d/cctl.bak",
+        "/etc/sudoers.d/.cctl.tmp",
+        "/usr/local/bin/cctl"
+    };
+    static const char *const parent_dirs[] = {
+        "/etc", "/etc/sudoers.d", "/usr", "/usr/local",
+        "/usr/local/bin", "/var", "/var/lib"
+    };
+    for (size_t i = 0; i < sizeof(parent_dirs) / sizeof(parent_dirs[0]); i++) {
+        if (cctl_uninstall_check_dir(parent_dirs[i], NULL) != 1)
+            return fail("Refusing uninstall because %s is missing or unsafe", parent_dirs[i]);
+    }
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        if (cctl_uninstall_check_file(files[i]) != 0)
+            return fail("Refusing to remove unexpected file at %s", files[i]);
+    }
+
+    int have_etc_cctl = cctl_uninstall_check_dir("/etc/cctl", NULL);
+    if (have_etc_cctl < 0)
+        return fail("Refusing to remove unexpected directory at /etc/cctl");
+
+    struct stat data_dir;
+    int have_data_dir = cctl_uninstall_check_dir("/var/lib/cctl", &data_dir);
+    if (have_data_dir < 0)
+        return fail("Refusing to remove unexpected directory at /var/lib/cctl");
+    struct stat varlib_dir;
+    if (have_data_dir &&
+        (cctl_uninstall_check_dir("/var/lib", &varlib_dir) != 1 ||
+         data_dir.st_dev != varlib_dir.st_dev))
+        return fail("Refusing to remove /var/lib/cctl because it is on a different filesystem");
+    if (have_data_dir && cctl_uninstall_validate_tree("/var/lib/cctl", data_dir.st_dev) != 0)
+        return fail("Refusing to remove unsafe contents under /var/lib/cctl");
+
+    if (module_stack_loaded) {
+        fprintf(stderr,
+                "TUXEDO/Clevo drivers are loaded. Use 'cctl drivers-manage' to uninstall them first.\n");
+        if (!cctl_uninstall_yes("Proceed anyway and uninstall cctl only, leaving the drivers installed? Type 'yes' to continue: "))
+            return 0;
+    } else if (!cctl_uninstall_yes(
+                   "This removes cctl, its profiles, sudo rule, and saved data. Type 'yes' to continue: ")) {
+        return 0;
+    }
+
+    if (cctl_uninstall_remove_file(USER_PROFILE_FILE) != 0) {
+        perror("Error removing custom profiles");
+        return 1;
+    }
+    if (have_etc_cctl) {
+        if (rmdir("/etc/cctl") != 0) {
+            if (errno == ENOTEMPTY || errno == EEXIST)
+                fprintf(stderr, "Keeping /etc/cctl because it contains other files.\n");
+            else {
+                perror("Error removing /etc/cctl");
+                return 1;
+            }
+        }
+    }
+
+    for (size_t i = 1; i < 4; i++) {
+        if (cctl_uninstall_remove_file(files[i]) != 0) {
+            perror("Error removing cctl sudoers files");
+            return 1;
+        }
+    }
+    if (cctl_uninstall_remove_file("/usr/local/bin/cctl") != 0) {
+        perror("Error removing /usr/local/bin/cctl");
+        return 1;
+    }
+    if (have_data_dir && cctl_uninstall_remove_tree("/var/lib/cctl", data_dir.st_dev) != 0) {
+        perror("Error removing /var/lib/cctl data");
+        return 1;
+    }
+
+    puts("cctl was uninstalled. TUXEDO/Clevo drivers, if installed, were left untouched.");
+    return 0;
+}
+
 static int cmd_install(int argc, char **argv)
 {
     int force = (argc >= 3 && strcmp(argv[2], "--force") == 0);

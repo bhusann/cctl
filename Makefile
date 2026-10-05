@@ -7,9 +7,6 @@
 # are always applied via override so they cannot be accidentally dropped.
 
 CC       ?= gcc
-PREFIX   ?= /usr/local
-BINDIR   ?= $(PREFIX)/bin
-DESTDIR  ?=
 
 # Default optimisation (overridable: `make CFLAGS="-O2 -g"`)
 CFLAGS   ?= -Os
@@ -41,10 +38,10 @@ experimental: $(SOURCES) $(INCLUDES)
 	$(CC) $(CFLAGS) -DCCTL_NVIDIA -o $@ $< $(LDFLAGS)
 
 # ── Install ─────────────────────────────────────────────────────────────────
-# Basic binary install; for full setup (sudoers rule, passwordless sudo)
-# use `cctl install` after placing the binary.
+# Build and run cctl's installer, which installs the binary and configures
+# the required sudoers rule.
 install: cctl
-	install -Dm755 cctl $(DESTDIR)$(BINDIR)/cctl
+	sudo ./cctl install
 
 # ── Clean ───────────────────────────────────────────────────────────────────
 clean:

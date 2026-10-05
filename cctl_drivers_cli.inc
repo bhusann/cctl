@@ -452,6 +452,7 @@ static const struct command commands[] = {
 
     /* System */
     { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force]",                       "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
+    { "uninstall",      1, cmd_uninstall,       SEC_SYSTEM,    "",                                "Remove cctl, its profiles, sudo rule, and saved data", is_installed_systemwide },
     { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (auto-fetch or offline; sha256-verified)", NULL },
     { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [number] [--mask fields]", "Save, restore, view, delete, or list snapshots", NULL },
 };
@@ -547,7 +548,7 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST);
 
     printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
-    printf("  %sAppend --dry-run to set, fan, turbo, gov, epp, rapl, or bat to preview changes.%s\n\n", C_DIM, C_RST);
+    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n\n", C_DIM, C_RST);
 
     for (size_t s = 0; s < sizeof(sections) / sizeof(sections[0]); s++) {
         const struct section_def *sec = &sections[s];
@@ -602,13 +603,18 @@ static void print_usage(const char *prog)
 
 int main(int argc, char **argv)
 {
-    for (int i = 2; i < argc; ) {
-        if (strcmp(argv[i], "--dry-run") == 0) {
-            dry_run = 1;
-            for (int j = i; j < argc; j++) argv[j] = argv[j + 1];
-            argc--;
-        } else {
-            i++;
+    /* Snapshot restore handles --dry-run itself so it can retain the flag
+     * across sudo re-execution while reading the root-only snapshot file. */
+    int snapshot_command = argc >= 2 && strcasecmp(argv[1], "snapshot") == 0;
+    if (!snapshot_command) {
+        for (int i = 2; i < argc; ) {
+            if (strcmp(argv[i], "--dry-run") == 0) {
+                dry_run = 1;
+                for (int j = i; j < argc; j++) argv[j] = argv[j + 1];
+                argc--;
+            } else {
+                i++;
+            }
         }
     }
 

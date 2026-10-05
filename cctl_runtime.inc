@@ -11,12 +11,29 @@ static int is_installed_systemwide(void)
     return (strcmp(path, "/usr/local/bin/cctl") == 0);
 }
 
-/* True when the TUXEDO/Clevo driver stack is loaded. /dev/tuxedo_io only
- * appears once tuxedo_io is up, and clevo_acpi + tuxedo_keyboard come with
- * it as hard modprobe dependencies — so one stat covers the whole stack. */
+/* True when any cctl-supported TUXEDO/Clevo driver module is loaded. */
 static int drivers_loaded(void)
 {
-    return access("/dev/tuxedo_io", F_OK) == 0;
+    static const char *const modules[] = {
+        "clevo_acpi", "tuxedo_keyboard", "tuxedo_io"
+    };
+    FILE *fp = fopen("/proc/modules", "r");
+    if (!fp) return access("/dev/tuxedo_io", F_OK) == 0;
+
+    char line[256], name[64];
+    int loaded = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (sscanf(line, "%63s", name) != 1) continue;
+        for (size_t i = 0; i < sizeof(modules) / sizeof(modules[0]); i++) {
+            if (strcmp(name, modules[i]) == 0) {
+                loaded = 1;
+                break;
+            }
+        }
+        if (loaded) break;
+    }
+    fclose(fp);
+    return loaded;
 }
 
 static int not_installed_systemwide(void)

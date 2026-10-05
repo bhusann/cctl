@@ -595,6 +595,83 @@ static int cctl_snapshot_read_file(int number, struct cctl_snapshot_data *st)
     return failed ? -1 : 0;
 }
 
+static void cctl_snapshot_preview_restore(int number,
+                                          const struct cctl_snapshot_data *st)
+{
+    char value[96];
+    printf("Dry run: snapshot %d would restore these settings; nothing was changed.\n",
+           number);
+#define SNAPSHOT_PREVIEW(label, expression) do { \
+    snprintf(value, sizeof(value), "%s", (expression)); \
+    printf("  %-22s %s\n", label, value); \
+} while (0)
+
+    if (st->ec_profile_code >= 0) {
+        snprintf(value, sizeof(value), "%s (%d)", gpu_profile_name(st->ec_profile_code),
+                 st->ec_profile_code);
+        printf("  %-22s %s\n", "EC profile code", value);
+    } else SNAPSHOT_PREVIEW("EC profile code", "skip (not saved)");
+    if (st->turbo >= 0) SNAPSHOT_PREVIEW("Turbo", st->turbo ? "on" : "off");
+    else SNAPSHOT_PREVIEW("Turbo", "skip (not saved)");
+    SNAPSHOT_PREVIEW("Governor", strcmp(st->governor, "skip") == 0 ? "skip (not saved)" : st->governor);
+    SNAPSHOT_PREVIEW("EPP", strcmp(st->epp, "skip") == 0 ? "skip (not saved)" : st->epp);
+    if (st->pl1 >= 0) {
+        snprintf(value, sizeof(value), "%dW", st->pl1);
+        printf("  %-22s %s\n", "PL1", value);
+    } else SNAPSHOT_PREVIEW("PL1", "skip (not saved)");
+    if (st->pl2 >= 0) {
+        snprintf(value, sizeof(value), "%dW", st->pl2);
+        printf("  %-22s %s\n", "PL2", value);
+    } else SNAPSHOT_PREVIEW("PL2", "skip (not saved)");
+
+    if (st->core_clock_known < 0) SNAPSHOT_PREVIEW("NVIDIA core clock", "skip (not saved)");
+    else if (st->core_clock_set) {
+        snprintf(value, sizeof(value), "%d-%d MHz", st->core_clock_min, st->core_clock_max);
+        printf("  %-22s %s\n", "NVIDIA core clock", value);
+    } else SNAPSHOT_PREVIEW("NVIDIA core clock", "reset/unlocked");
+    if (st->mem_clock_known < 0) SNAPSHOT_PREVIEW("NVIDIA memory clock", "skip (not saved)");
+    else if (st->mem_clock_set) {
+        snprintf(value, sizeof(value), "%d-%d MHz", st->mem_clock_min, st->mem_clock_max);
+        printf("  %-22s %s\n", "NVIDIA memory clock", value);
+    } else SNAPSHOT_PREVIEW("NVIDIA memory clock", "reset/unlocked");
+
+    if (st->kbd_r >= 0 && st->kbd_g >= 0 && st->kbd_b >= 0) {
+        snprintf(value, sizeof(value), "RGB(%d, %d, %d)", st->kbd_r, st->kbd_g, st->kbd_b);
+        printf("  %-22s %s\n", "Keyboard color", value);
+    } else SNAPSHOT_PREVIEW("Keyboard color", "skip (not saved)");
+    if (st->kbd_brightness >= 0) {
+        snprintf(value, sizeof(value), "%d%%", (st->kbd_brightness * 100 + 127) / 255);
+        printf("  %-22s %s\n", "Keyboard brightness", value);
+    } else SNAPSHOT_PREVIEW("Keyboard brightness", "skip (not saved)");
+    SNAPSHOT_PREVIEW("Keyboard effect", strcmp(st->kbd_effect, "skip") == 0 ? "skip (not saved)" : st->kbd_effect);
+    if (st->fn_lock >= 0) SNAPSHOT_PREVIEW("Fn Lock", st->fn_lock ? "on" : "off");
+    else SNAPSHOT_PREVIEW("Fn Lock", "skip (not saved)");
+    if (st->webcam >= 0) SNAPSHOT_PREVIEW("Webcam", st->webcam ? "on" : "off");
+    else SNAPSHOT_PREVIEW("Webcam", "skip (not saved)");
+    if (st->microphone >= 0) SNAPSHOT_PREVIEW("Microphone", st->microphone ? "on" : "off");
+    else SNAPSHOT_PREVIEW("Microphone", "skip (not saved)");
+
+    if (st->battery_start >= 0 || st->battery_stop >= 0) {
+        char start[24], stop[24];
+        int current_start = st->battery_start >= 0 ? st->battery_start : bat_read_start();
+        int current_stop = st->battery_stop >= 0 ? st->battery_stop : bat_read_end();
+        if (current_start > 0)
+            snprintf(start, sizeof(start), "%d%%", current_start);
+        else
+            snprintf(start, sizeof(start), "unavailable");
+        if (current_stop > 0)
+            snprintf(stop, sizeof(stop), "%d%%", current_stop);
+        else
+            snprintf(stop, sizeof(stop), "unavailable");
+        printf("  %-22s start %s, stop %s\n", "Battery thresholds", start, stop);
+    } else SNAPSHOT_PREVIEW("Battery thresholds", "skip (not saved)");
+    SNAPSHOT_PREVIEW("Refresh rate", strcmp(st->display_rate, "skip") == 0 ? "skip (not saved)" : st->display_rate);
+    if (st->display_scale_known < 0) SNAPSHOT_PREVIEW("Display scale", "skip (not saved)");
+    else SNAPSHOT_PREVIEW("Display scale", st->display_scale_set ? st->display_scale : "native (reset)");
+#undef SNAPSHOT_PREVIEW
+    puts("Fan settings are not part of snapshots.");
+}
+
 static const char *cctl_snapshot_value(int value, char *buf, size_t size)
 {
     if (value < 0) return "--";
@@ -818,11 +895,13 @@ static int cmd_snapshot(int argc, char **argv)
     if (argc < 3) {
         printf("%sUsage:%s %scctl snapshot <save|restore|view|delete> <number> [--mask fields]%s\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
+        printf("       %scctl snapshot restore <number> [--mask fields] [--dry-run]%s\n",
+               C_CYN_BLD, C_RST);
         printf("       %scctl snapshot list%s\n\n", C_CYN_BLD, C_RST);
         printf("%sActions:%s\n", C_YLW, C_RST);
         printf("  list              Show saved snapshot numbers on one line\n");
         printf("  save <number> [--mask fields]     Save current settings, omitting masked fields\n");
-        printf("  restore <number> [--mask fields]  Apply a snapshot, skipping masked fields\n");
+        printf("  restore <number> [--mask fields] [--dry-run]  Apply; preview with --dry-run\n");
         printf("  view <number>     Show a saved snapshot\n");
         printf("  delete <number>   Delete a saved snapshot\n");
         printf("\n%sMask fields:%s\n", C_YLW, C_RST);
@@ -837,21 +916,31 @@ static int cmd_snapshot(int argc, char **argv)
         require_root(argc, argv);
         return cctl_snapshot_list();
     }
-    if (argc != 4 && argc != 6)
-        return fail("Usage: cctl snapshot <save|restore|view|delete> <number> [--mask fields] or cctl snapshot list");
+    if (argc < 4 || argc > 7)
+        return fail("Usage: cctl snapshot <save|restore|view|delete> <number> [--mask fields]; restore also accepts --dry-run");
     int number;
     if (cctl_snapshot_number(argv[3], &number) != 0)
         return fail("Snapshot number must be an integer from 0 to 999999999");
 
     unsigned long long mask = 0;
-    if (argc == 6) {
-        if (strcmp(argv[4], "--mask") != 0)
-            return fail("Expected --mask before the comma-separated field list");
-        if (cctl_snapshot_parse_mask(argv[5], &mask) != 0)
-            return fail("Invalid mask list (see 'cctl snapshot' for available fields)");
+    int have_mask = 0, snapshot_dry_run = 0;
+    for (int i = 4; i < argc; i++) {
+        if (strcmp(argv[i], "--mask") == 0) {
+            if (have_mask || i + 1 >= argc ||
+                cctl_snapshot_parse_mask(argv[++i], &mask) != 0)
+                return fail("Invalid mask list (see 'cctl snapshot' for available fields)");
+            have_mask = 1;
+        } else if (strcmp(argv[i], "--dry-run") == 0) {
+            if (snapshot_dry_run) return fail("--dry-run was specified more than once");
+            snapshot_dry_run = 1;
+        } else {
+            return fail("Unknown snapshot option '%s'", argv[i]);
+        }
     }
     if (mask && strcmp(argv[2], "save") != 0 && strcmp(argv[2], "restore") != 0)
         return fail("--mask is supported only for snapshot save and restore");
+    if (snapshot_dry_run && strcmp(argv[2], "restore") != 0)
+        return fail("--dry-run is supported only for snapshot restore");
 
     if (strcmp(argv[2], "save") == 0) {
         require_root(argc, argv);
@@ -871,6 +960,10 @@ static int cmd_snapshot(int argc, char **argv)
             return 0;
         }
         cctl_snapshot_apply_mask(&st, mask);
+        if (snapshot_dry_run) {
+            cctl_snapshot_preview_restore(number, &st);
+            return 0;
+        }
         return cctl_snapshot_restore(number, &st);
     }
     return fail("Unknown snapshot action '%s' (use list, save, restore, view, or delete)", argv[2]);

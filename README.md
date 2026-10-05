@@ -126,16 +126,19 @@ EC profile codes select modes; they are not a ranking:
 - `2` — High performance
 - `3` — Standard mode
 
-Code `2` is the only mode that allows PL1 above 45W: PL1 can be up to 90W and
-PL2 can be 1–115W. Other codes allow PL1 up to 45W. Code `3` has standard
-defaults of 45W/115W CPU and 70W GPU; it is not the highest-power mode. Code
-`2` supports up to 100W GPU power.
+Code `2` is high performance: it supports PL1 up to 90W, PL2 up to 115W, and
+GPU power up to 100W. Code `3` is standard mode, with defaults of 45W/115W
+CPU and 70W GPU; it is not the highest-power mode. Other codes allow PL1 up to
+45W.
 
-EC code must be 0–3, and Turbo must be 0 or 1. Governor and EPP values must be
-supported; run `cctl gov` and `cctl epp` to see available values. PL1 must be
-within its mode limit, and PL2 must be 1–115W. If a line has a typo or invalid
-value, cctl skips it, so the profile will not appear in `cctl set` or
-`cctl --help`.
+Use EC code `3`, `2`, `1`, or `0`; Turbo `1` (on) or `0` (off); governor
+`powersave` or `performance`; and EPP `performance`, `balance_performance`,
+`balance_power`, or `power`. PL1 can be up to 90W with EC code `2`, and up to
+45W with other codes. PL2 can be up to 115W.
+
+> **Caution:** If a profile line contains a typo or unsupported value, cctl
+> skips it, so the profile will not appear in `cctl set` or `cctl --help`.
+
 Custom profiles use the normal fan-safety behavior. Skipped or unset values
 show as `--` in the help table; custom PL1/PL2 values appear in the EC TDP
 column, for example `PL1 90W / PL2 115W (custom)`.
@@ -209,29 +212,22 @@ cctl --version                  # Print version and exit (also -V)
 cctl snapshot list               # List saved snapshot numbers on one line
 cctl snapshot save <number> [--mask fields]    # Save current settings
 cctl snapshot view <number>    # Show a saved snapshot
-cctl snapshot restore <number> [--mask fields] # Apply a saved snapshot
+cctl snapshot restore <number> [--mask fields] [--dry-run] # Apply or preview
 cctl snapshot delete <number>  # Delete a saved snapshot
 ```
 
 Use `--mask` to omit fields while saving or skip them while restoring. Separate
 field names with commas. For example: `cctl snapshot save 2 --mask epp,pl1,turbo`.
+Add `--dry-run` to `snapshot restore` to preview the settings and skipped
+fields without applying changes.
 Available names are `nvidia_clock`, `nvidia_memclock`,
 `ec_code`, `turbo`, `gov`, `epp`, `pl1`, `pl2`, `kbe`, `kbc`, `kbb`,
 `fn_lock`, `webcam`, `mic`, `bat`, `rr`, and `scale`. `kbc` masks keyboard
-color, `kbb` brightness, `kbe` effect, and `bat` both battery thresholds. Fan
-settings are not included in snapshots.
+color, `kbb` brightness, `kbe` effect, and `bat` both battery thresholds.
 
-Snapshots are stored as `.conf` files under `/var/lib/cctl/snapshots/`. They save
-the current EC code (not the profile name), CPU settings and power limits,
-keyboard color/brightness/effect, Fn Lock, webcam/microphone, battery
-thresholds, display refresh rate, and display scale. Refresh rate is read from
-the active X11 display. NVIDIA clock limits and display scale are saved when
-cctl has recorded them in `/run/cctl/mode`.
-Settings that cannot be read are stored as `skip` and left unchanged during
-restore. A restore applies each available setting in sequence and reports any
-failures while continuing with the rest. Display settings require a supported
-X11 session when saving or restoring them. Saving over an existing number
-asks for confirmation; answering anything other than `y` or `yes` cancels it.
+Snapshots save system settings, CPU power settings, keyboard settings, Fn Lock,
+webcam and microphone states, battery thresholds, GPU clock settings, and
+display settings. Fan settings are not saved or restored.
 
 ### NVIDIA GPU
 ```bash
@@ -266,10 +262,10 @@ cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 
 ```bash
 make                # Standard build (profiles, fans, display, battery, nvidia clock/power)
-make install        # Install to /usr/local/bin/cctl (use DESTDIR for staged installs)
+make install        # Build and install through cctl's installer
 ```
 
-The Makefile respects `CC`, `CFLAGS`, `LDFLAGS`, `PREFIX`, `BINDIR`, and `DESTDIR`. Hardening flags are always applied. Pass `STRIP=0` to keep debug symbols.
+The Makefile respects `CC`, `CFLAGS`, and `LDFLAGS`. Hardening flags are always applied. Pass `STRIP=0` to keep debug symbols.
 
 ---
 
@@ -318,25 +314,18 @@ Drivers first, then the cctl binary — in that order, so cctl is still around f
 sudo cctl drivers-manage   # select the uninstall option
 ```
 
-2. **cctl binary & sudoers** — `cctl install` places the binary in `/usr/local/bin/cctl` and configures a passwordless sudo rule in `/etc/sudoers.d/cctl` for auto-elevation (validated with `visudo -c` on install; the previous rule is backed up as `/etc/sudoers.d/cctl.bak`). To remove them:
+2. **cctl and its data** — run the uninstall command:
 
 ```bash
-# Remove installed binary
-sudo rm -f /usr/local/bin/cctl
-
-# Remove passwordless sudo rule (+ backup)
-sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak
-
-# Optional: remove custom profiles you created
-sudo rm -f /etc/cctl/profiles.conf
-# If the directory is empty afterward, you can remove it too
-sudo rmdir /etc/cctl 2>/dev/null || true
-
-# Optional: remove the persistent driver cache. Kept by default on purpose —
-# it is what makes `cctl drivers-manage` able to reinstall/uninstall the
-# drivers later with no internet, no tarball beside the binary, no prompt.
-sudo rm -rf /var/lib/cctl
+sudo cctl uninstall
 ```
+
+Type `yes` in full to confirm. This removes the cctl binary, sudoers rule and
+backup, custom profiles, and saved cctl data under `/var/lib/cctl`. If cctl
+detects loaded TUXEDO/Clevo modules, it recommends removing them first with
+`cctl drivers-manage`; you can confirm to remove cctl while leaving the drivers
+installed. It is recommended to uninstall the drivers first, before uninstalling
+the cctl binary.
 
 ### Manual Uninstallation
 
@@ -391,82 +380,7 @@ Or do it step by step:
 
 ## Developer Notes
 
-- **Source layout** — `cctl.c` includes subsystem fragments in a fixed order: core, power controls, platform/privacy/status, keyboard, monitor, runtime helpers, NVIDIA, command handlers, and driver/install commands. They remain one translation unit so hardware helpers stay private and link behavior is unchanged; edit the owning fragment instead of growing the main file.
-
-- **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
-- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while EC profile code 2 is active; the active profile is recorded and shown as `Mode:` in `cctl status`, and `EC default` appears when no profile has been applied yet.
-
-- **Direct EC Port I/O Fan Control & Protocol Quirks (Legacy Method)** — `cctl` uses direct port I/O (`ioperm`, `inb`/`outb` on port `0x66` command and `0x62` data) for individual fan control (`cctl fan cpu <pct>`, `cctl fan gpu <pct>`), Max, and Silent modes. This preserves the ability to adjust a single fan independently without kicking the other fan off its automatic EC thermal curve (which the `tuxedo_io` `W_CL_FANSPEED` ioctl cannot do, as it forces all channels into fixed manual mode).
-  - **Hardware Handshake:** All writes require polling Input Buffer Full (IBF, bit 1 of port `0x66`): wait until `((inb(0x66) >> 1) & 1) == 0` before sending each command or data byte.
-  - **Individual Fan Duty:**
-    - Send command `0x99` to port `0x66`, followed by 2 data bytes to port `0x62`:
-      ```
-      { fan_idx, raw_duty }
-      ```
-      where `fan_idx` is `1` (CPU) or `2` (GPU), and `raw_duty = (pct * 255) / 100` (range 25–100%).
-    - Directly writes to that fan's hardware PWM channel without altering or locking the other fan.
-  - **Max Fan Mode:**
-    - Step 1: Send mode command `0x98` to port `0x66` with data byte `0x40` (`FAN_MODE_MAX`) to port `0x62`.
-    - Step 2: Send follow-up command `0x99` for each fan: `{ 0x01 (CPU), 0xFF (FAN_DUTY_AUTO) }` and `{ 0x02 (GPU), 0xFF (FAN_DUTY_AUTO) }`.
-  - **Silent Fan Mode:**
-    - Step 1: Send mode command `0x98` to port `0x66` with data byte `0x20` (`FAN_MODE_SILENT`) to port `0x62`.
-    - Step 2: Send follow-up command `0x99` for each fan: `{ 0x01 (CPU), 0x20 (FAN_MODE_SILENT) }` and `{ 0x02 (GPU), 0x20 (FAN_MODE_SILENT) }`.
-  - **Standalone Auto Restore Quirk (Reversed Byte Order):**
-    - When restoring automatic EC control without a preceding `0x98` mode command, command `0x99` requires **reversed** argument order:
-      ```
-      { 0xFF (FAN_DUTY_AUTO), fan_idx }
-      ```
-    - Notice that `{ fan_idx, 0xFF }` only works as a follow-up after a `0x98` mode command. For standalone auto-restore, passing `{ fan_idx, 0xFF }` is ignored by the firmware; `{ 0xFF, fan_idx }` must be used.
-
-- **GPU Fan Duty Register** — ACPI `FANINFO1` byte 2 is stuck at ~15% on this model. `cctl` reads GPU fan duty from `FANINFO2` (`0x64`, byte 0) for accurate readings.
-
-- **Keyboard Backlight Type Override (`force_backlight_type=6`)** — Why the driver installer forces type 6:
-  - In `drivers/src/clevo_leds.h:clevo_leds_init()` (path within the mirror repo):
-    1. The driver calls `clevo_evaluate_method2(0x0D, 0)` to read the ACPI `_DSM` buffer. `buffer[0x0f]` holds the keyboard type ID. Known IDs include: `0x00` (NONE), `0x01` (FIXED), `0x02` (3ZONE), `0x06` (1ZONE), `0xF3` (PERKEY).
-    2. The Colorful Evol P15 EC returns `0x26`. Because this ID is unknown to the driver, probe switches fail to match, registering no `led_classdev` — resulting in no `/sys/class/leds/*::kbd_backlight` and leaving brightness/color ioctls non-functional.
-    3. `0x26` (`0b00100110`) vs `0x06` (`0b00000110`): the low nibble is identical, while the high bits likely signify a newer revision or flag. The wire protocol (`0x67` + `0xF4000000 | brightness`, zone color) remains standard single-zone RGB.
-    4. Passing module option `force_backlight_type=6` (`tuxedo_keyboard`) bypasses ACPI buffer evaluation directly:
-       ```c
-       if (force_backlight_type >= 0) type = force; else { /* SPECS retry x3 -> 0x52/0x7A fallback */ }
-       ```
-    5. Upstream driver fix would be handling `case 0x26: type = 1ZONE;` or matching `(type & 0x0F) == 0x06`. Until upstreamed, forcing type 6 via modprobe is required.
-  - **Customizing your keyboard type:**
-    If you have a different variant and need to force another keyboard backlight mode, edit `/etc/modprobe.d/tuxedo_keyboard.conf`:
-    ```
-    options tuxedo_keyboard force_backlight_type=<value>
-    ```
-    Known values:
-    * `1` — FIXED white backlight (`0x01`)
-    * `2` — 3-zone RGB (`0x02`)
-    * `6` — 1-zone RGB (`0x06`) *(default configured by this project)*
-    * `243` — Per-key RGB (`0xF3`)
-
-  - **Sysfs LED Exposure (`/sys/class/leds`):**
-    All keyboard backlight controls registered by the driver are exposed under `/sys/class/leds`:
-    * For **1-zone RGB (`force_backlight_type=6`)**: A single device entry is created:
-      ```
-      /sys/class/leds/rgb:kbd_backlight/
-      ```
-      (Contains controls like `brightness`, `multi_intensity`, `color`, etc.)
-    * For **3-zone RGB (`force_backlight_type=2`)**: The kernel driver registers 3 separate LED device entries under `/sys/class/leds` corresponding to each keyboard zone (e.g., `rgb:kbd_backlight`, `rgb:kbd_backlight_1`, `rgb:kbd_backlight_2` or separate zone descriptors), allowing each zone's color and brightness to be tuned individually via sysfs.
-    * For **Fixed White (`force_backlight_type=1`)**: A `white:kbd_backlight` directory is exposed for brightness level control.
-
-    > **Note:** `cctl`'s command implementation currently only supports **1-zone RGB** (using type 6). If your hardware uses 3-zone RGB or per-key RGB, you can manage the zones directly through their respective `/sys/class/leds` folders or adapt `cctl`'s source code (`cctl.c`) to control individual zones.
-
-- **GPU Display MUX via UEFI NVRAM (Insyde H2O)** — The laptop features a physical display multiplexer with two BIOS modes:
-  - `MSHybrid` (panel driven by Intel iGPU; NVIDIA dGPU provides render offload).
-  - `dGPU` (panel wired directly to NVIDIA GeForce RTX card; Intel iGPU is unmapped from PCI display class).
-  - The hardware MUX state cannot be flipped on-the-fly inside an active OS session (ACPI `_DSM` methods on this Insyde board hang the display subsystem). Instead, switching is staged via the UEFI NVRAM variable `Setup-a04a27f4-df00-4d42-b552-39511302113d` at file offset 430 (`0x03` = MSHybrid, `0x02` = dGPU). The new mode is latched during POST upon reboot.
-  - **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
-- **dGPU mode boots at 40 Hz (X11)** — Happens on every boot when dGPU mode is selected, whether selected in BIOS or with `cctl mux switch`; it is not EC state. The panel's EDID is identical in both MUX modes: the base block's first (preferred) DTD is 2560x1440 @ **40 Hz**, while the 165 Hz timing lives in the DisplayID extension. The nvidia X driver takes the base-block preferred timing as the initial mode (boots 40); modesetting over i915 in MSHybrid prefers the DisplayID timing (boots 165). Not a capability problem — xrandr lists both rates in dGPU mode. Run `cctl rr 165` to restore 165 Hz, or add that command to your desktop environment's autostart/startup applications to apply it automatically.
-- **Keyboard effect state (`kbe`)** — Run `cctl kbe` to view the active effect, PID, and preserved base state (it re-elevates automatically — the `/run/cctl_kbe.state` file is root-only; `sudo cat` it directly if you prefer).
-- **Release tarball provenance** — The `drivers.tar.gz` attached to releases is fetched straight from the mirror — never rebuilt — and the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`.
-- **drivers-manage source order** — how `cctl drivers-manage` finds `drivers.tar.gz` (first match wins):
-  1. persistent cache **`/var/lib/cctl/drivers.tar.gz`** — sha-verified; enables fully offline reinstall; stale/corrupt entries are reported, ignored, and replaced on the next verified acquisition
-  2. `drivers.tar.gz` beside the cctl binary — sha-checked on the spot; a stale copy is warned about and skipped
-  3. download from the mirror into a private temp dir — on failure it names the folder for a manual copy
-  4. full path to a `drivers.tar.gz` you already have — checked in place first; staged only if valid
-- **drivers-manage verification** — Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file.
+See [docs/developer-notes.md](docs/developer-notes.md).
 
 ---
 

@@ -43,7 +43,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100051
+#define CCTL_MICROVERSION 100053
 #endif
 
 

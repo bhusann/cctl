@@ -684,24 +684,23 @@ static void status_system(void)
 {
     char buf[128] = {0};
 
-    /* Mode and GPU clock locks come from cctl's runtime state file, not live
-     * hardware telemetry. Read the file once for both status rows. */
+    /* Mode and GPU settings are read together from cctl's runtime record. */
     struct mode_runtime_data mode_state;
     int have_mode_state = mode_runtime_read(&mode_state) == 0;
     if (have_mode_state && mode_state.profile[0])
-        row("Mode:", "%s%s%s %s(%s; from /run/cctl/mode, cctl state)%s",
+        row("Mode*:", "%s%s%s %s(%s; self-recorded, not live)%s",
             C_CYN, mode_state.profile, C_RST, C_DIM,
             mode_state.method[0] ? mode_state.method : "method unknown", C_RST);
     else
-        row("Mode:", "%sEC default%s %s(no cctl mode state)%s",
+        row("Mode*:", "%sEC default%s %s(no cctl mode state)%s",
             C_DIM, C_RST, C_DIM, C_RST);
 
     if (have_mode_state && mode_state.ec_profile_code >= 0)
-        row("EC Code:", "%s%s%s (%d) %s(from /run/cctl/mode; cctl state)%s",
+        row("EC Code*:", "%s%s%s (%d) %s(self-recorded, not live)%s",
             C_CYN, gpu_profile_name(mode_state.ec_profile_code), C_RST,
             mode_state.ec_profile_code, C_DIM, C_RST);
     else
-        row("EC Code:", "%s-- (no cctl mode state)%s", C_DIM, C_RST);
+        row("EC Code:", "%sstandard (3; default)%s", C_CYN, C_RST);
 
     char core_clock[64], mem_clock[64];
     if (have_mode_state && mode_state.core_clock_known) {
@@ -722,20 +721,6 @@ static void status_system(void)
     } else {
         snprintf(mem_clock, sizeof(mem_clock), "--");
     }
-    row("GPU Clocks:", "Core %s, memory %s %s(from /run/cctl/mode; cctl state, not live)%s",
-        core_clock, mem_clock, C_DIM, C_RST);
-
-    if (have_mode_state && mode_state.display_scale_known) {
-        if (mode_state.display_scale_set)
-            row("Display Scale:", "%s%s%s %s(from /run/cctl/mode; cctl state, not live)%s",
-                C_CYN, mode_state.display_scale, C_RST, C_DIM, C_RST);
-        else
-            row("Display Scale:", "%snative (reset)%s %s(from /run/cctl/mode; cctl state, not live)%s",
-                C_CYN, C_RST, C_DIM, C_RST);
-    } else {
-        row("Display Scale:", "%s-- (not recorded by cctl)%s", C_DIM, C_RST);
-    }
-
     /* 2. Turbo + Governor + EPP */
     int turbo_val = -1;
     if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0)
@@ -776,6 +761,9 @@ static void status_system(void)
     else
         row("CPU Max Freq:", "%sN/A%s", C_DIM, C_RST);
 
+    row("GPU Clocks*:", "Core %s, memory %s %s(self-recorded, not live)%s",
+        core_clock, mem_clock, C_DIM, C_RST);
+
     /* 5. dGPU Power State */
     char pci_path[512];
     if (nvidia_find_pci_address(pci_path, sizeof(pci_path)) == 0) {
@@ -804,6 +792,17 @@ static void status_system(void)
     struct display_info disp_info;
     if (is_x11_xrandr_available(&disp_info))
         row("Refresh Rate:", "%s%s Hz%s", C_CYN, disp_info.current_rate, C_RST);
+
+    if (have_mode_state && mode_state.display_scale_known) {
+        if (mode_state.display_scale_set)
+            row("Display Scale*:", "%s%s%s %s(self-recorded, not live)%s",
+                C_CYN, mode_state.display_scale, C_RST, C_DIM, C_RST);
+        else
+            row("Display Scale*:", "%snative (reset)%s %s(self-recorded, not live)%s",
+                C_CYN, C_RST, C_DIM, C_RST);
+    } else {
+        row("Display Scale*:", "%s-- (not recorded by cctl)%s", C_DIM, C_RST);
+    }
 }
 
 static void status_fans(void)
@@ -820,16 +819,32 @@ static void status_fans(void)
     }
 }
 
+static void status_keyboard_color(const char *label, int r, int g, int b)
+{
+    char value[128];
+    const char *preset = kbd_find_preset_name(r, g, b);
+    if (preset)
+        snprintf(value, sizeof(value), "%s RGB(%d, %d, %d)", preset, r, g, b);
+    else
+        snprintf(value, sizeof(value), "custom RGB(%d, %d, %d)", r, g, b);
+    row(label, "%s%s%s", preset ? C_CYN : C_YLW, value, C_RST);
+}
+
 static void status_keyboard(void)
 {
     if (!json_output) printf("\n%s--- Keyboard ---%s\n", C_YLW, C_RST);
     int cur_r = 0, cur_g = 0, cur_b = 0;
-    if (kbd_get_color(&cur_r, &cur_g, &cur_b) == 0) {
-        const char *pname = kbd_find_preset_name(cur_r, cur_g, cur_b);
-        if (pname)
-            row("Color:", "%s%s%s %sRGB(%d, %d, %d)%s", C_CYN, pname, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
+    int have_current_color = kbd_get_color(&cur_r, &cur_g, &cur_b) == 0;
+    struct kbe_state ks;
+    int effect_active = kbe_is_running(&ks);
+    if (effect_active) {
+        status_keyboard_color("Color (base):", ks.orig_r, ks.orig_g, ks.orig_b);
+        if (have_current_color)
+            status_keyboard_color("Current Color:", cur_r, cur_g, cur_b);
         else
-            row("Color:", "%scustom%s %sRGB(%d, %d, %d)%s", C_YLW, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
+            row("Current Color:", "%sN/A%s", C_DIM, C_RST);
+    } else if (have_current_color) {
+        status_keyboard_color("Color:", cur_r, cur_g, cur_b);
     } else {
         row("Color:", "%sN/A (tuxedo_keyboard not loaded)%s", C_DIM, C_RST);
     }
@@ -840,8 +855,7 @@ static void status_keyboard(void)
     else
         row("Brightness:", "%sN/A%s", C_DIM, C_RST);
 
-    struct kbe_state ks;
-    if (kbe_is_running(&ks))
+    if (effect_active)
         row("Effect:", "%s%s%s %s(PID %d)%s", C_CYN, ks.effect, C_RST, C_DIM, (int)ks.pid, C_RST);
     else
         row("Effect:", "%snone%s", C_DIM, C_RST);
@@ -926,7 +940,10 @@ static void show_status(void)
     status_privacy();
     status_battery();
     if (json_output) puts("}");
-    else printf("\n");
+    else {
+        printf("\n%s* cctl records only changes made through cctl; these saved values may not reflect current hardware state.%s\n\n",
+               C_DIM, C_RST);
+    }
 }
 
 /* ========================================================================
