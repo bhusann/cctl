@@ -216,6 +216,33 @@ static volatile int cpumonitor_running = 1;
 static void cpumonitor_sigint(int sig) { (void)sig; cpumonitor_running = 0; }
 static long read_fd_long(int fd, long fallback);
 
+struct rapl_monitor_fds {
+    int energy;
+    int pl1;
+    int pl2;
+};
+
+static void rapl_monitor_open(struct rapl_monitor_fds *fds)
+{
+    fds->energy = open("/sys/class/powercap/intel-rapl:0/energy_uj", O_RDONLY);
+    fds->pl1 = open("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", O_RDONLY);
+    fds->pl2 = open("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", O_RDONLY);
+}
+
+static void rapl_monitor_close(struct rapl_monitor_fds *fds)
+{
+    if (fds->energy >= 0) close(fds->energy);
+    if (fds->pl1 >= 0) close(fds->pl1);
+    if (fds->pl2 >= 0) close(fds->pl2);
+}
+
+static void rapl_monitor_read_limits(const struct rapl_monitor_fds *fds,
+                                    long *pl1_uw, long *pl2_uw)
+{
+    *pl1_uw = fds->pl1 >= 0 ? read_fd_long(fds->pl1, -1) : -1;
+    *pl2_uw = fds->pl2 >= 0 ? read_fd_long(fds->pl2, -1) : -1;
+}
+
 static int cpumonitor_json(void)
 {
     struct sigaction sa = { .sa_handler = cpumonitor_sigint };
@@ -223,11 +250,10 @@ static int cpumonitor_json(void)
     sigaction(SIGINT, &sa, NULL);
     cpumonitor_running = 1;
     int tuxedo_fd = tuxedo_open_clevo();
-    int energy_fd = open("/sys/class/powercap/intel-rapl:0/energy_uj", O_RDONLY);
-    int pl1_fd = open("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", O_RDONLY);
-    int pl2_fd = open("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", O_RDONLY);
+    struct rapl_monitor_fds rapl;
+    rapl_monitor_open(&rapl);
     while (cpumonitor_running) {
-        long energy1 = energy_fd >= 0 ? read_fd_long(energy_fd, -1) : -1;
+        long energy1 = rapl.energy >= 0 ? read_fd_long(rapl.energy, -1) : -1;
         struct timespec t1, t2;
         clock_gettime(CLOCK_MONOTONIC, &t1);
         int cpu_usage = get_cpu_usage_pct();
@@ -243,10 +269,12 @@ static int cpumonitor_json(void)
 
         struct timespec delay = { .tv_sec = 1, .tv_nsec = 0 };
         while (cpumonitor_running && nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
-        long energy2 = energy_fd >= 0 ? read_fd_long(energy_fd, -1) : -1;
+        long energy2 = rapl.energy >= 0 ? read_fd_long(rapl.energy, -1) : -1;
         clock_gettime(CLOCK_MONOTONIC, &t2);
-        long pl1 = pl1_fd >= 0 ? read_fd_long(pl1_fd, -1) : -1;
-        long pl2 = pl2_fd >= 0 ? read_fd_long(pl2_fd, -1) : -1;
+        long pl1_uw, pl2_uw;
+        rapl_monitor_read_limits(&rapl, &pl1_uw, &pl2_uw);
+        long pl1 = pl1_uw >= 0 ? pl1_uw / 1000000 : -1;
+        long pl2 = pl2_uw >= 0 ? pl2_uw / 1000000 : -1;
         double elapsed = (double)(t2.tv_sec - t1.tv_sec) +
                          (double)(t2.tv_nsec - t1.tv_nsec) / 1e9;
         double watts = (energy1 >= 0 && energy2 >= energy1 && elapsed > 0) ?
@@ -283,9 +311,7 @@ static int cpumonitor_json(void)
 
     }
     if (tuxedo_fd >= 0) close(tuxedo_fd);
-    if (energy_fd >= 0) close(energy_fd);
-    if (pl1_fd >= 0) close(pl1_fd);
-    if (pl2_fd >= 0) close(pl2_fd);
+    rapl_monitor_close(&rapl);
     return 0;
 }
 
@@ -368,20 +394,14 @@ static int cpumonitor(void)
             freq_readers[i].cpuinfo_fd = open(path, O_RDONLY);
     }
 
-    /* Open file descriptors to cache across loops */
-    int energy_fd = open("/sys/class/powercap/intel-rapl:0/energy_uj", O_RDONLY);
-    int pl1_fd = open("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", O_RDONLY);
-    int pl2_fd = open("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", O_RDONLY);
+    /* Open RAPL file descriptors once and reuse them across loops. */
+    struct rapl_monitor_fds rapl;
+    rapl_monitor_open(&rapl);
     int tuxedo_fd = tuxedo_open_clevo();
 
     while (cpumonitor_running) {
         /* Read RAPL energy */
-        long e1 = -1;
-        if (energy_fd >= 0) {
-            char buf[32] = {0};
-            ssize_t n = pread(energy_fd, buf, sizeof(buf) - 1, 0);
-            if (n > 0) e1 = atol(buf);
-        }
+        long e1 = rapl.energy >= 0 ? read_fd_long(rapl.energy, -1) : -1;
 
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -409,12 +429,7 @@ static int cpumonitor(void)
         usleep(500000); /* 0.5s */
 
         /* Read RAPL energy again */
-        long e2 = -1;
-        if (energy_fd >= 0) {
-            char buf[32] = {0};
-            ssize_t n = pread(energy_fd, buf, sizeof(buf) - 1, 0);
-            if (n > 0) e2 = atol(buf);
-        }
+        long e2 = rapl.energy >= 0 ? read_fd_long(rapl.energy, -1) : -1;
 
         struct timespec t2;
         clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -465,19 +480,12 @@ static int cpumonitor(void)
             printf("Package Power: %sN/A%s\n", C_DIM, C_RST);
         }
 
-        /* Read current PL1/PL2 using pread from cached descriptors */
+        /* Read current PL1/PL2 using the shared RAPL descriptors. */
         {
-            long pl1 = -1, pl2 = -1;
-            char b[32];
-            ssize_t nn;
-            if (pl1_fd >= 0) {
-                nn = pread(pl1_fd, b, sizeof(b) - 1, 0);
-                if (nn > 0) { b[nn] = '\0'; pl1 = atol(b) / 1000000; }
-            }
-            if (pl2_fd >= 0) {
-                nn = pread(pl2_fd, b, sizeof(b) - 1, 0);
-                if (nn > 0) { b[nn] = '\0'; pl2 = atol(b) / 1000000; }
-            }
+            long pl1_uw, pl2_uw;
+            rapl_monitor_read_limits(&rapl, &pl1_uw, &pl2_uw);
+            long pl1 = pl1_uw >= 0 ? pl1_uw / 1000000 : -1;
+            long pl2 = pl2_uw >= 0 ? pl2_uw / 1000000 : -1;
             printf("PL1:          %s%ldW%s\n", C_CYN, pl1, C_RST);
             printf("PL2:          %s%ldW%s\n", C_CYN, pl2, C_RST);
         }
@@ -515,9 +523,7 @@ static int cpumonitor(void)
         fflush(stdout);
     }
 
-    if (energy_fd >= 0) close(energy_fd);
-    if (pl1_fd >= 0) close(pl1_fd);
-    if (pl2_fd >= 0) close(pl2_fd);
+    rapl_monitor_close(&rapl);
     if (tuxedo_fd >= 0) close(tuxedo_fd);
     for (int i = 0; i < max_cpus; i++) {
         if (freq_readers[i].scaling_fd >= 0) close(freq_readers[i].scaling_fd);

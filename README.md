@@ -204,6 +204,35 @@ cctl capabilities [--json]      # Show controls detected on this system
 cctl --version                  # Print version and exit (also -V)
 ```
 
+### Snapshots
+```bash
+cctl snapshot list               # List saved snapshot numbers on one line
+cctl snapshot save <number> [--mask fields]    # Save current settings
+cctl snapshot view <number>    # Show a saved snapshot
+cctl snapshot restore <number> [--mask fields] # Apply a saved snapshot
+cctl snapshot delete <number>  # Delete a saved snapshot
+```
+
+Use `--mask` to omit fields while saving or skip them while restoring. Separate
+field names with commas. For example: `cctl snapshot save 2 --mask epp,pl1,turbo`.
+Available names are `nvidia_clock`, `nvidia_memclock`,
+`ec_code`, `turbo`, `gov`, `epp`, `pl1`, `pl2`, `kbe`, `kbc`, `kbb`,
+`fn_lock`, `webcam`, `mic`, `bat`, `rr`, and `scale`. `kbc` masks keyboard
+color, `kbb` brightness, `kbe` effect, and `bat` both battery thresholds. Fan
+settings are not included in snapshots.
+
+Snapshots are stored as `.conf` files under `/var/lib/cctl/snapshots/`. They save
+the current EC code (not the profile name), CPU settings and power limits,
+keyboard color/brightness/effect, Fn Lock, webcam/microphone, battery
+thresholds, display refresh rate, and display scale. Refresh rate is read from
+the active X11 display. NVIDIA clock limits and display scale are saved when
+cctl has recorded them in `/run/cctl/mode`.
+Settings that cannot be read are stored as `skip` and left unchanged during
+restore. A restore applies each available setting in sequence and reports any
+failures while continuing with the rest. Display settings require a supported
+X11 session when saving or restoring them. Saving over an existing number
+asks for confirmation; answering anything other than `y` or `yes` cancels it.
+
 ### NVIDIA GPU
 ```bash
 cctl nvidia clock [min] <max> | reset   # Lock/unlock GPU clocks (no arg shows max clock; min defaults to 0)

@@ -15,9 +15,11 @@
  *                               GPU (D0→D3cold). Requires blacklist mode.
  *   nvidia status            — Show boot config, module state, GPU telemetry.
  *   nvidia clock <min,max>   — Auto-enable persistence + lock GPU clocks (-lgc).
- *   nvidia clock reset       — Unlock GPU clocks (-rgc), persistence untouched.
+ *   nvidia clock reset       — Unlock GPU clocks (-rgc); disable persistence
+ *                               when no graphics or memory clock lock remains.
  *   nvidia memclock <min,max>— Auto-enable persistence + lock memory clocks (-lmc).
- *   nvidia memclock reset    — Unlock memory clocks (-rmc), persistence untouched.
+ *   nvidia memclock reset    — Unlock memory clocks (-rmc); disable persistence
+ *                               when no graphics or memory clock lock remains.
  * ======================================================================== */
 
 static int nvidia_is_blacklisted(void)
@@ -665,6 +667,20 @@ static int nvidia_pm_set(int on)
     return run(args, 0, NULL, 0);
 }
 
+/* Keep persistence enabled while either cctl-managed clock lock remains. */
+static int nvidia_pm_disable_if_unlocked(void)
+{
+    struct mode_runtime_data data;
+    if (mode_runtime_read(&data) != 0)
+        return 0; /* Without reliable metadata, leave persistence enabled. */
+
+    int graphics_locked = data.core_clock_known && data.core_clock_set;
+    int memory_locked = data.mem_clock_known && data.mem_clock_set;
+    if (graphics_locked || memory_locked)
+        return 0;
+    return nvidia_pm_set(0);
+}
+
 static int nvidia_clock_apply(const char *flag, int min, int max)
 {
     if (nvidia_pm_set(1) != 0)
@@ -672,13 +688,25 @@ static int nvidia_clock_apply(const char *flag, int min, int max)
     char range[32];
     snprintf(range, sizeof(range), "%d,%d", min, max);
     char *const args[] = { "nvidia-smi", (char *)flag, range, NULL };
-    return run(args, 0, NULL, 0);
+    int rc = run(args, 0, NULL, 0);
+    if (rc == 0 && mode_record_nvidia_clock(strcmp(flag, "-lmc") == 0, 1, min, max) < 0)
+        fprintf(stderr, "Warning: could not record NVIDIA clock settings in %s\n", MODE_FILE);
+    return rc;
 }
 
 static int nvidia_clock_reset_flag(const char *flag)
 {
     char *const args[] = { "nvidia-smi", (char *)flag, NULL };
-    return run(args, 0, NULL, 0);
+    int rc = run(args, 0, NULL, 0);
+    int memory_clock = strcmp(flag, "-rmc") == 0;
+    if (rc == 0) {
+        if (mode_record_nvidia_clock(memory_clock, 0, 0, 0) < 0) {
+            fprintf(stderr, "Warning: could not record NVIDIA clock reset in %s; leaving persistence mode enabled\n", MODE_FILE);
+        } else if (nvidia_pm_disable_if_unlocked() != 0) {
+            fprintf(stderr, "Warning: NVIDIA clocks were reset, but persistence mode could not be disabled\n");
+        }
+    }
+    return rc;
 }
 
 struct nvidia_clock_info {

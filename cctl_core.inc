@@ -195,6 +195,8 @@ static int nvidia_is_loaded(void);
 #endif
 static int bat_read_start(void);
 static int bat_read_end(void);
+static int scale_set(const char *resolution);
+static int scale_reset(void);
 static int command_exists(const char *cmd);
 static int kbd_get_brightness(void);
 static int kbd_get_color(int *r, int *g, int *b);
@@ -323,6 +325,25 @@ static int read_sysfs_str(const char *path, char *buf, size_t bufsize)
     return (int)n;
 }
 
+#define CPU_GOVERNOR_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+#define CPU_EPP_PATH "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference"
+
+struct cpu_profile_state {
+    char governor[64];
+    char epp[64];
+    int have_governor;
+    int have_epp;
+};
+
+static void read_cpu_profile(struct cpu_profile_state *state)
+{
+    memset(state, 0, sizeof(*state));
+    state->have_governor = read_sysfs_str(CPU_GOVERNOR_PATH, state->governor,
+                                          sizeof(state->governor)) >= 0;
+    state->have_epp = read_sysfs_str(CPU_EPP_PATH, state->epp,
+                                     sizeof(state->epp)) >= 0;
+}
+
 /* Read a sysfs file as a long integer. Returns the value or fallback on failure. */
 static long read_sysfs_long(const char *path, long fallback)
 {
@@ -375,36 +396,239 @@ static int safe_atoi(const char *str, int *out)
  * ACTIVE PROFILE MODE (/run/cctl/mode)
  * ========================================================================
  * `cctl set` records the active profile (line 1), method (line 2), and EC
- * profile code (line 3).
- * `cctl status` displays it, and the
- * RAPL PL1 ceiling consults it (90W unlocked only while EC profile code 2
- * is active). GPU watts are deliberately
- * NEVER read for this — the mode file is the single source of truth.
- * /run is tmpfs, cleared on reboot, so a missing file simply means
- * "EC default" (no profile applied since boot).
+ * profile code (line 3). Lines 4-5 record NVIDIA core/memory clock locks,
+ * and line 6 records cctl-managed display scaling. `cctl status` uses the
+ * profile metadata, and the RAPL PL1 ceiling consults the EC code (90W
+ * unlocked only for code 2).
+ * /run is tmpfs, cleared on reboot, so this is runtime bookkeeping, not a
+ * persistent snapshot.
  *
  * /run/cctl is root-owned (0700) — unlike /tmp, unprivileged users cannot
- * plant a fake mode file to manipulate the PL1 ceiling.  Both read and
- * write paths use O_NOFOLLOW to refuse symlinks. */
+ * plant a fake mode file to manipulate the PL1 ceiling. Read paths refuse
+ * symlinks and updates replace the file atomically. */
 #ifndef MODE_FILE
 #define MODE_FILE "/run/cctl/mode"
 #endif
+#ifndef MODE_DIR
 #define MODE_DIR  "/run/cctl"
+#endif
 
-static int mode_write(const char *profile, const char *method, int ec_profile_code)
+struct mode_runtime_data {
+    char profile[64];
+    char method[32];
+    int ec_profile_code;
+    int core_clock_known, core_clock_set, core_clock_min, core_clock_max;
+    int mem_clock_known, mem_clock_set, mem_clock_min, mem_clock_max;
+    int display_scale_known, display_scale_set;
+    char display_scale[32];
+};
+
+static void mode_runtime_init(struct mode_runtime_data *data)
+{
+    memset(data, 0, sizeof(*data));
+    data->ec_profile_code = -1;
+    snprintf(data->display_scale, sizeof(data->display_scale), "skip");
+}
+
+static int mode_runtime_read(struct mode_runtime_data *data)
+{
+    mode_runtime_init(data);
+    int fd = open(MODE_FILE, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    FILE *fp = fdopen(fd, "r");
+    if (!fp) { close(fd); return -1; }
+
+    char line[128];
+    if (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        snprintf(data->profile, sizeof(data->profile), "%.*s",
+                 (int)sizeof(data->profile) - 1, line);
+    }
+    if (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        snprintf(data->method, sizeof(data->method), "%.*s",
+                 (int)sizeof(data->method) - 1, line);
+    }
+    if (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        int code;
+        if (safe_atoi(line, &code) == 0 && code >= 0 && code <= 3)
+            data->ec_profile_code = code;
+    }
+
+    if (fgets(line, sizeof(line), fp)) {
+        int min, max;
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strcmp(line, "none") == 0) {
+            data->core_clock_known = 1;
+        } else if (sscanf(line, "%d %d", &min, &max) == 2 && min >= 0 && max > 0) {
+            data->core_clock_known = data->core_clock_set = 1;
+            data->core_clock_min = min;
+            data->core_clock_max = max;
+        }
+    }
+    if (fgets(line, sizeof(line), fp)) {
+        int min, max;
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strcmp(line, "none") == 0) {
+            data->mem_clock_known = 1;
+        } else if (sscanf(line, "%d %d", &min, &max) == 2 && min >= 0 && max > 0) {
+            data->mem_clock_known = data->mem_clock_set = 1;
+            data->mem_clock_min = min;
+            data->mem_clock_max = max;
+        }
+    }
+    if (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strcmp(line, "none") == 0) {
+            data->display_scale_known = 1;
+            data->display_scale_set = 0;
+            snprintf(data->display_scale, sizeof(data->display_scale), "none");
+        } else {
+            int width, height;
+            char extra;
+            if (sscanf(line, "%dx%d%c", &width, &height, &extra) == 2 &&
+                width >= 640 && height >= 360) {
+                data->display_scale_known = data->display_scale_set = 1;
+                snprintf(data->display_scale, sizeof(data->display_scale), "%.*s",
+                         (int)sizeof(data->display_scale) - 1, line);
+            }
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+static int mode_runtime_write(const struct mode_runtime_data *data)
 {
     if (mkdir(MODE_DIR, 0700) != 0 && errno != EEXIST)
         return -1;
-    unlink(MODE_FILE);
-    int fd = open(MODE_FILE, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+
+    char tmp_path[sizeof(MODE_FILE) + 16];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.XXXXXX", MODE_FILE);
+    int fd = mkstemp(tmp_path);
     if (fd < 0) return -1;
-    char buf[64];
-    int len = snprintf(buf, sizeof(buf), "%s\n%s\n%d\n", profile, method,
-                       ec_profile_code);
-    ssize_t w = write(fd, buf, (size_t)len);
-    close(fd);
-    if (w != len) { unlink(MODE_FILE); return -1; }
+    fchmod(fd, 0600);
+
+    char buf[384];
+    int len = snprintf(buf, sizeof(buf), "%s\n%s\n%d\n",
+                       data->profile, data->method, data->ec_profile_code);
+    if (data->core_clock_known) {
+        int n = data->core_clock_set
+            ? snprintf(buf + len, sizeof(buf) - (size_t)len, "%d %d\n",
+                       data->core_clock_min, data->core_clock_max)
+            : snprintf(buf + len, sizeof(buf) - (size_t)len, "none\n");
+        if (n > 0) len += n;
+    } else {
+        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "skip\n");
+        if (n > 0) len += n;
+    }
+    if (data->mem_clock_known) {
+        int n = data->mem_clock_set
+            ? snprintf(buf + len, sizeof(buf) - (size_t)len, "%d %d\n",
+                       data->mem_clock_min, data->mem_clock_max)
+            : snprintf(buf + len, sizeof(buf) - (size_t)len, "none\n");
+        if (n > 0) len += n;
+    } else {
+        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "skip\n");
+        if (n > 0) len += n;
+    }
+    if (data->display_scale_known) {
+        const char *scale = data->display_scale_set ? data->display_scale : "none";
+        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "%s\n", scale);
+        if (n > 0) len += n;
+    } else {
+        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "skip\n");
+        if (n > 0) len += n;
+    }
+
+    size_t offset = 0;
+    while (offset < (size_t)len) {
+        ssize_t written = write(fd, buf + offset, (size_t)len - offset);
+        if (written > 0) offset += (size_t)written;
+        else if (written < 0 && errno == EINTR) continue;
+        else break;
+    }
+    int saved_errno = errno;
+    if (offset != (size_t)len || fsync(fd) != 0) {
+        if (offset == (size_t)len) saved_errno = errno;
+        close(fd);
+        unlink(tmp_path);
+        errno = saved_errno;
+        return -1;
+    }
+    if (close(fd) != 0 || rename(tmp_path, MODE_FILE) != 0) {
+        saved_errno = errno;
+        unlink(tmp_path);
+        errno = saved_errno;
+        return -1;
+    }
     return 0;
+}
+
+static int mode_record_nvidia_clock(int memory_clock, int is_set, int min, int max)
+{
+    struct mode_runtime_data data;
+    if (mode_runtime_read(&data) != 0)
+        mode_runtime_init(&data);
+
+    int *known = memory_clock ? &data.mem_clock_known : &data.core_clock_known;
+    int *set = memory_clock ? &data.mem_clock_set : &data.core_clock_set;
+    int *stored_min = memory_clock ? &data.mem_clock_min : &data.core_clock_min;
+    int *stored_max = memory_clock ? &data.mem_clock_max : &data.core_clock_max;
+    *known = 1;
+    *set = is_set;
+    *stored_min = is_set ? min : 0;
+    *stored_max = is_set ? max : 0;
+    return mode_runtime_write(&data);
+}
+
+static int mode_record_display_scale_root(const char *resolution)
+{
+    if (geteuid() != 0) { errno = EPERM; return -1; }
+    if (resolution) {
+        int width, height;
+        char extra;
+        if (sscanf(resolution, "%dx%d%c", &width, &height, &extra) != 2 ||
+            width < 640 || height < 360 || strlen(resolution) >= 32) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    struct mode_runtime_data data;
+    if (mode_runtime_read(&data) != 0)
+        mode_runtime_init(&data);
+    data.display_scale_known = 1;
+    data.display_scale_set = resolution != NULL;
+    snprintf(data.display_scale, sizeof(data.display_scale), "%s",
+             resolution ? resolution : "none");
+    return mode_runtime_write(&data);
+}
+
+static int mode_record_display_scale(const char *resolution)
+{
+    if (geteuid() == 0)
+        return mode_record_display_scale_root(resolution);
+
+    char self[PATH_MAX];
+    if (get_self_exe(self, sizeof(self)) != 0)
+        return -1;
+    char *const args[] = {
+        "sudo", "-n", self, "--cctl-record-display-scale",
+        (char *)(resolution ? resolution : "none"), NULL
+    };
+    return run(args, RUN_SILENT, NULL, 0);
+}
+
+static int mode_write(const char *profile, const char *method, int ec_profile_code)
+{
+    struct mode_runtime_data data;
+    if (mode_runtime_read(&data) != 0)
+        mode_runtime_init(&data);
+    snprintf(data.profile, sizeof(data.profile), "%s", profile);
+    snprintf(data.method, sizeof(data.method), "%s", method);
+    data.ec_profile_code = ec_profile_code;
+    return mode_runtime_write(&data);
 }
 
 /* Returns 0 and fills profile/method when a valid mode file exists,
@@ -745,6 +969,10 @@ static int mux_switch(void)
            C_DIM, mux_mode_str(current), C_RST,
            C_BLD, mux_mode_str(target), C_RST);
     printf("%sReboot to apply.%s\n", C_YLW, C_RST);
+    if (target == MUX_VAL_DGPU) {
+        printf("After reboot in dGPU mode, the X11 display may start at 40 Hz due to a hardware quirk.\n"
+               "Run 'cctl rr 165' to restore 165 Hz.\n");
+    }
     return 0;
 }
 

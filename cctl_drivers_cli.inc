@@ -453,6 +453,7 @@ static const struct command commands[] = {
     /* System */
     { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force]",                       "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
     { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (auto-fetch or offline; sha256-verified)", NULL },
+    { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [number] [--mask fields]", "Save, restore, view, delete, or list snapshots", NULL },
 };
 
 struct section_def {
@@ -655,6 +656,14 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "--microversion") == 0) {
         printf("%d\n", CCTL_MICROVERSION);
         return 0;
+    }
+
+    /* Private helper used by the unprivileged X11 scale command to update
+     * root-owned runtime metadata after xrandr succeeds. */
+    if (strcmp(argv[1], "--cctl-record-display-scale") == 0) {
+        if (geteuid() != 0 || argc != 3)
+            return fail("Invalid internal display scale record request");
+        return mode_record_display_scale_root(strcmp(argv[2], "none") == 0 ? NULL : argv[2]);
     }
 
     /* Hidden diagnostic (like --microversion: no help, no README) —

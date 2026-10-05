@@ -14,6 +14,8 @@ static int scale_set(const char *resolution)
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to set scale to %s", resolution);
+    if (mode_record_display_scale(resolution) < 0)
+        fprintf(stderr, "Warning: scale was applied but could not be recorded in %s\n", MODE_FILE);
     printf("  Display scale: %s → %s\n", resolution, info.resolution);
     return 0;
 }
@@ -30,6 +32,8 @@ static int scale_reset(void)
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to reset scale");
+    if (mode_record_display_scale(NULL) < 0)
+        fprintf(stderr, "Warning: scale was reset but could not be recorded in %s\n", MODE_FILE);
     printf("  Scale: native (1x1)\n");
     return 0;
 }
@@ -391,7 +395,9 @@ static int cmd_fan(int argc, char **argv)
             if (safe_atoi(val_str, &pct) < 0)
                 return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
             if (!nosafe)
-                return fail("Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)", pct);
+                return fail("Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n"
+                            "       Fixed duty ignores temperature and may cause overheating or damage.\n"
+                            "       Use manual fan duty for experimental purposes only.", pct);
             rc = fan_set_duty(FAN_CPU, pct);
         }
     } else if (strcmp(mode, "gpu") == 0) {
@@ -405,7 +411,9 @@ static int cmd_fan(int argc, char **argv)
             if (safe_atoi(val_str, &pct) < 0)
                 return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
             if (!nosafe)
-                return fail("Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)", pct);
+                return fail("Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n"
+                            "       Fixed duty ignores temperature and may cause overheating or damage.\n"
+                            "       Use manual fan duty for experimental purposes only.", pct);
             rc = fan_set_duty(FAN_GPU, pct);
         }
     } else {
@@ -413,7 +421,9 @@ static int cmd_fan(int argc, char **argv)
         int pct;
         if (safe_atoi(mode, &pct) >= 0 && pct >= 25 && pct <= 100) {
             if (!nosafe)
-                return fail("Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)", pct);
+                return fail("Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n"
+                            "       Fixed duty ignores temperature and may cause overheating or damage.\n"
+                            "       Use manual fan duty for experimental purposes only.", pct);
             printf("Setting both fans to %d%%...\n", pct);
             rc = fan_set_duty(0, pct);
         } else {
@@ -492,9 +502,11 @@ static int cmd_fnlock(int argc, char **argv)
 static int cmd_gov(int argc, char **argv)
 {
     if (argc < 3) {
-        char cur_gov[64] = {0};
-        if (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", cur_gov, sizeof(cur_gov)) >= 0)
-            printf("%sCurrent Governor:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN, cur_gov, C_RST);
+        struct cpu_profile_state cpu_profile;
+        read_cpu_profile(&cpu_profile);
+        if (cpu_profile.have_governor)
+            printf("%sCurrent Governor:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN,
+                   cpu_profile.governor, C_RST);
         printf("%sUsage:%s %scctl gov <powersave | performance>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         return 0;
     }
@@ -511,9 +523,11 @@ static int cmd_gov(int argc, char **argv)
 static int cmd_epp(int argc, char **argv)
 {
     if (argc < 3) {
-        char cur_epp[64] = {0};
-        if (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", cur_epp, sizeof(cur_epp)) >= 0)
-            printf("%sCurrent EPP:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN, cur_epp, C_RST);
+        struct cpu_profile_state cpu_profile;
+        read_cpu_profile(&cpu_profile);
+        if (cpu_profile.have_epp)
+            printf("%sCurrent EPP:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN,
+                   cpu_profile.epp, C_RST);
         printf("%sUsage:%s %scctl epp <value>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("%sValid Values:%s\n", C_YLW, C_RST);
         printf("  %sperformance%s\n", C_CYN, C_RST);

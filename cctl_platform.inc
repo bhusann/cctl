@@ -684,29 +684,73 @@ static void status_system(void)
 {
     char buf[128] = {0};
 
-    /* 1. Mode */
-    char m_prof[32] = {0}, m_how[16] = {0};
-    if (mode_read(m_prof, sizeof(m_prof), m_how, sizeof(m_how), NULL) == 0)
-        row("Mode:", "%s%s%s %s(%s)%s", C_CYN, m_prof, C_RST, C_DIM, m_how, C_RST);
+    /* Mode and GPU clock locks come from cctl's runtime state file, not live
+     * hardware telemetry. Read the file once for both status rows. */
+    struct mode_runtime_data mode_state;
+    int have_mode_state = mode_runtime_read(&mode_state) == 0;
+    if (have_mode_state && mode_state.profile[0])
+        row("Mode:", "%s%s%s %s(%s; from /run/cctl/mode, cctl state)%s",
+            C_CYN, mode_state.profile, C_RST, C_DIM,
+            mode_state.method[0] ? mode_state.method : "method unknown", C_RST);
     else
-        row("Mode:", "%sEC default%s", C_DIM, C_RST);
+        row("Mode:", "%sEC default%s %s(no cctl mode state)%s",
+            C_DIM, C_RST, C_DIM, C_RST);
+
+    if (have_mode_state && mode_state.ec_profile_code >= 0)
+        row("EC Code:", "%s%s%s (%d) %s(from /run/cctl/mode; cctl state)%s",
+            C_CYN, gpu_profile_name(mode_state.ec_profile_code), C_RST,
+            mode_state.ec_profile_code, C_DIM, C_RST);
+    else
+        row("EC Code:", "%s-- (no cctl mode state)%s", C_DIM, C_RST);
+
+    char core_clock[64], mem_clock[64];
+    if (have_mode_state && mode_state.core_clock_known) {
+        if (mode_state.core_clock_set)
+            snprintf(core_clock, sizeof(core_clock), "%d-%d MHz",
+                     mode_state.core_clock_min, mode_state.core_clock_max);
+        else
+            snprintf(core_clock, sizeof(core_clock), "reset/unlocked");
+    } else {
+        snprintf(core_clock, sizeof(core_clock), "--");
+    }
+    if (have_mode_state && mode_state.mem_clock_known) {
+        if (mode_state.mem_clock_set)
+            snprintf(mem_clock, sizeof(mem_clock), "%d-%d MHz",
+                     mode_state.mem_clock_min, mode_state.mem_clock_max);
+        else
+            snprintf(mem_clock, sizeof(mem_clock), "reset/unlocked");
+    } else {
+        snprintf(mem_clock, sizeof(mem_clock), "--");
+    }
+    row("GPU Clocks:", "Core %s, memory %s %s(from /run/cctl/mode; cctl state, not live)%s",
+        core_clock, mem_clock, C_DIM, C_RST);
+
+    if (have_mode_state && mode_state.display_scale_known) {
+        if (mode_state.display_scale_set)
+            row("Display Scale:", "%s%s%s %s(from /run/cctl/mode; cctl state, not live)%s",
+                C_CYN, mode_state.display_scale, C_RST, C_DIM, C_RST);
+        else
+            row("Display Scale:", "%snative (reset)%s %s(from /run/cctl/mode; cctl state, not live)%s",
+                C_CYN, C_RST, C_DIM, C_RST);
+    } else {
+        row("Display Scale:", "%s-- (not recorded by cctl)%s", C_DIM, C_RST);
+    }
 
     /* 2. Turbo + Governor + EPP */
     int turbo_val = -1;
     if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0)
         turbo_val = atoi(buf);
 
-    char gov_buf[64] = {0};
-    int have_gov = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", gov_buf, sizeof(gov_buf)) >= 0);
-
-    char epp_buf[64] = {0};
-    int have_epp = (read_sysfs_str("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", epp_buf, sizeof(epp_buf)) >= 0);
+    struct cpu_profile_state cpu_profile;
+    read_cpu_profile(&cpu_profile);
 
     row("CPU Profile:", "Turbo %s%s%s, gov: %s%s%s, epp: %s%s%s",
         turbo_val == 0 ? C_GRN : (turbo_val == 1 ? C_RED : C_DIM),
         turbo_val == 0 ? "ON" : (turbo_val == 1 ? "OFF" : "N/A"), C_RST,
-        have_gov ? C_CYN : C_DIM, have_gov ? gov_buf : "N/A", C_RST,
-        have_epp ? C_CYN : C_DIM, have_epp ? epp_buf : "N/A", C_RST);
+        cpu_profile.have_governor ? C_CYN : C_DIM,
+        cpu_profile.have_governor ? cpu_profile.governor : "N/A", C_RST,
+        cpu_profile.have_epp ? C_CYN : C_DIM,
+        cpu_profile.have_epp ? cpu_profile.epp : "N/A", C_RST);
 
     /* 3. RAPL PL1 and PL2 */
     long pl1_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", -1);

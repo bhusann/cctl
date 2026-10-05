@@ -36,14 +36,14 @@
 #include <sys/file.h>
 #include <stdarg.h>
 
-#define CCTL_VERSION      "4.3"
+#define CCTL_VERSION      "4.4"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100044
+#define CCTL_MICROVERSION 100051
 #endif
 
 
@@ -55,5 +55,6 @@
 #include "cctl_monitor.inc"
 #include "cctl_runtime.inc"
 #include "cctl_nvidia.inc"
+#include "cctl_snapshot.inc"
 #include "cctl_commands.inc"
 #include "cctl_drivers_cli.inc"

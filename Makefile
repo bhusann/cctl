@@ -29,7 +29,7 @@ endif
 SOURCES  = cctl.c
 INCLUDES = cctl_core.inc cctl_controls.inc cctl_platform.inc cctl_keyboard.inc \
            cctl_monitor.inc cctl_runtime.inc cctl_nvidia.inc \
-           cctl_commands.inc cctl_drivers_cli.inc
+           cctl_snapshot.inc cctl_commands.inc cctl_drivers_cli.inc
 
 # ── Default: only cctl binary (no NVIDIA support) ────────────────────────────
 cctl: $(SOURCES) $(INCLUDES)
