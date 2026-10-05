@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
   push:
@@ -31,13 +32,14 @@ jobs:
           curl -fsSL --connect-timeout 10 -o drivers.tar.gz \
             https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/drivers.tar.gz
           # Refuse to publish a tarball the cctl binary would reject: the
-          # download must match the sha256 baked into cctl.c.
-          expected=$(sed -n 's/^#define DRIVERS_SHA256[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p' cctl.c)
+          # The constant may be in cctl.c or an included source fragment.
+          expected=$(grep -h '^#define DRIVERS_SHA256' cctl.c cctl_*.inc 2>/dev/null | \
+            sed -n 's/^#define DRIVERS_SHA256[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p')
           actual=$(sha256sum drivers.tar.gz | cut -d' ' -f1)
           echo "baked:  $expected"
           echo "mirror: $actual"
           if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-            echo "::error::mirror drivers.tar.gz does not match DRIVERS_SHA256 in cctl.c"
+            echo "::error::mirror drivers.tar.gz does not match DRIVERS_SHA256 in the cctl sources"
             exit 1
           fi
 
