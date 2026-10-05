@@ -65,18 +65,6 @@ cctl status                # view all current settings
 
 `set <profile> [--nosafe]` applies preset (EC defaults + table values below).
 
-Optional user profiles can be added to `/etc/cctl/profiles.conf`, one profile per line:
-
-```text
-# name gpu_profile turbo governor epp
-quietwork 1 0 powersave balance_power
-```
-
-GPU profile must be 0–3, turbo 0 or 1, and governor/EPP values must be supported
-by cctl. Profiles leave RAPL limits unchanged; use `cctl rapl` to set them.
-Custom profiles are listed by `cctl set` and `cctl --help` and use the normal
-`set` safety behavior.
-
 For supported settings commands, append `--dry-run` to print the planned sysfs or
 EC changes without applying them:
 
@@ -104,6 +92,18 @@ eco         OFF    powersave    power              15/30W  + GPU 70W
 >
 > `set` leaves existing RAPL limits unchanged. Use `cctl rapl <pl1> <pl2>` when you want to set CPU power limits explicitly.
 
+
+Optional user profiles can be added to `/etc/cctl/profiles.conf`, one profile per line:
+
+```text
+# name gpu_profile turbo governor epp
+quietwork 1 0 powersave balance_power
+```
+
+GPU profile must be 0–3, turbo 0 or 1, and governor/EPP values must be supported
+by cctl. Profiles leave RAPL limits unchanged; use `cctl rapl` to set them.
+Custom profiles are listed by `cctl set` and `cctl --help` and use the normal
+`set` safety behavior.
 
 ---
 
