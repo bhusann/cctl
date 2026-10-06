@@ -33,17 +33,18 @@
 #include <pwd.h>
 #include <sys/types.h>
 #include <signal.h>
+#include <termios.h>
 #include <sys/file.h>
 #include <stdarg.h>
 
-#define CCTL_VERSION      "4.4"
+#define CCTL_VERSION      "4.4.5"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100053
+#define CCTL_MICROVERSION 100055
 #endif
 
 

@@ -2,6 +2,9 @@
  * DISPLAY SCALING (xrandr --scale-from)
  * ======================================================================== */
 
+/* Implemented with the driver archive helpers in cctl_drivers_cli.inc. */
+static int drivers_cache_warm(const char *binary_path, int *stale_cache);
+
 static int scale_set(const char *resolution)
 {
     struct display_info info;
@@ -132,10 +135,14 @@ static int cmd_mic(int argc, char **argv)
 
 static int cmd_monitor(int argc, char **argv)
 {
-    if (argc > 3 || (argc == 3 && strcmp(argv[2], "--json") != 0))
-        return fail("Unexpected extra argument '%s'", argv[2]);
-    if (argc == 3) return cpumonitor_json();
-    return cpumonitor();
+    if (argc > 3 || (argc == 3 && strcmp(argv[2], "--json") != 0 &&
+                     strcmp(argv[2], "--text") != 0))
+        return fail("Usage: cctl monitor [--text|--json]");
+    if (argc == 3 && strcmp(argv[2], "--json") == 0)
+        return cpumonitor_json();
+    if (argc == 3)
+        return cpumonitor();
+    return cpumonitor_visual();
 }
 
 static int cmd_capabilities(int argc, char **argv)
@@ -1098,9 +1105,14 @@ static int cmd_install(int argc, char **argv)
     }
 
     if (installed_ver > 0)
-        printf("Upgrading cctl...\n");
+        printf("%sUpgrading cctl...%s\n", C_CYN, C_RST);
     else
-        printf("Installing cctl...\n");
+        printf("%sInstalling cctl...%s\n", C_CYN, C_RST);
+
+    /* Cache the matching driver archive when possible, but keep cctl
+     * installation independent of network availability. */
+    int stale_driver_cache = 0;
+    int drivers_cached = drivers_cache_warm(src, &stale_driver_cache) == 0;
 
     /* 1. Copy binary to /usr/local/bin/cctl with mode 0755 */
     char *const args[] = { "install", "-m", "755", src, "/usr/local/bin/cctl", NULL };
@@ -1192,9 +1204,17 @@ static int cmd_install(int argc, char **argv)
         return 1;
     }
     chmod(sudoers, 0440); /* rename preserves 0440; enforce explicitly anyway */
-    printf("Sudoers:  %s (passwordless sudo for %s)\n", sudoers, user);
+    printf("%sSudoers:%s %s (passwordless sudo for %s)\n", C_GRN, C_RST,
+           sudoers, user);
 
-    printf("\nDone. cctl is installed to /usr/local/bin/cctl and configured with passwordless sudo.\n");
+    printf("\n%sDone.%s cctl is installed to /usr/local/bin/cctl and passwordless sudo is configured.\n",
+           C_GRN, C_RST);
     printf("Privileged commands will auto-elevate seamlessly without needing any shell alias.\n");
+    if (!drivers_cached && stale_driver_cache)
+        printf("%sNote:%s An older driver package remains in the cache. Run 'cctl drivers-manage' to refresh it; if its checksum does not match, update cctl first.\n",
+               C_YLW, C_RST);
+    else if (!drivers_cached)
+        printf("%sNote:%s Driver package was not cached. Run 'cctl drivers-manage' when online; if its checksum does not match, update cctl first.\n",
+               C_YLW, C_RST);
     return 0;
 }

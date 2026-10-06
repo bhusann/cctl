@@ -20,3 +20,4 @@ progress_finding.md
 
 # Local test harness (not for upstream)
 cctl_units2.c
+prototypes/

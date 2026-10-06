@@ -7,6 +7,7 @@
 # are always applied via override so they cannot be accidentally dropped.
 
 CC       ?= gcc
+LDLIBS   += -lm
 
 # Default optimisation (overridable: `make CFLAGS="-O2 -g"`)
 CFLAGS   ?= -Os
@@ -26,16 +27,16 @@ endif
 SOURCES  = cctl.c
 INCLUDES = cctl_core.inc cctl_controls.inc cctl_platform.inc cctl_keyboard.inc \
            cctl_monitor.inc cctl_runtime.inc cctl_nvidia.inc \
-           cctl_snapshot.inc cctl_commands.inc cctl_drivers_cli.inc
+           cctl_monitor_visual.inc cctl_snapshot.inc cctl_commands.inc cctl_drivers_cli.inc
 
 # ── Default: only cctl binary (no NVIDIA support) ────────────────────────────
 cctl: $(SOURCES) $(INCLUDES)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
 
 # ── Experimental build with NVIDIA GPU management compiled in ─────────────
 # Adds the nvidia module/GPU-toggle commands: on/off/load/unload/loadgame/status.
 experimental: $(SOURCES) $(INCLUDES)
-	$(CC) $(CFLAGS) -DCCTL_NVIDIA -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -DCCTL_NVIDIA -o $@ $< $(LDFLAGS) $(LDLIBS)
 
 # ── Install ─────────────────────────────────────────────────────────────────
 # Build and run cctl's installer, which installs the binary and configures

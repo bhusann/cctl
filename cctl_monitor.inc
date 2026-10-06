@@ -214,6 +214,54 @@ static int read_cpu_temp_ex(int cached_fd)
 
 static volatile int cpumonitor_running = 1;
 static void cpumonitor_sigint(int sig) { (void)sig; cpumonitor_running = 0; }
+
+struct monitor_input_state {
+    struct termios termios_saved;
+    int flags_saved;
+    int active;
+};
+
+static void monitor_input_start(struct monitor_input_state *state)
+{
+    memset(state, 0, sizeof(*state));
+    if (!isatty(STDIN_FILENO) || tcgetattr(STDIN_FILENO, &state->termios_saved) < 0)
+        return;
+    struct termios raw = state->termios_saved;
+    raw.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    state->flags_saved = fcntl(STDIN_FILENO, F_GETFL);
+    if (state->flags_saved < 0 || tcsetattr(STDIN_FILENO, TCSANOW, &raw) < 0)
+        return;
+    if (fcntl(STDIN_FILENO, F_SETFL, state->flags_saved | O_NONBLOCK) < 0) {
+        (void)tcsetattr(STDIN_FILENO, TCSANOW, &state->termios_saved);
+        return;
+    }
+    state->active = 1;
+}
+
+static int monitor_input_quit_requested(const struct monitor_input_state *state)
+{
+    if (!state->active)
+        return 0;
+    char keys[32];
+    ssize_t count;
+    while ((count = read(STDIN_FILENO, keys, sizeof(keys))) > 0) {
+        for (ssize_t i = 0; i < count; i++)
+            if (keys[i] == 'q' || keys[i] == 'Q')
+                return 1;
+    }
+    return 0;
+}
+
+static void monitor_input_stop(struct monitor_input_state *state)
+{
+    if (!state->active)
+        return;
+    (void)tcsetattr(STDIN_FILENO, TCSANOW, &state->termios_saved);
+    (void)fcntl(STDIN_FILENO, F_SETFL, state->flags_saved);
+    state->active = 0;
+}
 static long read_fd_long(int fd, long fallback);
 
 struct rapl_monitor_fds {
@@ -370,8 +418,6 @@ static int cpumonitor(void)
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
 
-    printf("Monitor — Press Ctrl+C to stop.\n\n");
-
     /* Pre-computed core classification, sized to the actual CPU count */
     int *is_e_core = calloc((size_t)max_cpus, sizeof(int)); /* 1 = E-core, 0 = P-core */
     float *freqs = malloc((size_t)max_cpus * sizeof(float));
@@ -383,6 +429,9 @@ static int cpumonitor(void)
         fprintf(stderr, "Error: out of memory allocating CPU arrays\n");
         return -1;
     }
+    struct monitor_input_state input_state;
+    monitor_input_start(&input_state);
+    printf("Monitor — Press q or Ctrl+C to stop.\n\n");
     for (int i = 0; i < max_cpus; i++) {
         is_e_core[i] = is_cpu_e_core(i);
         freq_readers[i].scaling_fd = -1;
@@ -399,7 +448,7 @@ static int cpumonitor(void)
     rapl_monitor_open(&rapl);
     int tuxedo_fd = tuxedo_open_clevo();
 
-    while (cpumonitor_running) {
+    while (cpumonitor_running && !monitor_input_quit_requested(&input_state)) {
         /* Read RAPL energy */
         long e1 = rapl.energy >= 0 ? read_fd_long(rapl.energy, -1) : -1;
 
@@ -427,6 +476,8 @@ static int cpumonitor(void)
         int has_fans = (read_fan_telemetry_ex(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm, tuxedo_fd) == 0);
 
         usleep(500000); /* 0.5s */
+        if (!cpumonitor_running || monitor_input_quit_requested(&input_state))
+            break;
 
         /* Read RAPL energy again */
         long e2 = rapl.energy >= 0 ? read_fd_long(rapl.energy, -1) : -1;
@@ -519,7 +570,7 @@ static int cpumonitor(void)
             printf("Fan telemetry: %sN/A (ec_sys not loaded)%s\n", C_DIM, C_RST);
         }
 
-        printf("\n%sPress [Ctrl+C] to stop.%s\n", C_DIM, C_RST);
+        printf("\n%sPress [q] or [Ctrl+C] to stop.%s\n", C_DIM, C_RST);
         fflush(stdout);
     }
 
@@ -534,6 +585,17 @@ static int cpumonitor(void)
     free(freqs);
     free(freq_readers);
 
+    monitor_input_stop(&input_state);
     printf("\n");
     return 0;
 }
+
+/* The visual monitor has its own EC helpers; give those internal names a
+ * separate namespace within this single-translation-unit build. */
+#define ensure_ec_sys visual_ensure_ec_sys
+#define tuxedo_open_clevo visual_tuxedo_open_clevo
+#undef read_fan_telemetry
+#include "cctl_monitor_visual.inc"
+#define read_fan_telemetry(c, g, cr, gr) read_fan_telemetry_ex(c, g, cr, gr, -1)
+#undef tuxedo_open_clevo
+#undef ensure_ec_sys

@@ -22,7 +22,7 @@
  * drivers/ tree changes: re-tar deterministically, update THIS constant,
  * bump CCTL_MICROVERSION, release a new cctl binary. (The driver sources
  * themselves live only in the mirror repo, not in this checkout.) */
-#define DRIVERS_SHA256      "c1b8b5060e62e8fc54146769e0311408e8acf76db7f503a958936026ca87b4f9"
+#define DRIVERS_SHA256      "3e0c3cf5d4f2f5ddf17f328e2897874ea578476eea5db7356bb44f2bd67a6dbe"
 
 /* Persistent driver cache: survives reboots so reinstall/uninstall works
  * offline with no tarball beside the binary and no typed path. /var/lib
@@ -81,6 +81,24 @@ static int download_file(const char *url, const char *dest)
     return -1;
 }
 
+/* Best-effort downloads during cctl installation should not dump transport
+ * errors over the main install result; the caller prints a concise note. */
+static int download_file_quiet(const char *url, const char *dest)
+{
+    if (command_exists("curl")) {
+        char *const args[] = { "curl", "-fsSL", "--connect-timeout", "10",
+                               "--max-time", "300", "-o", (char *)dest,
+                               (char *)url, NULL };
+        if (run(args, RUN_SILENT, NULL, 0) == 0) return 0;
+    }
+    if (command_exists("wget")) {
+        char *const args[] = { "wget", "-q", "--timeout=10", "-O",
+                               (char *)dest, (char *)url, NULL };
+        if (run(args, RUN_SILENT, NULL, 0) == 0) return 0;
+    }
+    return -1;
+}
+
 /* rm -rf via argv array (paths may contain spaces — never a shell string).
  * Refuses anything outside our own /tmp/cctl-* temp-dir namespace. */
 static void remove_tree(const char *path)
@@ -105,12 +123,20 @@ static int verify_drivers_sha(const char *path, const char *src_desc, int announ
     }
     if (strcmp(sha, DRIVERS_SHA256) != 0) {
         fprintf(stderr,
-            "Error: %s checksum mismatch — refusing to install.\n"
-            "  source:   %s\n"
-            "  expected: %s\n"
-            "  got:      %s\n"
-            "The file is corrupt, spoofed, or built from different sources.\n",
-            src_desc, path, DRIVERS_SHA256, sha);
+            "%sError:%s %s checksum mismatch — refusing to install.\n"
+            "  %ssource:%s   %s%s%s\n"
+            "  %sexpected:%s %s%s%s\n"
+            "  %sgot:%s      %s%s%s\n"
+            "%sThe file may be corrupt, spoofed, or built from different sources.%s\n"
+            "%sIf this came from the official cctl mirror, this cctl binary may be\n"
+            "outdated. Update cctl and try again; this version only accepts the\n"
+            "driver archive whose checksum was built into it.%s\n",
+            C_RED, C_RST, src_desc,
+            C_CYN, C_RST, C_DIM, path, C_RST,
+            C_CYN, C_RST, C_DIM, DRIVERS_SHA256, C_RST,
+            C_CYN, C_RST, C_DIM, sha, C_RST,
+            C_DIM, C_RST,
+            C_YLW, C_RST);
         return -1;
     }
     if (announce_ok)
@@ -147,18 +173,93 @@ static int cache_store(const char *verified_file)
  * Returns 1 (out filled) on hit; 0 on absent-or-stale — a stale entry is
  * reported once and never used, only replaced after the next verified
  * acquisition. */
-static int cache_lookup(char *out, size_t sz)
+static int cache_lookup(char *out, size_t sz, int quiet, int *stale)
 {
     char sha[65] = {0};
+    if (stale)
+        *stale = 0;
     if (access(DRIVERS_CACHE_FILE, R_OK) != 0)
         return 0;
     if (file_sha256(DRIVERS_CACHE_FILE, sha) == 0 && strcmp(sha, DRIVERS_SHA256) == 0) {
         snprintf(out, sz, "%s", DRIVERS_CACHE_FILE);
         return 1;
     }
-    printf("Note: %s is outdated or corrupt — fetching a verified replacement.\n",
-           DRIVERS_CACHE_FILE);
+    if (!quiet)
+        printf("Note: %s is outdated or corrupt — fetching a verified replacement.\n",
+               DRIVERS_CACHE_FILE);
+    if (stale)
+        *stale = 1;
     return 0;
+}
+
+/* Best-effort archive fetch for cctl install. A missing, stale, or
+ * unavailable archive must never prevent the cctl binary/sudoers install. */
+static int drivers_cache_warm(const char *binary_path, int *stale_cache)
+{
+    char cached[PATH_MAX];
+    if (stale_cache)
+        *stale_cache = 0;
+    if (cache_lookup(cached, sizeof(cached), 1, stale_cache)) {
+        printf("%sDriver package cache is up to date.%s\n", C_DIM, C_RST);
+        return 0;
+    }
+
+    /* Prefer a matching archive shipped beside this cctl binary before
+     * reaching the network. Never trust it without checking this build's hash. */
+    char adjacent[PATH_MAX];
+    const char *slash = strrchr(binary_path, '/');
+    int adjacent_len = -1;
+    if (slash) {
+        size_t dir_len = (size_t)(slash - binary_path);
+        if (dir_len + sizeof("/" DRIVERS_TARBALL) <= sizeof(adjacent)) {
+            memcpy(adjacent, binary_path, dir_len);
+            adjacent[dir_len] = '\0';
+            adjacent_len = snprintf(adjacent + dir_len,
+                                    sizeof(adjacent) - dir_len,
+                                    "/%s", DRIVERS_TARBALL);
+        }
+    }
+    if (adjacent_len >= 0 && (size_t)adjacent_len < sizeof(adjacent) &&
+        access(adjacent, R_OK) == 0) {
+        char sha[65];
+        if (file_sha256(adjacent, sha) == 0 && strcmp(sha, DRIVERS_SHA256) == 0) {
+            printf("%sFound matching %s beside cctl.%s\n", C_DIM,
+                   DRIVERS_TARBALL, C_RST);
+            if (cache_store(adjacent) == 0) {
+                printf("%sDriver package cached.%s\n", C_DIM, C_RST);
+                return 0;
+            }
+        }
+    }
+
+    if (!command_exists("curl") && !command_exists("wget")) {
+        return -1;
+    }
+
+    char tmp_template[] = "/tmp/cctl-install-drivers.XXXXXX";
+    char *tmpdir = mkdtemp(tmp_template);
+    if (!tmpdir) {
+        return -1;
+    }
+
+    char archive[PATH_MAX] = {0};
+    int n = snprintf(archive, sizeof(archive), "%s/%s", tmpdir, DRIVERS_TARBALL);
+    int cached_ok = 0;
+    if (n >= 0 && (size_t)n < sizeof(archive)) {
+        if (download_file_quiet(DRIVERS_MIRROR_RAW, archive) == 0) {
+            char sha[65];
+            if (file_sha256(archive, sha) == 0 &&
+                strcmp(sha, DRIVERS_SHA256) == 0 && cache_store(archive) == 0) {
+                printf("%sDriver package cache refreshed.%s\n", C_DIM, C_RST);
+                cached_ok = 1;
+            }
+        }
+    }
+
+    if (archive[0])
+        (void)unlink(archive);
+    (void)rmdir(tmpdir);
+    return cached_ok ? 0 : -1;
 }
 
 static int cmd_drivers_install(int argc, char **argv)
@@ -188,7 +289,7 @@ static int cmd_drivers_install(int argc, char **argv)
      *    reboots, so reinstall/uninstall works fully offline. Only a copy
      *    matching the baked hash is used; a stale one is reported and
      *    replaced after the next verified acquisition. */
-    if (cache_lookup(src, sizeof(src))) {
+    if (cache_lookup(src, sizeof(src), 0, NULL)) {
         src_is_cache = 1;
         printf("Using cached %s\n  from %s\n", DRIVERS_TARBALL, DRIVERS_CACHE_DIR);
     }
@@ -265,15 +366,45 @@ static int cmd_drivers_install(int argc, char **argv)
                 goto cleanup;
             }
             path[strcspn(path, "\n")] = '\0';
+
+            /* This prompt runs after auto-elevation, so expand ~/ using the
+             * invoking user's home rather than root's HOME. */
+            if (path[0] == '~' && (path[1] == '/' || path[1] == '\0')) {
+                const char *home = NULL;
+                const char *sudo_user = getenv("SUDO_USER");
+                struct passwd *pw = sudo_user ? getpwnam(sudo_user) : NULL;
+                if (pw)
+                    home = pw->pw_dir;
+                if (!home || !home[0])
+                    home = getenv("HOME");
+                if (home && home[0]) {
+                    char expanded[PATH_MAX];
+                    int n = snprintf(expanded, sizeof(expanded), "%s%s",
+                                     home, path + 1);
+                    if (n < 0 || (size_t)n >= sizeof(expanded)) {
+                        fprintf(stderr, "Error: path is too long.\n");
+                        goto cleanup;
+                    }
+                    snprintf(path, sizeof(path), "%s", expanded);
+                }
+            }
+
             struct stat pst;
             if (stat(path, &pst) != 0) {
                 fprintf(stderr, "Error: no such file: %s\n", path);
                 goto cleanup;
             }
             if (S_ISDIR(pst.st_mode)) {
-                fprintf(stderr, "Error: only the %s file itself is accepted, not a folder.\n"
-                                "       Point to the tar.gz file.\n", DRIVERS_TARBALL);
-                goto cleanup;
+                char archive_path[PATH_MAX];
+                int n = snprintf(archive_path, sizeof(archive_path), "%s/%s",
+                                 path, DRIVERS_TARBALL);
+                if (n < 0 || (size_t)n >= sizeof(archive_path) ||
+                    stat(archive_path, &pst) != 0 || !S_ISREG(pst.st_mode)) {
+                    fprintf(stderr, "Error: folder does not contain %s: %s\n",
+                            DRIVERS_TARBALL, path);
+                    goto cleanup;
+                }
+                snprintf(path, sizeof(path), "%s", archive_path);
             }
             if (access(path, R_OK) != 0) {
                 fprintf(stderr, "Error: no such readable file: %s\n", path);
@@ -332,8 +463,10 @@ static int cmd_drivers_install(int argc, char **argv)
     printf("Launching driver installer (verified sources)...\n");
     {
         char *const sh_args[] = { "bash", script, NULL };
-        if (run(sh_args, 0, NULL, 0) != 0) {
-            fprintf(stderr, "Driver installer exited with an error.\n");
+        int installer_status = run(sh_args, 0, NULL, 0);
+        if (installer_status != 0) {
+            fprintf(stderr, "Driver installer exited with status %d. "
+                            "Review the installer output above.\n", installer_status);
             goto cleanup;
         }
     }
@@ -426,7 +559,7 @@ static const struct command commands[] = {
 
     /* Info */
     { "status",         1, cmd_status,          SEC_INFO,      "[--json]",                        "Show current settings (JSON with --json)", NULL },
-    { "monitor",        1, cmd_monitor,         SEC_INFO,      "[--json]",                        "Live monitor (newline-delimited JSON with --json)", NULL },
+    { "monitor",        1, cmd_monitor,         SEC_INFO,      "[--text|--json]",                 "Live visual simple monitor (--text/--json available)", NULL },
     { "capabilities",   0, cmd_capabilities,    SEC_INFO,      "[--json]",                        "Show controls available on this system", NULL },
 
     /* NVIDIA */
