@@ -7,6 +7,11 @@ on:
         description: Tag to attach the built release assets to
         required: false
         type: string
+      notes_only:
+        description: Update release notes only (skip build and asset checks)
+        required: false
+        default: false
+        type: boolean
   release:
     types: [published]
   push:
@@ -18,6 +23,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.notes_only }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,3 +67,13 @@ jobs:
           files: |
             cctl
             drivers.tar.gz
+
+  release-notes:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.notes_only && inputs.release_tag != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate release notes
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          generate_release_notes: true
