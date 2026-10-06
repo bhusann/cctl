@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bhusann
  *
- * Pure C, no dependencies beyond libc. Direct EC port I/O for fan control,
- * sysfs writes for CPU power management.
+ * Pure C. Direct EC port I/O for fan control, sysfs writes for CPU power
+ * management. The visual GPU monitor uses POSIX threads and libm.
  *
- * Build:  gcc -o cctl cctl.c -Os -s
+ * Build:  make
  * Usage:  sudo ./cctl set <profile>
  *         sudo ./cctl fan <mode> [value]
  *         sudo ./cctl status
@@ -37,14 +37,14 @@
 #include <sys/file.h>
 #include <stdarg.h>
 
-#define CCTL_VERSION      "4.4.5"
+#define CCTL_VERSION      "4.5"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100055
+#define CCTL_MICROVERSION 100056
 #endif
 
 
@@ -53,7 +53,7 @@
 #include "cctl_controls.inc"
 #include "cctl_platform.inc"
 #include "cctl_keyboard.inc"
-#include "cctl_monitor.inc"
+#include "cctl_telemetry.inc"
 #include "cctl_runtime.inc"
 #include "cctl_nvidia.inc"
 #include "cctl_snapshot.inc"

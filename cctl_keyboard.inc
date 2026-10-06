@@ -637,6 +637,48 @@ static void fx_police(int fd, int r, int g, int b, int *step)
     }
 }
 
+static void fx_gunfire(int fd, int r, int g, int b, int *step)
+{
+    (void)r; (void)g; (void)b; (void)step;
+    enum { GUNFIRE_FLASH, GUNFIRE_AFTERGLOW, GUNFIRE_GAP, GUNFIRE_PAUSE };
+    static int phase = GUNFIRE_FLASH;
+    static int shots_left = 0;
+
+    if (phase == GUNFIRE_PAUSE) {
+        kbe_sleep_ms(350 + rand() % 501);
+        shots_left = 4 + rand() % 5; /* short automatic-fire burst */
+        phase = GUNFIRE_FLASH;
+        return;
+    }
+    if (shots_left == 0) {
+        shots_left = 4 + rand() % 5;
+    }
+
+    switch (phase) {
+    case GUNFIRE_FLASH:
+        kbe_write_frame(fd, 255, 238 + rand() % 18, 190 + rand() % 66);
+        kbe_sleep_ms(25 + rand() % 16);
+        phase = GUNFIRE_AFTERGLOW;
+        break;
+    case GUNFIRE_AFTERGLOW:
+        kbe_write_frame(fd, 255, 90 + rand() % 81, 8 + rand() % 25);
+        kbe_sleep_ms(20 + rand() % 21);
+        phase = GUNFIRE_GAP;
+        break;
+    case GUNFIRE_GAP:
+        kbe_write_frame(fd, 0, 0, 0);
+        if (--shots_left > 0) {
+            kbe_sleep_ms(35 + rand() % 46); /* irregular rapid shot spacing */
+            phase = GUNFIRE_FLASH;
+        } else {
+            phase = GUNFIRE_PAUSE;
+        }
+        break;
+    case GUNFIRE_PAUSE:
+        break; /* handled above */
+    }
+}
+
 static void fx_fire(int fd, int r, int g, int b, int *step)
 {
     (void)r; (void)g; (void)b; (void)step;
@@ -745,11 +787,10 @@ static void fx_firecrackers(int fd, int r, int g, int b, int *step)
 {
     (void)r; (void)g; (void)b; (void)step;
     enum { FIRECRACKERS_NIGHT, FIRECRACKERS_LAUNCH, FIRECRACKERS_APEX,
-           FIRECRACKERS_DETONATE, FIRECRACKERS_DECAY, FIRECRACKERS_PAUSE };
+           FIRECRACKERS_DETONATE, FIRECRACKERS_DECAY };
     static int phase = FIRECRACKERS_NIGHT;
     static int frame = 0, night_frames = -1, salvo_remaining = 0;
     static int hue = 0, decay_brightness = 255, decay_frames = 10;
-    static int pause_ms = 0;
 
     if (phase == FIRECRACKERS_NIGHT) {
         if (night_frames < 0) {
@@ -813,8 +854,8 @@ static void fx_firecrackers(int fd, int r, int g, int b, int *step)
         if (++frame >= decay_frames) {
             frame = 0;
             if (--salvo_remaining > 0) {
-                pause_ms = 100 + rand() % 151;
-                phase = FIRECRACKERS_PAUSE;
+                /* Start the next rocket immediately after this ember decay. */
+                phase = FIRECRACKERS_LAUNCH;
             } else {
                 night_frames = -1;
                 phase = FIRECRACKERS_NIGHT;
@@ -823,12 +864,6 @@ static void fx_firecrackers(int fd, int r, int g, int b, int *step)
         return;
     }
 
-    if (phase == FIRECRACKERS_PAUSE) {
-        kbe_write_frame(fd, 2, 4, 12);
-        kbe_sleep_ms(pause_ms);
-        phase = FIRECRACKERS_LAUNCH;
-        frame = 0;
-    }
 }
 
 static int kbe_color_lerp(int start, int end, int ratio)
@@ -963,6 +998,7 @@ static const struct kbe_effect_def kbe_effects[] = {
     { "pulse",         { "heartbeat", NULL },                                                          fx_pulse,         "Heartbeat double-pulse (uses current color)" },
     { "pulse-cycle",   { "pulse+colorchange", "pulse_cycle", "pulsecycle", "heartbeat-cycle", NULL }, fx_pulse_cycle,   "Heartbeat double-pulse cycling colors" },
     { "police",        { "siren", "cop", "emergency", NULL },                                          fx_police,        "Emergency red and blue alternating strobe" },
+    { "gunfire",       { "gun-fire", "machinegun", NULL },                                              fx_gunfire,       "Rapid irregular warm muzzle flashes in short bursts" },
     { "fire",          { "flame", "embers", "burn", NULL },                                            fx_fire,          "Dynamic warm flickering campfire flames" },
     { "aurora",        { "arora", "northern-lights", "borealis", NULL },                               fx_aurora,        "Northern Lights emerald, cyan, and violet drift" },
     { "storm",         { "lightning", "thunder", NULL },                                               fx_storm,         "Dark moody sky with electric lightning strikes" },

@@ -133,16 +133,14 @@ static int cmd_mic(int argc, char **argv)
     return rc;
 }
 
-static int cmd_monitor(int argc, char **argv)
+static int cmd_gpumon(int argc, char **argv)
 {
-    if (argc > 3 || (argc == 3 && strcmp(argv[2], "--json") != 0 &&
-                     strcmp(argv[2], "--text") != 0))
-        return fail("Usage: cctl monitor [--text|--json]");
-    if (argc == 3 && strcmp(argv[2], "--json") == 0)
-        return cpumonitor_json();
-    if (argc == 3)
-        return cpumonitor();
-    return cpumonitor_visual();
+    return cctl_gpumon(argc, argv);
+}
+
+static int cmd_cpumon(int argc, char **argv)
+{
+    return cctl_cpumon(argc, argv);
 }
 
 static int cmd_capabilities(int argc, char **argv)

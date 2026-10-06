@@ -559,7 +559,8 @@ static const struct command commands[] = {
 
     /* Info */
     { "status",         1, cmd_status,          SEC_INFO,      "[--json]",                        "Show current settings (JSON with --json)", NULL },
-    { "monitor",        1, cmd_monitor,         SEC_INFO,      "[--text|--json]",                 "Live visual simple monitor (--text/--json available)", NULL },
+    { "cpumon",         1, cmd_cpumon,          SEC_INFO,      "[--json] [--interval SEC] [--once]", "Live CPU, memory, power, and fan monitor", NULL },
+    { "gpumon",         1, cmd_gpumon,          SEC_INFO,      "[--json]",                        "Live NVIDIA GPU monitor", NULL },
     { "capabilities",   0, cmd_capabilities,    SEC_INFO,      "[--json]",                        "Show controls available on this system", NULL },
 
     /* NVIDIA */
@@ -752,8 +753,7 @@ int main(int argc, char **argv)
     }
 
     json_output = (argc >= 3 &&
-                   ((strcasecmp(argv[1], "status") == 0) ||
-                    (strcasecmp(argv[1], "monitor") == 0)) &&
+                   (strcasecmp(argv[1], "status") == 0) &&
                    strcmp(argv[2], "--json") == 0);
     use_color = isatty(STDOUT_FILENO) && !json_output;
     init_colors();

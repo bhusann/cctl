@@ -185,6 +185,8 @@ static void self_elevate(int argc, char **argv)
 }
 
 static int read_cpu_temp_ex(int cached_fd);
+int cctl_gpumon(int argc, char **argv);
+int cctl_cpumon(int argc, char **argv);
 #define read_cpu_temp() read_cpu_temp_ex(-1)
 static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *gpu_rpm, int cached_fd);
 #define read_fan_telemetry(c, g, cr, gr) read_fan_telemetry_ex(c, g, cr, gr, -1)

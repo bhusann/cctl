@@ -157,7 +157,7 @@ cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/
 
 Color presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
 
-Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `fire` `aurora` `storm` `temp` `ram` `sos` `firecrackers`
+Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `gunfire` `fire` `aurora` `storm` `temp` `ram` `sos` `firecrackers`
 
 - `temp`: CPU temperature is cyan below 40°C. From 40°C it shifts gradually
   from light green to dark green, then through yellow and orange to red as it
@@ -202,7 +202,8 @@ cctl bat max                    # Standard: charge to 100%, resume at 95%
 ### Info
 ```bash
 cctl status [--json]            # Print all current settings; --json emits a JSON object
-cctl monitor [--json]           # Live monitor; --json emits one JSON sample per line
+cctl cpumon [--json]            # Live CPU, RAM, temperature, power, and fan monitor; JSON streams one sample per line
+cctl gpumon [--json]            # Live NVIDIA GPU monitor; --json emits one sample per line
 cctl capabilities [--json]      # Show controls detected on this system
 cctl --version                  # Print version and exit (also -V)
 ```
@@ -231,9 +232,16 @@ display settings. Fan settings are not saved or restored.
 
 ### NVIDIA GPU
 ```bash
+cctl gpumon [--json]                     # Live GPU telemetry and power state
 cctl nvidia clock [min] <max> | reset   # Lock/unlock GPU clocks (no arg shows max clock; min defaults to 0)
 cctl nvidia memclock [min] <max> | reset # Lock/unlock memory clocks (no arg shows max clock; min defaults to 0)
 ```
+
+The GPU monitor reads PCI power state without waking a suspended GPU. It only
+queries NVIDIA GPU telemetry while the dGPU is in D0. Press `p` to pause
+NVIDIA polling while waiting for D3cold; cctl fan readings continue during the
+wait and while in D3cold. Polling resumes if the GPU later returns to D0.
+Press `p` again before D3cold to cancel the wait; press `q` or Ctrl-C to exit.
 
 ### Display
 > **Note:** Display commands need a native **X11** session — if your desktop doesn't support one (e.g. Wayland), the `DISPLAY` section is hidden from `cctl --help` and the refresh rate from `cctl status`.
