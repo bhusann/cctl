@@ -12,6 +12,10 @@ on:
         required: false
         default: false
         type: boolean
+      release_notes:
+        description: Optional custom notes for the selected release
+        required: false
+        type: string
   release:
     types: [published]
   push:
@@ -76,4 +80,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
-          generate_release_notes: true
+          body: ${{ inputs.release_notes }}
+          generate_release_notes: ${{ inputs.release_notes == '' }}
