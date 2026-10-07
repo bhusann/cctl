@@ -15,7 +15,7 @@ static int set_fnlock(int enabled)
         fprintf(stderr, "Error: Failed to set Fn Lock to %s\n", enabled ? "ON" : "OFF");
         return -1;
     }
-    printf("  Fn Lock: %s\n", enabled ? "ON" : "OFF");
+    printf("  Fn Lock: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -55,7 +55,7 @@ static int set_turbo(int enabled)
         fprintf(stderr, "Error: Failed to set turbo to %s\n", enabled ? "ON" : "OFF");
         return -1;
     }
-    printf("  Turbo boost: %s\n", enabled ? "ON" : "OFF");
+    printf("  Turbo boost: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -65,7 +65,7 @@ static int set_turbo(int enabled)
 
 static int set_governor(const char *gov)
 {
-    printf("  Governor: %s\n", gov);
+    printf("  Governor: %s%s\n", gov, snapshot_applied_tag());
     return write_to_all_cpus("cpufreq/scaling_governor", gov);
 }
 
@@ -81,7 +81,7 @@ static int set_epp(const char *val)
         fprintf(stderr, "Warning: EPP not available (no intel_pstate), skipping\n");
         return 0;
     }
-    printf("  EPP: %s\n", val);
+    printf("  EPP: %s%s\n", val, snapshot_applied_tag());
     return write_to_all_cpus("cpufreq/energy_performance_preference", val);
 }
 
@@ -197,19 +197,19 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 
     if (pl1_w > 0 && pl2_w > 0) {
         if (old_pl1 >= 0 && old_pl2 >= 0)
-            printf("  RAPL: PL1 %dW -> %dW, PL2 %dW -> %dW\n", old_pl1, pl1_w, old_pl2, pl2_w);
+            printf("  RAPL: PL1 %dW -> %dW, PL2 %dW -> %dW%s\n", old_pl1, pl1_w, old_pl2, pl2_w, snapshot_applied_tag());
         else
-            printf("  RAPL: PL1=%dW PL2=%dW\n", pl1_w, pl2_w);
+            printf("  RAPL: PL1=%dW PL2=%dW%s\n", pl1_w, pl2_w, snapshot_applied_tag());
     } else if (pl1_w > 0) {
         if (old_pl1 >= 0)
-            printf("  RAPL: PL1 %dW -> %dW\n", old_pl1, pl1_w);
+            printf("  RAPL: PL1 %dW -> %dW%s\n", old_pl1, pl1_w, snapshot_applied_tag());
         else
-            printf("  RAPL: PL1=%dW\n", pl1_w);
+            printf("  RAPL: PL1=%dW%s\n", pl1_w, snapshot_applied_tag());
     } else if (pl2_w > 0) {
         if (old_pl2 >= 0)
-            printf("  RAPL: PL2 %dW -> %dW\n", old_pl2, pl2_w);
+            printf("  RAPL: PL2 %dW -> %dW%s\n", old_pl2, pl2_w, snapshot_applied_tag());
         else
-            printf("  RAPL: PL2=%dW\n", pl2_w);
+            printf("  RAPL: PL2=%dW%s\n", pl2_w, snapshot_applied_tag());
     }
     return err;
 }
@@ -271,7 +271,7 @@ static int set_gpu_profile(int profile)
         return -1;
     }
 
-    printf("  EC profile code: %s (%d)\n", gpu_profile_name(profile), profile);
+    printf("  EC profile code: %s (%d)%s\n", gpu_profile_name(profile), profile, snapshot_applied_tag());
 
     if (set_gpu_profile_tuxedo(profile) == 0)
         return 0;

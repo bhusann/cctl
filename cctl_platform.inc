@@ -142,7 +142,7 @@ static int webcam_set(int enabled)
     /* Try tuxedo_io first */
     if (access("/dev/tuxedo_io", F_OK) == 0) {
         if (webcam_write_tuxedo(enabled) == 0) {
-            printf("  Webcam: %s (tuxedo_io)\n", enabled ? "ON" : "OFF");
+            printf("  Webcam: %s (tuxedo_io)%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
             return 0;
         }
     }
@@ -207,7 +207,7 @@ static int webcam_set(int enabled)
         return -1;
     }
 
-    printf("  Webcam: %s (USB)\n", enabled ? "ON" : "OFF");
+    printf("  Webcam: %s (USB)%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -295,7 +295,7 @@ static int mic_set(int enabled)
         fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
         return -1;
     }
-    printf("  Laptop internal microphone: %s\n", enabled ? "ON" : "OFF");
+    printf("  Laptop internal microphone: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -495,7 +495,7 @@ static int rr_set(const char *rate)
         fprintf(stderr, "Error: Failed to set refresh rate to %sHz\n", rate);
         return -1;
     }
-    printf("  Refresh rate: %sHz\n", rate);
+    printf("  Refresh rate: %sHz%s\n", rate, snapshot_applied_tag());
     return 0;
 }
 
@@ -1069,7 +1069,7 @@ static int bat_set(int start, int end)
         return -1;
     }
 
-    printf("  %s charge thresholds: start %d%% → stop %d%%\n",
-           dry_run ? "Would set" : "Set", start, end);
+    printf("  %s charge thresholds: start %d%% → stop %d%%%s\n",
+           dry_run ? "Would set" : "Set", start, end, snapshot_applied_tag());
     return 0;
 }

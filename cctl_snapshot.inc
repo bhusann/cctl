@@ -775,10 +775,20 @@ static int cctl_snapshot_delete(int number)
     return 0;
 }
 
+static void cctl_snapshot_divider(void)
+{
+    printf("%s---\n%s", C_DIM, C_RST);
+}
+
+static const char *snapshot_unchanged_tag(void)
+{
+    return use_color ? "  \033[36m(already set)\033[0m" : "  (already set)";
+}
+
 static int cctl_snapshot_apply_step(const char *name, int rc, int *errors)
 {
     if (rc != 0) {
-        fprintf(stderr, "  Failed to restore %s; continuing.\n", name);
+        fprintf(stderr, "  %sFailed to restore %s; continuing.%s\n", C_RED, name, C_RST);
         (*errors)++;
         return -1;
     }
@@ -790,47 +800,122 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
     int prev = g_stream_mode;
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
+    g_snapshot_restoring = 1;
     int errors = 0;
     printf("Restoring snapshot %d one setting at a time...\n", number);
 
+    /* 1. EC profile code: always apply if saved (hardware EC state cannot be queried) */
+    cctl_snapshot_divider();
     if (st->ec_profile_code >= 0) {
         if (cctl_snapshot_apply_step("EC profile code", set_gpu_profile(st->ec_profile_code), &errors) == 0) {
             char label[32];
             snprintf(label, sizeof(label), "snapshot-%d", number);
             if (mode_write(label, "restore", st->ec_profile_code) < 0) {
-                fprintf(stderr, "  Warning: could not record restored EC code in %s\n", MODE_FILE);
+                fprintf(stderr, "  %sWarning: could not record restored EC code in %s%s\n",
+                        C_YLW, MODE_FILE, C_RST);
                 errors++;
             }
         }
-    } else printf("  Skipping EC profile code (not saved).\n");
+    } else {
+        printf("  %sSkipping EC profile code (not saved).%s\n", C_DIM, C_RST);
+    }
 
-    if (st->turbo >= 0) cctl_snapshot_apply_step("turbo", set_turbo(st->turbo), &errors);
-    else printf("  Skipping turbo (not saved).\n");
-    if (strcmp(st->governor, "skip") != 0)
-        cctl_snapshot_apply_step("governor", set_governor(st->governor), &errors);
-    else printf("  Skipping governor (not saved).\n");
-    if (strcmp(st->epp, "skip") != 0)
-        cctl_snapshot_apply_step("EPP", set_epp(st->epp), &errors);
-    else printf("  Skipping EPP (not saved).\n");
+    /* 2. Turbo: query live state; skip if already matching */
+    cctl_snapshot_divider();
+    if (st->turbo >= 0) {
+        long cur_turbo_raw = read_sysfs_long(TURBO_PATH, -1);
+        int cur_turbo = (cur_turbo_raw == 0) ? 1 : ((cur_turbo_raw == 1) ? 0 : -1);
+        if (cur_turbo >= 0 && cur_turbo == st->turbo) {
+            printf("  Turbo boost: %s%s\n", st->turbo ? "ON" : "OFF", snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("turbo", set_turbo(st->turbo), &errors);
+        }
+    } else {
+        printf("  %sSkipping turbo (not saved).%s\n", C_DIM, C_RST);
+    }
 
+    /* 3. Governor & 4. EPP: query live state; skip if already matching */
+    struct cpu_profile_state cpu_profile;
+    read_cpu_profile(&cpu_profile);
+
+    cctl_snapshot_divider();
+    if (strcmp(st->governor, "skip") != 0) {
+        if (cpu_profile.have_governor && strcmp(cpu_profile.governor, st->governor) == 0) {
+            printf("  Governor: %s%s\n", st->governor, snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("governor", set_governor(st->governor), &errors);
+        }
+    } else {
+        printf("  %sSkipping governor (not saved).%s\n", C_DIM, C_RST);
+    }
+
+    cctl_snapshot_divider();
+    if (strcmp(st->epp, "skip") != 0) {
+        if (cpu_profile.have_epp && strcmp(cpu_profile.epp, st->epp) == 0) {
+            printf("  EPP: %s%s\n", st->epp, snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("EPP", set_epp(st->epp), &errors);
+        }
+    } else {
+        printf("  %sSkipping EPP (not saved).%s\n", C_DIM, C_RST);
+    }
+
+    /* 5. RAPL: query live state after EC profile set; skip if already matching */
     int pl1_cap = st->ec_profile_code == 2 ? RAPL_PL1_MAX_WATTS_MAX :
                   st->ec_profile_code >= 0 ? RAPL_PL1_MAX_WATTS : rapl_pl1_ceiling();
-    if (st->pl1 >= 0)
-        cctl_snapshot_apply_step("PL1", set_rapl_limits(st->pl1, 0, pl1_cap), &errors);
-    else printf("  Skipping PL1 (not saved).\n");
-    if (st->pl2 >= 0)
-        cctl_snapshot_apply_step("PL2", set_rapl_limits(0, st->pl2, pl1_cap), &errors);
-    else printf("  Skipping PL2 (not saved).\n");
+    int cur_pl1 = -1, cur_pl2 = -1;
+    read_rapl_current(&cur_pl1, &cur_pl2);
 
-    if (st->core_clock_known < 0) printf("  Skipping NVIDIA core clock (not saved).\n");
-    else if (st->core_clock_set)
-        cctl_snapshot_apply_step("NVIDIA core clock", nvidia_clock_apply("-lgc", st->core_clock_min, st->core_clock_max), &errors);
-    else cctl_snapshot_apply_step("NVIDIA core clock reset", nvidia_clock_reset_flag("-rgc"), &errors);
-    if (st->mem_clock_known < 0) printf("  Skipping NVIDIA memory clock (not saved).\n");
-    else if (st->mem_clock_set)
-        cctl_snapshot_apply_step("NVIDIA memory clock", nvidia_clock_apply("-lmc", st->mem_clock_min, st->mem_clock_max), &errors);
-    else cctl_snapshot_apply_step("NVIDIA memory clock reset", nvidia_clock_reset_flag("-rmc"), &errors);
+    int need_pl1 = (st->pl1 >= 0 && st->pl1 != cur_pl1);
+    int need_pl2 = (st->pl2 >= 0 && st->pl2 != cur_pl2);
 
+    cctl_snapshot_divider();
+    if (st->pl1 < 0 && st->pl2 < 0) {
+        printf("  %sSkipping RAPL (not saved).%s\n", C_DIM, C_RST);
+    } else if (!need_pl1 && !need_pl2) {
+        if (st->pl1 >= 0 && st->pl2 >= 0)
+            printf("  RAPL: PL1 %dW, PL2 %dW%s\n", st->pl1, st->pl2, snapshot_unchanged_tag());
+        else if (st->pl1 >= 0)
+            printf("  RAPL: PL1 %dW%s\n", st->pl1, snapshot_unchanged_tag());
+        else
+            printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
+    } else {
+        int apply_pl1 = need_pl1 ? st->pl1 : 0;
+        int apply_pl2 = need_pl2 ? st->pl2 : 0;
+        cctl_snapshot_apply_step("RAPL", set_rapl_limits(apply_pl1, apply_pl2, pl1_cap), &errors);
+    }
+
+    /* 6. NVIDIA GPU clocks: always apply if saved */
+    cctl_snapshot_divider();
+    if (st->core_clock_known < 0) {
+        printf("  %sSkipping NVIDIA core clock (not saved).%s\n", C_DIM, C_RST);
+    } else if (st->core_clock_set) {
+        printf("  NVIDIA core clock: %d–%d MHz%s\n",
+               st->core_clock_min, st->core_clock_max, snapshot_applied_tag());
+        cctl_snapshot_apply_step("NVIDIA core clock",
+            nvidia_clock_apply("-lgc", st->core_clock_min, st->core_clock_max), &errors);
+    } else {
+        printf("  NVIDIA core clock: reset/unlocked%s\n", snapshot_applied_tag());
+        cctl_snapshot_apply_step("NVIDIA core clock reset",
+            nvidia_clock_reset_flag("-rgc"), &errors);
+    }
+
+    cctl_snapshot_divider();
+    if (st->mem_clock_known < 0) {
+        printf("  %sSkipping NVIDIA memory clock (not saved).%s\n", C_DIM, C_RST);
+    } else if (st->mem_clock_set) {
+        printf("  NVIDIA memory clock: %d–%d MHz%s\n",
+               st->mem_clock_min, st->mem_clock_max, snapshot_applied_tag());
+        cctl_snapshot_apply_step("NVIDIA memory clock",
+            nvidia_clock_apply("-lmc", st->mem_clock_min, st->mem_clock_max), &errors);
+    } else {
+        printf("  NVIDIA memory clock: reset/unlocked%s\n", snapshot_applied_tag());
+        cctl_snapshot_apply_step("NVIDIA memory clock reset",
+            nvidia_clock_reset_flag("-rmc"), &errors);
+    }
+
+    /* 7. Keyboard: check live color, brightness, and effect */
+    cctl_snapshot_divider();
     int have_kbd_update = st->kbd_r >= 0 || st->kbd_g >= 0 || st->kbd_b >= 0 ||
                           st->kbd_brightness >= 0 || strcmp(st->kbd_effect, "skip") != 0;
     if (have_kbd_update) {
@@ -840,61 +925,191 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
         char running_effect[sizeof(ks.effect)] = {0};
         if (effect_was_running)
             snprintf(running_effect, sizeof(running_effect), "%s", ks.effect);
-        if (effect_was_running)
-            cctl_snapshot_apply_step("current keyboard effect stop", kbe_stop(1), &errors);
-        /* Apply the saved base color before starting the saved effect so the
-         * effect daemon records and animates from the snapshot's KBC value. */
-        if (st->kbd_r >= 0 && st->kbd_g >= 0 && st->kbd_b >= 0)
-            cctl_snapshot_apply_step("keyboard color", kbd_write_color(st->kbd_r, st->kbd_g, st->kbd_b), &errors);
-        else printf("  Skipping keyboard color (not saved).\n");
-        if (st->kbd_brightness >= 0)
-            cctl_snapshot_apply_step("keyboard brightness", write_sysfs_int(KBD_PATH "/brightness", st->kbd_brightness), &errors);
-        else printf("  Skipping keyboard brightness (not saved).\n");
-        if (strcmp(st->kbd_effect, "skip") != 0 && strcmp(st->kbd_effect, "none") != 0)
-            cctl_snapshot_apply_step("keyboard effect", kbe_start(st->kbd_effect), &errors);
-        else if (preserve_effect && effect_was_running)
-            cctl_snapshot_apply_step("keyboard effect", kbe_start(running_effect), &errors);
-        else if (strcmp(st->kbd_effect, "skip") == 0)
-            printf("  Skipping keyboard effect (not saved).\n");
+
+        int cur_r = -1, cur_g = -1, cur_b = -1, cur_bri = -1;
+        if (effect_was_running) {
+            cur_r = ks.orig_r; cur_g = ks.orig_g; cur_b = ks.orig_b; cur_bri = ks.orig_bri;
+        } else {
+            kbd_get_color(&cur_r, &cur_g, &cur_b);
+            kbd_get_raw_brightness(&cur_bri);
+        }
+
+        int target_effect_matches = 0;
+        if (preserve_effect) {
+            target_effect_matches = 1;
+        } else if (strcmp(st->kbd_effect, "none") == 0) {
+            target_effect_matches = !effect_was_running;
+        } else {
+            target_effect_matches = (effect_was_running && strcmp(running_effect, st->kbd_effect) == 0);
+        }
+
+        int target_col_matches = (st->kbd_r < 0) || (cur_r == st->kbd_r && cur_g == st->kbd_g && cur_b == st->kbd_b);
+        int target_bri_matches = (st->kbd_brightness < 0) || (cur_bri == st->kbd_brightness);
+
+        if (target_effect_matches && target_col_matches && target_bri_matches) {
+            if (st->kbd_r >= 0)
+                printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
+                       st->kbd_r, st->kbd_g, st->kbd_b, snapshot_unchanged_tag());
+            if (st->kbd_brightness >= 0)
+                printf("  Keyboard brightness: %d%%%s\n",
+                       (st->kbd_brightness * 100 + 127) / 255, snapshot_unchanged_tag());
+            if (!preserve_effect)
+                printf("  Keyboard effect: %s%s\n", st->kbd_effect, snapshot_unchanged_tag());
+            else
+                printf("  %sSkipping keyboard effect (not saved).%s\n", C_DIM, C_RST);
+        } else {
+            if (effect_was_running)
+                cctl_snapshot_apply_step("current keyboard effect stop", kbe_stop(1), &errors);
+
+            if (st->kbd_r >= 0 && st->kbd_g >= 0 && st->kbd_b >= 0) {
+                if (cur_r == st->kbd_r && cur_g == st->kbd_g && cur_b == st->kbd_b) {
+                    printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
+                           st->kbd_r, st->kbd_g, st->kbd_b, snapshot_unchanged_tag());
+                } else {
+                    printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
+                           st->kbd_r, st->kbd_g, st->kbd_b, snapshot_applied_tag());
+                    cctl_snapshot_apply_step("keyboard color",
+                        kbd_write_color(st->kbd_r, st->kbd_g, st->kbd_b), &errors);
+                }
+            } else {
+                printf("  %sSkipping keyboard color (not saved).%s\n", C_DIM, C_RST);
+            }
+
+            if (st->kbd_brightness >= 0) {
+                if (cur_bri == st->kbd_brightness) {
+                    printf("  Keyboard brightness: %d%%%s\n",
+                           (st->kbd_brightness * 100 + 127) / 255, snapshot_unchanged_tag());
+                } else {
+                    printf("  Keyboard brightness: %d%%%s\n",
+                           (st->kbd_brightness * 100 + 127) / 255, snapshot_applied_tag());
+                    cctl_snapshot_apply_step("keyboard brightness",
+                        write_sysfs_int(KBD_PATH "/brightness", st->kbd_brightness), &errors);
+                }
+            } else {
+                printf("  %sSkipping keyboard brightness (not saved).%s\n", C_DIM, C_RST);
+            }
+
+            if (strcmp(st->kbd_effect, "skip") != 0 && strcmp(st->kbd_effect, "none") != 0) {
+                cctl_snapshot_apply_step("keyboard effect", kbe_start(st->kbd_effect), &errors);
+            } else if (preserve_effect && effect_was_running) {
+                cctl_snapshot_apply_step("keyboard effect", kbe_start(running_effect), &errors);
+            } else if (strcmp(st->kbd_effect, "none") == 0) {
+                printf("  Keyboard effect: none%s\n", snapshot_applied_tag());
+            } else {
+                printf("  %sSkipping keyboard effect (not saved).%s\n", C_DIM, C_RST);
+            }
+        }
     } else {
-        printf("  Skipping keyboard color/brightness (not saved).\n");
-        printf("  Skipping keyboard effect (not saved).\n");
+        printf("  %sSkipping keyboard settings (not saved).%s\n", C_DIM, C_RST);
     }
 
-    if (st->fn_lock >= 0) cctl_snapshot_apply_step("Fn Lock", set_fnlock(st->fn_lock), &errors);
-    else printf("  Skipping Fn Lock (not saved).\n");
-    if (st->webcam >= 0) cctl_snapshot_apply_step("webcam", webcam_set(st->webcam), &errors);
-    else printf("  Skipping webcam (not saved).\n");
-    if (st->microphone >= 0) cctl_snapshot_apply_step("microphone", mic_set(st->microphone), &errors);
-    else printf("  Skipping microphone (not saved).\n");
+    /* 8. Fn Lock: query live state; skip if already matching */
+    cctl_snapshot_divider();
+    if (st->fn_lock >= 0) {
+        int cur_fnlock = get_fnlock();
+        if (cur_fnlock >= 0 && cur_fnlock == st->fn_lock) {
+            printf("  Fn Lock: %s%s\n", st->fn_lock ? "ON" : "OFF", snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("Fn Lock", set_fnlock(st->fn_lock), &errors);
+        }
+    } else {
+        printf("  %sSkipping Fn Lock (not saved).%s\n", C_DIM, C_RST);
+    }
 
+    /* 9. Webcam: query live state; skip if already matching */
+    cctl_snapshot_divider();
+    if (st->webcam >= 0) {
+        int cur_webcam = is_webcam_enabled();
+        if (cur_webcam >= 0 && cur_webcam == st->webcam) {
+            printf("  Webcam: %s%s\n", st->webcam ? "ON" : "OFF", snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("webcam", webcam_set(st->webcam), &errors);
+        }
+    } else {
+        printf("  %sSkipping webcam (not saved).%s\n", C_DIM, C_RST);
+    }
+
+    /* 10. Microphone: query live state; skip if already matching */
+    cctl_snapshot_divider();
+    if (st->microphone >= 0) {
+        int cur_mic = mic_is_enabled();
+        if (cur_mic >= 0 && cur_mic == st->microphone) {
+            printf("  Laptop internal microphone: %s%s\n", st->microphone ? "ON" : "OFF", snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("microphone", mic_set(st->microphone), &errors);
+        }
+    } else {
+        printf("  %sSkipping microphone (not saved).%s\n", C_DIM, C_RST);
+    }
+
+    /* 11. Battery thresholds: query live state; skip if already matching */
+    cctl_snapshot_divider();
     if (st->battery_start >= 0 || st->battery_stop >= 0) {
-        int start = st->battery_start >= 0 ? st->battery_start : bat_read_start();
-        int stop = st->battery_stop >= 0 ? st->battery_stop : bat_read_end();
-        if (start > 0 && stop > 0)
-            cctl_snapshot_apply_step("battery thresholds", bat_set(start, stop), &errors);
-        else {
-            fprintf(stderr, "  Failed to restore battery thresholds; current values are unavailable.\n");
+        int cur_start = bat_read_start();
+        int cur_stop = bat_read_end();
+        int target_start = st->battery_start >= 0 ? st->battery_start : cur_start;
+        int target_stop = st->battery_stop >= 0 ? st->battery_stop : cur_stop;
+        if (cur_start > 0 && cur_stop > 0 && target_start == cur_start && target_stop == cur_stop) {
+            printf("  Set charge thresholds: start %d%% → stop %d%%%s\n",
+                   cur_start, cur_stop, snapshot_unchanged_tag());
+        } else if (target_start > 0 && target_stop > 0) {
+            cctl_snapshot_apply_step("battery thresholds", bat_set(target_start, target_stop), &errors);
+        } else {
+            fprintf(stderr, "  %sFailed to restore battery thresholds; current values are unavailable.%s\n",
+                    C_RED, C_RST);
             errors++;
         }
-    } else printf("  Skipping battery thresholds (not saved).\n");
+    } else {
+        printf("  %sSkipping battery thresholds (not saved).%s\n", C_DIM, C_RST);
+    }
 
-    if (strcmp(st->display_rate, "skip") != 0)
-        cctl_snapshot_apply_step("display refresh rate", rr_set(st->display_rate), &errors);
-    else printf("  Skipping display refresh rate (not saved).\n");
-    if (st->display_scale_known < 0)
-        printf("  Skipping display scale (not saved).\n");
-    else if (st->display_scale_set)
-        cctl_snapshot_apply_step("display scale", scale_set(st->display_scale), &errors);
-    else
-        cctl_snapshot_apply_step("display scale reset", scale_reset(), &errors);
+    /* 12. Display refresh rate: query live state; skip if already matching (prevents X11 mode reset / flicker) */
+    cctl_snapshot_divider();
+    if (strcmp(st->display_rate, "skip") != 0) {
+        struct display_info disp;
+        int have_disp = (has_display_support() && query_display_info(&disp) == 0 && disp.current_rate[0]);
+        if (have_disp && strcmp(disp.current_rate, st->display_rate) == 0) {
+            printf("  Refresh rate: %sHz%s\n", st->display_rate, snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("display refresh rate", rr_set(st->display_rate), &errors);
+        }
+    } else {
+        printf("  %sSkipping display refresh rate (not saved).%s\n", C_DIM, C_RST);
+    }
+
+    /* 13. Display scale: query live metadata; skip if already matching */
+    cctl_snapshot_divider();
+    if (st->display_scale_known < 0) {
+        printf("  %sSkipping display scale (not saved).%s\n", C_DIM, C_RST);
+    } else {
+        struct mode_runtime_data mode;
+        int have_mode = (mode_runtime_read(&mode) == 0);
+        if (st->display_scale_set) {
+            if (have_mode && mode.display_scale_known && mode.display_scale_set &&
+                strcmp(mode.display_scale, st->display_scale) == 0) {
+                printf("  Display scale: %s%s\n", st->display_scale, snapshot_unchanged_tag());
+            } else {
+                cctl_snapshot_apply_step("display scale", scale_set(st->display_scale), &errors);
+            }
+        } else {
+            if (have_mode && mode.display_scale_known && !mode.display_scale_set) {
+                printf("  Scale: native (1x1)%s\n", snapshot_unchanged_tag());
+            } else {
+                cctl_snapshot_apply_step("display scale reset", scale_reset(), &errors);
+            }
+        }
+    }
+
+    cctl_snapshot_divider();
+    g_snapshot_restoring = 0;
 
     if (errors) {
-        fprintf(stderr, "Snapshot %d restored with %d error(s).\n", number, errors);
+        fprintf(stderr, "%sSnapshot %d restored with %d error(s).%s\n",
+                C_RED, number, errors, C_RST);
         g_stream_mode = prev;
         return 1;
     }
-    printf("Snapshot %d restored.\n", number);
+    printf("%sSnapshot %d restored.%s\n", C_GRN, number, C_RST);
     g_stream_mode = prev;
     return 0;
 }

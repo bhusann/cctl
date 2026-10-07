@@ -19,7 +19,7 @@ static int scale_set(const char *resolution)
         return fail("Failed to set scale to %s", resolution);
     if (mode_record_display_scale(resolution) < 0)
         fprintf(stderr, "Warning: scale was applied but could not be recorded in %s\n", MODE_FILE);
-    printf("  Display scale: %s → %s\n", resolution, info.resolution);
+    printf("  Display scale: %s → %s%s\n", resolution, info.resolution, snapshot_applied_tag());
     return 0;
 }
 
@@ -37,7 +37,7 @@ static int scale_reset(void)
         return fail("Failed to reset scale");
     if (mode_record_display_scale(NULL) < 0)
         fprintf(stderr, "Warning: scale was reset but could not be recorded in %s\n", MODE_FILE);
-    printf("  Scale: native (1x1)\n");
+    printf("  Scale: native (1x1)%s\n", snapshot_applied_tag());
     return 0;
 }
 

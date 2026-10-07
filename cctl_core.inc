@@ -32,6 +32,13 @@ enum stream_mode {
 static int g_stream_output = 1;
 static int g_stream_mode = STREAM_MODE_CHAR;
 static int g_stream_line = 0;
+static int g_snapshot_restoring = 0;
+
+static const char *snapshot_applied_tag(void)
+{
+    if (!g_snapshot_restoring) return "";
+    return use_color ? "  \033[1;32m[APPLIED]\033[0m" : "  [APPLIED]";
+}
 
 static void sleep_ms(long ms)
 {
