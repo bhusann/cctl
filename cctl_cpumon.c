@@ -98,8 +98,11 @@ typedef struct {
     uint8_t cpu_group[MAX_CPU];            /* per logical cpu: 0 = P (or all), 1 = E */
     double  cpu_util[MAX_CPU];             /* 0..100 */
     uint8_t core_group[MAX_CPU];           /* per physical core */
+    int     cpu_core[MAX_CPU];             /* logical cpu -> physical core */
     double  core_mhz[MAX_CPU];
+    double  cpu_mhz[MAX_CPU];              /* per logical cpu frequency */
     int     grp_ncore[2];
+    int     grp_ncpu[2];                   /* threads per group */
     double  grp_max_mhz[2];                /* current ceiling per group */
     double  util_total;                    /* 0..100 */
     bool    turbo_known, turbo_on;
@@ -122,7 +125,8 @@ static Config g_cfg = { false, false, false, false, 0.5, 22.0 };
 static CpuSnapshot       g_snap;
 static pthread_mutex_t   g_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile sig_atomic_t g_quit = 0;
-static atomic_int        g_turbo = 1;           /* mock only: 't' key */
+static atomic_int        g_turbo = 1;           /* mock turbo */
+static atomic_int        g_show_threads = 1;    /* toggle physical cores vs threads with 't' */
 static double            g_t0 = 0;
 static float             g_amt = 1.0f;          /* 0 = dull/grey, 1 = full colour */
 
@@ -335,6 +339,7 @@ typedef struct {
     double f_util, util_disp, f_temp, temp_disp, f_ram, f_duty, f_rpm, f_pow, pow_disp;
     double f_thr[MAX_CPU];                        /* eased per-thread utilisation */
     double f_core[MAX_CPU];                       /* eased per-core freq / group max */
+    double f_cpu[MAX_CPU];                        /* eased per-thread freq / group max */
     double hist[HIST], phist[PHIST], hist_acc;
     double fan_rps, fan_phase, air_phase, wire_phase, pipe_phase, bus_phase;
     double prev_max[2], flash[2];
@@ -380,6 +385,10 @@ static void ui_update(Ui *u, const CpuSnapshot *s, double dt)
     for (int c = 0; c < s->ncore; c++) {
         double mx = s->grp_max_mhz[s->core_group[c]];
         ease(&u->f_core[c], (act && mx > 0) ? clamp01(s->core_mhz[c] / mx) : 0, dt, 7);
+    }
+    for (int i = 0; i < s->ncpu; i++) {
+        double mx = s->grp_max_mhz[s->cpu_group[i]];
+        ease(&u->f_cpu[i], (act && mx > 0) ? clamp01(s->cpu_mhz[i] / mx) : 0, dt, 7);
     }
 
     for (int g = 0; g < 2; g++) {                /* flash the MAX readout when the ceiling moves */
@@ -797,34 +806,91 @@ static void draw_fan_panel(const CpuSnapshot *s, const Ui *u, double t)
 }
 
 /* -------------------------------------------------------------- core panels */
-static int collect_group(const CpuSnapshot *s, int g, int *idx)
-{
-    int n = 0;
-    for (int c = 0; c < s->ncore; c++) if (s->core_group[c] == g) idx[n++] = c;
-    return n;
-}
+typedef struct {
+    int cpu;
+    int core;
+    char lbl[16];
+    double mhz;
+    double f;
+} CoreItem;
 
-static void draw_group(const CpuSnapshot *s, const Ui *u, int y, int rows, int g, double t)
+static void draw_group(const CpuSnapshot *s, const Ui *u, int y, int rows, int g, bool show_threads, double t)
 {
-    int idx[MAX_CPU], n = collect_group(s, g, idx);
+    CoreItem items[MAX_CPU];
+    int n = 0;
     const RGB *gr = g ? G_ECORE : G_PCORE;
-    const char *title = s->hybrid ? (g ? "E-CORES" : "P-CORES") : "CORES";
+    const char *title;
+    if (s->hybrid) {
+        if (show_threads) title = g ? "E-THREADS" : "P-THREADS";
+        else              title = g ? "E-CORES" : "P-CORES";
+    } else {
+        title = show_threads ? "THREADS" : "CORES";
+    }
     char lc = s->hybrid ? (g ? 'E' : 'P') : 'C';
     int x = X_R, h = rows + 3;
     bool act = s->valid;
 
     module(x, y, W_R, h, title, grad(gr, 5, 0.45));
 
+    if (show_threads) {
+        int core_idx_in_grp = 0;
+        for (int c = 0; c < s->ncore; c++) {
+            if (s->core_group[c] != g) continue;
+            int thrs[MAX_CPU], nthr = 0;
+            for (int cpu = 0; cpu < s->ncpu; cpu++) {
+                if (s->cpu_core[cpu] == c) thrs[nthr++] = cpu;
+            }
+            if (nthr == 0) {
+                if (n < MAX_CPU) {
+                    items[n].cpu = -1;
+                    items[n].core = c;
+                    snprintf(items[n].lbl, sizeof items[n].lbl, "%c%d", lc, core_idx_in_grp);
+                    items[n].mhz = s->core_mhz[c];
+                    items[n].f = u->f_core[c];
+                    n++;
+                }
+            } else {
+                for (int ti = 0; ti < nthr && n < MAX_CPU; ti++) {
+                    int cpu = thrs[ti];
+                    items[n].cpu = cpu;
+                    items[n].core = c;
+                    if (nthr > 1) {
+                        snprintf(items[n].lbl, sizeof items[n].lbl, "%c%d%d", lc, core_idx_in_grp, ti + 1);
+                    } else {
+                        snprintf(items[n].lbl, sizeof items[n].lbl, "%c%d", lc, core_idx_in_grp);
+                    }
+                    items[n].mhz = s->cpu_mhz[cpu] > 0 ? s->cpu_mhz[cpu] : s->core_mhz[c];
+                    items[n].f = u->f_cpu[cpu];
+                    n++;
+                }
+            }
+            core_idx_in_grp++;
+        }
+    } else {
+        int core_idx_in_grp = 0;
+        for (int c = 0; c < s->ncore && n < MAX_CPU; c++) {
+            if (s->core_group[c] != g) continue;
+            items[n].cpu = -1;
+            items[n].core = c;
+            snprintf(items[n].lbl, sizeof items[n].lbl, "%c%d", lc, core_idx_in_grp);
+            items[n].mhz = s->core_mhz[c];
+            items[n].f = u->f_core[c];
+            n++;
+            core_idx_in_grp++;
+        }
+    }
+
     double mx = s->grp_max_mhz[g], avg = 0;
-    for (int k = 0; k < n; k++) avg += s->core_mhz[idx[k]];
-    if (n) avg /= n;
+    int navg = 0;
+    for (int k = 0; k < n; k++) if (items[k].mhz > 0) { avg += items[k].mhz; navg++; }
+    if (navg) avg /= navg;
 
     /* header: current ceiling (flashes when it changes) */
     text_l(x + 2, y + 1, C_LABEL, 0, "MAX");
     if (act && mx > 0) text_l(x + 6, y + 1, mix(C_CYAN, C_WHITE, u->flash[g]), 1, "%.0f MHz", mx);
     else               text_l(x + 6, y + 1, C_DIM, 0, "--");
     text_l(x + 20, y + 1, C_LABEL, 0, "AVG");
-    if (act) text_l(x + 24, y + 1, C_TEXT, 1, "%.0f MHz", avg); else text_l(x + 24, y + 1, C_DIM, 0, "--");
+    if (act && navg > 0) text_l(x + 24, y + 1, C_TEXT, 1, "%.0f MHz", avg); else text_l(x + 24, y + 1, C_DIM, 0, "--");
     if (act && s->turbo_known) {
         if (s->turbo_on) text_r(x + W_R - 3, y + 1, C_AMBER, 1, "\xE2\x96\xB2 TURBO");
         else             text_r(x + W_R - 3, y + 1, C_LABEL, 0, "\xE2\x96\xBC NO TURBO");
@@ -834,14 +900,13 @@ static void draw_group(const CpuSnapshot *s, const Ui *u, int y, int rows, int g
     for (int r = 0; r < rows; r++) for (int c = 0; c < 2; c++) {
         int k = c * rows + r;
         if (k >= n || k >= shown) continue;
-        int core = idx[k];
+        const CoreItem *it = &items[k];
         int cx = x + 2 + c * 26, cy = y + 2 + r;
-        double f = u->f_core[core];
-        char lbl[16]; snprintf(lbl, sizeof lbl, "%c%d", lc, k);
-        text_l(cx, cy, mix(C_DIM, grad(gr, 5, 0.6), clamp01(f * 1.2)), 1, "%-3s", lbl);
+        double f = it->f;
+        text_l(cx, cy, mix(C_DIM, grad(gr, 5, 0.6), clamp01(f * 1.2)), 1, "%-3s", it->lbl);
         hbar(cx + 4, cy, 14, f, gr, 5);
-        if (act) text_r(cx + 22, cy, mix(C_LABEL, C_TEXT, f), f > 0.8, "%4.0f", s->core_mhz[core]);
-        else     text_r(cx + 22, cy, C_DIM, 0, "--");
+        if (act && it->mhz > 0) text_r(cx + 22, cy, mix(C_LABEL, C_TEXT, f), f > 0.8, "%4.0f", it->mhz);
+        else                    text_r(cx + 22, cy, C_DIM, 0, "--");
     }
     if (n > shown) text_r(x + W_R - 3, y + h - 1, C_DIM, 0, " +%d more ", n - shown);
     (void)t;
@@ -953,25 +1018,30 @@ static void render(const CpuSnapshot *s, const Ui *u, double t)
     draw_fan_panel(s, u, t);
 
     /* core panels: P on top, E below; rows are shared out if there are lots of cores */
-    int n0 = s->grp_ncore[0], n1 = s->grp_ncore[1];
+    bool show_threads = atomic_load(&g_show_threads) != 0;
+    int n0 = show_threads ? s->grp_ncpu[0] : s->grp_ncore[0];
+    int n1 = show_threads ? s->grp_ncpu[1] : s->grp_ncore[1];
     if (n0 > 0 && n1 > 0) {
         int r0 = (n0 + 1) / 2, r1 = (n1 + 1) / 2, avail = (Y_PW - Y_CPU) - 6;
         if (r0 + r1 > avail) { r0 = (int)fmax(1, avail * r0 / (double)(r0 + r1)); r1 = avail - r0; }
-        draw_group(s, u, Y_CPU, r0, 0, t);
-        draw_group(s, u, Y_CPU + r0 + 3, r1, 1, t);
+        draw_group(s, u, Y_CPU, r0, 0, show_threads, t);
+        draw_group(s, u, Y_CPU + r0 + 3, r1, 1, show_threads, t);
     } else {
         int r = (n0 + n1 + 1) / 2, avail = (Y_PW - Y_CPU) - 3;
         if (r > avail) r = avail;
         if (r < 1) r = 1;
-        draw_group(s, u, Y_CPU, r, n0 > 0 ? 0 : 1, t);
+        draw_group(s, u, Y_CPU, r, n0 > 0 ? 0 : 1, show_threads, t);
     }
     draw_power(s, u, t);
 
     if (g_cfg.live)
-        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 source: LIVE \xC2\xB7 poll %.1fs%s", g_cfg.interval,
+        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 t toggle %s \xC2\xB7 source: LIVE \xC2\xB7 poll %.1fs%s",
+               show_threads ? "cores" : "threads",
+               g_cfg.interval,
                (s->valid && !s->power_ok) ? " \xC2\xB7 package watts need root (RAPL energy_uj)" : "");
     else
-        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 t toggle turbo \xC2\xB7 source: MOCK DATA");
+        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 t toggle %s \xC2\xB7 source: MOCK DATA",
+               show_threads ? "cores" : "threads");
 }
 
 /* ----------------------------------------------------------- frame emission */
@@ -1294,8 +1364,11 @@ static void live_poll(CpuSnapshot *s)
     s->ncpu = T.ncpu; s->ncore = T.ncore; s->hybrid = T.hybrid;
     memcpy(s->cpu_group, T.cpu_group, sizeof s->cpu_group);
     memcpy(s->core_group, T.core_group, sizeof s->core_group);
+    memcpy(s->cpu_core, T.cpu_core, sizeof s->cpu_core);
     s->grp_ncore[0] = s->grp_ncore[1] = 0;
     for (int c = 0; c < s->ncore; c++) s->grp_ncore[s->core_group[c]]++;
+    s->grp_ncpu[0] = s->grp_ncpu[1] = 0;
+    for (int cpu = 0; cpu < s->ncpu; cpu++) s->grp_ncpu[s->cpu_group[cpu]]++;
 
     read_proc_stat(s);
 
@@ -1310,10 +1383,15 @@ static void live_poll(CpuSnapshot *s)
     /* per-core frequency and current ceiling */
     double lim[2] = {0, 0}, peak[2] = {0, 0};
     for (int c = 0; c < s->ncore; c++) s->core_mhz[c] = 0;
+    for (int cpu = 0; cpu < s->ncpu; cpu++) s->cpu_mhz[cpu] = 0;
     for (int cpu = 0; cpu < s->ncpu; cpu++) {
         int core = T.cpu_core[cpu];
         double cur = cpufreq_khz(cpu, "scaling_cur_freq");
-        if (cur > 0) { cur /= 1000.0; if (cur > s->core_mhz[core]) s->core_mhz[core] = cur; }
+        if (cur > 0) {
+            cur /= 1000.0;
+            s->cpu_mhz[cpu] = cur;
+            if (cur > s->core_mhz[core]) s->core_mhz[core] = cur;
+        }
         double hw = cpufreq_khz(cpu, "cpuinfo_max_freq"), sw = cpufreq_khz(cpu, "scaling_max_freq");
         double c_lim = hw > 0 ? hw : sw;
         if (sw > 0 && c_lim > 0 && sw < c_lim) c_lim = sw;
@@ -1395,7 +1473,11 @@ static void mock_poll(CpuSnapshot *s, double t)
     snprintf(s->epp, sizeof s->epp, "balance_performance");
     s->ncpu = 32; s->ncore = 24; s->hybrid = true;
     s->grp_ncore[0] = 8; s->grp_ncore[1] = 16;
-    for (int c = 0; c < 32; c++) s->cpu_group[c] = c >= 16;
+    s->grp_ncpu[0] = 16; s->grp_ncpu[1] = 16;
+    for (int c = 0; c < 32; c++) {
+        s->cpu_group[c] = c >= 16;
+        s->cpu_core[c] = c < 16 ? c / 2 : 8 + (c - 16);
+    }
     for (int c = 0; c < 24; c++) s->core_group[c] = c >= 8;
 
     bool turbo = atomic_load(&g_turbo) != 0;
@@ -1442,6 +1524,12 @@ static void mock_poll(CpuSnapshot *s, double t)
         f += 25.0 * sin(t * 3.0 + c);
         s->core_mhz[c] = clampd(f, mn, mx);
     }
+    for (int i = 0; i < 32; i++) {
+        int core = s->cpu_core[i];
+        double var = 15.0 * sin(t * 4.0 + i * 2.1);
+        double mx = s->grp_max_mhz[s->cpu_group[i]];
+        s->cpu_mhz[i] = clampd(s->core_mhz[core] + var, 800, mx);
+    }
 
     temp += ((34.0 + 0.36 * s->pkg_w) - temp) * (1 - exp(-dt / 5.0));
     s->temp_ok = true; s->temp_c = temp + 0.7 * sin(t * 1.9); s->tjmax_c = 100;
@@ -1464,7 +1552,7 @@ static void init_snapshot(CpuSnapshot *s)
 {
     memset(s, 0, sizeof *s);
     snprintf(s->name, sizeof s->name, "CPU");
-    s->ncpu = s->ncore = 1; s->grp_ncore[0] = 1;
+    s->ncpu = s->ncore = 1; s->grp_ncore[0] = 1; s->grp_ncpu[0] = 1;
 }
 
 static void *poller(void *arg)
@@ -1529,7 +1617,7 @@ static void handle_keys(void)
     char k[16]; ssize_t n = read(STDIN_FILENO, k, sizeof k);
     for (ssize_t i = 0; i < n; i++) {
         if (k[i] == 'q' || k[i] == 'Q' || k[i] == 3) g_quit = 1;
-        else if ((k[i] == 't' || k[i] == 'T') && !g_cfg.live) atomic_store(&g_turbo, !atomic_load(&g_turbo));
+        else if (k[i] == 't' || k[i] == 'T') atomic_store(&g_show_threads, !atomic_load(&g_show_threads));
     }
 }
 
@@ -1540,7 +1628,7 @@ static void usage(void)
            "  --interval SEC  Set live polling interval (default 0.5 seconds)\n"
            "  --once          Show one live frame and exit\n"
            "  -h, --help      Show this help\n"
-           "Press q or Ctrl-C to quit.\n");
+           "Press q to quit, t to toggle cores/threads.\n");
 }
 
 static void json_string(const char *s)
