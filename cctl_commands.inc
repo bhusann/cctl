@@ -553,8 +553,14 @@ static int cmd_epp(int argc, char **argv)
         struct cpu_profile_state cpu_profile;
         read_cpu_profile(&cpu_profile);
         if (cpu_profile.have_epp)
-            printf("%sCurrent EPP:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN,
+            printf("%sCurrent EPP:%s %s%s%s\n", C_YLW, C_RST, C_CYN,
                    cpu_profile.epp, C_RST);
+        if (cpu_profile.have_governor && strcmp(cpu_profile.governor, "performance") == 0)
+            printf("%sNote:%s Governor is %sperformance%s — manual EPP control is locked in this mode.\n"
+                   "      Change governor to %spowersave%s ('cctl gov powersave') to configure EPP.\n\n",
+                   C_YLW, C_RST, C_CYN, C_RST, C_CYN, C_RST);
+        else
+            printf("\n");
         printf("%sUsage:%s %scctl epp <value>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("%sValid Values:%s\n", C_YLW, C_RST);
         printf("  %sperformance%s\n", C_CYN, C_RST);
@@ -571,6 +577,16 @@ static int cmd_epp(int argc, char **argv)
         fprintf(stderr, "Valid values: performance, balance_performance, balance_power, power\n");
         return 1;
     }
+
+    char cur_gov[64] = {0};
+    if (read_sysfs_str(CPU_GOVERNOR_PATH, cur_gov, sizeof(cur_gov)) >= 0) {
+        if (strcmp(cur_gov, "performance") == 0 && strcmp(epp, "performance") != 0) {
+            fprintf(stderr, "Error: CPU governor is currently 'performance' — manual EPP control is only supported in 'powersave' mode.\n");
+            fprintf(stderr, "       Change the governor first: cctl gov powersave\n");
+            return 1;
+        }
+    }
+
     require_root(argc, argv);
     int rc = set_epp(epp);
     if (rc == 0) print_done();

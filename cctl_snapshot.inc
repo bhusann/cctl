@@ -851,6 +851,19 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
 
     cctl_snapshot_divider();
     if (strcmp(st->epp, "skip") != 0) {
+        if (strcmp(st->governor, "skip") == 0) {
+            char cur_gov[64] = {0};
+            if (read_sysfs_str(CPU_GOVERNOR_PATH, cur_gov, sizeof(cur_gov)) >= 0 &&
+                strcmp(cur_gov, "performance") == 0 &&
+                strcmp(st->epp, "performance") != 0) {
+                printf("  %sNote:%s Governor is in %sperformance%s mode (EPP is locked).\n"
+                       "        Changing governor to %spowersave%s to apply saved EPP '%s'.\n"
+                       "        (Use '--mask epp' if you do not want governor to change).\n",
+                       C_YLW, C_RST, C_CYN, C_RST, C_CYN, C_RST, st->epp);
+                cctl_snapshot_apply_step("governor", set_governor("powersave"), &errors);
+                read_cpu_profile(&cpu_profile);
+            }
+        }
         if (cpu_profile.have_epp && strcmp(cpu_profile.epp, st->epp) == 0) {
             printf("  EPP: %s%s\n", st->epp, snapshot_unchanged_tag());
         } else {
@@ -955,6 +968,8 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
                        (st->kbd_brightness * 100 + 127) / 255, snapshot_unchanged_tag());
             if (!preserve_effect)
                 printf("  Keyboard effect: %s%s\n", st->kbd_effect, snapshot_unchanged_tag());
+            else if (effect_was_running)
+                printf("  Keyboard effect: preserving active effect '%s'%s\n", running_effect, snapshot_unchanged_tag());
             else
                 printf("  %sSkipping keyboard effect (not saved).%s\n", C_DIM, C_RST);
         } else {
@@ -990,9 +1005,22 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
             }
 
             if (strcmp(st->kbd_effect, "skip") != 0 && strcmp(st->kbd_effect, "none") != 0) {
-                cctl_snapshot_apply_step("keyboard effect", kbe_start(st->kbd_effect), &errors);
+                pid_t pid = 0;
+                if (kbe_start_ext(st->kbd_effect, &pid, 1) == 0) {
+                    printf("  Keyboard effect: %s (PID %d)%s\n", st->kbd_effect, (int)pid, snapshot_applied_tag());
+                } else {
+                    fprintf(stderr, "  %sFailed to restore keyboard effect '%s'; continuing.%s\n", C_RED, st->kbd_effect, C_RST);
+                    errors++;
+                }
             } else if (preserve_effect && effect_was_running) {
-                cctl_snapshot_apply_step("keyboard effect", kbe_start(running_effect), &errors);
+                pid_t pid = 0;
+                if (kbe_start_ext(running_effect, &pid, 1) == 0) {
+                    printf("  Keyboard effect: preserving active effect '%s' (restarted with restored color, PID %d)\n",
+                           running_effect, (int)pid);
+                } else {
+                    fprintf(stderr, "  %sFailed to restart preserved keyboard effect '%s'; continuing.%s\n", C_RED, running_effect, C_RST);
+                    errors++;
+                }
             } else if (strcmp(st->kbd_effect, "none") == 0) {
                 printf("  Keyboard effect: none%s\n", snapshot_applied_tag());
             } else {

@@ -81,8 +81,24 @@ static int set_epp(const char *val)
         fprintf(stderr, "Warning: EPP not available (no intel_pstate), skipping\n");
         return 0;
     }
+
+    char cur_gov[64] = {0};
+    if (read_sysfs_str(CPU_GOVERNOR_PATH, cur_gov, sizeof(cur_gov)) >= 0) {
+        if (strcmp(cur_gov, "performance") == 0 && strcmp(val, "performance") != 0) {
+            fprintf(stderr,
+                    "Error: CPU governor is currently 'performance' — manual EPP control is only supported in 'powersave' mode.\n"
+                    "       Change governor first: cctl gov powersave\n");
+            return -1;
+        }
+    }
+
     printf("  EPP: %s%s\n", val, snapshot_applied_tag());
-    return write_to_all_cpus("cpufreq/energy_performance_preference", val);
+    int rc = write_to_all_cpus("cpufreq/energy_performance_preference", val);
+    if (rc < 0) {
+        fprintf(stderr, "Error: Failed to set EPP to '%s'\n", val);
+        return -1;
+    }
+    return 0;
 }
 
 /* ========================================================================

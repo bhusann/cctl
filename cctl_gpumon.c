@@ -94,7 +94,7 @@ typedef struct {
     double gpu_clock_mhz, gpu_clock_max_mhz;
     double mem_clock_mhz, mem_clock_max_mhz;
     double vram_used_mib, vram_total_mib;
-    double power_w, power_limit_w;
+    double power_w, power_limit_w, power_max_w;
     double fan_duty_pct, fan_rpm;
     double gpu_util_pct;
     int    pstate;                 /* -1 = unknown */
@@ -365,7 +365,9 @@ static void ui_update(Ui *u, const GpuSnapshot *s, double dt)
     double t_temp = act ? clamp01((s->temp_c - 20.0) / 80.0) : 0;
     double t_clk  = act ? clamp01(s->gpu_clock_mhz / clkmax) : 0;
     double t_mclk = act ? clamp01(s->mem_clock_mhz / memmax) : 0;
-    double t_pow  = act && s->power_limit_w > 0 ? clamp01(s->power_w / s->power_limit_w) : 0;
+    double lim = s->power_limit_w > 0 ? s->power_limit_w : s->power_max_w;
+    if (s->power_w > lim && s->power_max_w > lim) lim = s->power_max_w;
+    double t_pow  = act && lim > 0 ? clamp01(s->power_w / lim) : 0;
     double t_duty = s->fan_valid ? clamp01(s->fan_duty_pct / 100.0) : 0;
     double t_util = act ? clamp01(s->gpu_util_pct / 100.0) : 0;
     double t_vram = act && s->vram_total_mib > 0 ? clamp01(s->vram_used_mib / s->vram_total_mib) : 0;
@@ -489,8 +491,19 @@ static void draw_cable(const GpuSnapshot *s, const Ui *u)
     for (int r = 0; r < 3; r++) put(cx, 4 + r, 0x2502, C_GOLD, 0);             /* wires land here */
     put(cx, 7, 0x2570, C_NV, 1); put(cx + cw - 1, 7, 0x256F, C_NV, 1);
     for (int x = cx + 1; x < cx + cw - 1; x++) put(x, 7, ' ', C_NV, 0);
-    if (act) text_c(cx + cw / 2, 4, C_TEXT, 1, "%.1f W", s->power_w);
-    else     text_c(cx + cw / 2, 4, C_TEXT, 1, "-- W");
+    if (act) {
+        double lim = s->power_limit_w > 0 ? s->power_limit_w : s->power_max_w;
+        if (lim > 0) {
+            if (s->power_w >= 100.0)
+                text_c(cx + cw / 2, 4, C_TEXT, 1, "%.0f / %.0f W", s->power_w, lim);
+            else
+                text_c(cx + cw / 2, 4, C_TEXT, 1, "%.1f / %.0f W", s->power_w, lim);
+        } else {
+            text_c(cx + cw / 2, 4, C_TEXT, 1, "%.1f W", s->power_w);
+        }
+    } else {
+        text_c(cx + cw / 2, 4, C_TEXT, 1, "-- W");
+    }
     hbar(cx + 2, 5, cw - 4, u->f_pow, G_LOAD, NSTOP(G_LOAD));
     for (int x = cx + 2; x < cx + cw - 2; x++) put(x, 6, 0x25AA, C_GOLD, 0);    /* pins */
 }
@@ -787,8 +800,8 @@ static bool autodetect_bdf(char *out, size_t n)
 #define SMI_FIELDS \
     "power.draw,clocks.gr,clocks.mem,temperature.gpu,memory.used,memory.total," \
     "pstate,clocks_event_reasons.active,pcie.link.gen.current,pcie.link.gen.max," \
-    "pcie.link.width.current,power.limit,utilization.gpu,name"
-#define SMI_NFIELDS 14
+    "pcie.link.width.current,enforced.power.limit,power.max_limit,power.limit,utilization.gpu,name"
+#define SMI_NFIELDS 16
 
 static double num(const char *s, double def)       /* "[N/A]" and friends -> def */
 {
@@ -825,9 +838,15 @@ static bool parse_smi_csv(char *line, GpuSnapshot *s)
     s->pcie_gen          = (int)num(f[8], 0);
     s->pcie_gen_max      = (int)num(f[9], 0);
     s->pcie_width        = (int)num(f[10], 0);
-    s->power_limit_w     = num(f[11], 0);
-    s->gpu_util_pct      = num(f[12], 0);
-    snprintf(s->name, sizeof s->name, "%s", f[13]);
+
+    double enforced      = num(f[11], 0);
+    double max_pwr       = num(f[12], 0);
+    double req_pwr       = num(f[13], 0);
+    s->power_limit_w     = enforced > 0 ? enforced : (req_pwr > 0 ? req_pwr : max_pwr);
+    s->power_max_w       = max_pwr > 0 ? max_pwr : s->power_limit_w;
+
+    s->gpu_util_pct      = num(f[14], 0);
+    snprintf(s->name, sizeof s->name, "%s", f[15]);
     return true;
 }
 
@@ -1118,6 +1137,7 @@ static void print_json_snapshot(const GpuSnapshot *s)
     fputs(",\"vram_total_mib\":", stdout); json_num(s->vram_total_mib, s->valid, 0);
     fputs(",\"power_w\":", stdout); json_num(s->power_w, s->valid, 1);
     fputs(",\"power_limit_w\":", stdout); json_num(s->power_limit_w, s->valid, 1);
+    fputs(",\"power_max_w\":", stdout); json_num(s->power_max_w, s->valid, 1);
     fputs(",\"pstate\":", stdout);
     if (s->valid && s->pstate >= 0) printf("%d", s->pstate); else fputs("null", stdout);
     fputs(",\"clock_reasons_active\":", stdout);

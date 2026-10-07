@@ -1016,7 +1016,7 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
     exit(0);
 }
 
-static int kbe_start(const char *effect)
+static int kbe_start_ext(const char *effect, pid_t *out_pid, int quiet)
 {
     if (access(KBD_PATH "/multi_intensity", F_OK) != 0) {
         fprintf(stderr, "Error: Keyboard backlight interface not found (is tuxedo_keyboard loaded?)\n");
@@ -1045,12 +1045,19 @@ static int kbe_start(const char *effect)
     }
 
     if (pid > 0) {
-        printf("Started keyboard effect '%s' [PID %d]\n", effect, (int)pid);
+        if (out_pid) *out_pid = pid;
+        if (!quiet)
+            printf("Started keyboard effect '%s' [PID %d]\n", effect, (int)pid);
         return 0;
     }
 
     kbe_daemon_worker(effect, orig_r, orig_g, orig_b, orig_bri);
     exit(0);
+}
+
+static int kbe_start(const char *effect)
+{
+    return kbe_start_ext(effect, NULL, 0);
 }
 
 static void kbe_profile_pulse_worker(int pr, int pg, int pb,
