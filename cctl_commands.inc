@@ -70,7 +70,11 @@ static void scale_show_details(void)
 static int cmd_scale(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         scale_show_details();
+        g_stream_mode = prev;
         return 0;
     }
 
@@ -242,7 +246,7 @@ static int cmd_editconf(int argc, char **argv)
     }
 
     char *const edit_args[] = { "sudoedit", USER_PROFILE_FILE, NULL };
-    int rc = run(edit_args, 0, NULL, 0);
+    int rc = run(edit_args, RUN_RAW, NULL, 0);
     if (rc != 0)
         return fail("Editor exited with status %d", rc);
     return 0;
@@ -256,6 +260,9 @@ static int cmd_set(int argc, char **argv)
     if (npos < 0) return 1;
 
     if (npos == 0) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         printf("%sUsage:%s %scctl %s <profile> [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, "set", C_RST);
         printf("%sValid Profiles:%s\n", C_YLW, C_RST);
@@ -270,6 +277,7 @@ static int cmd_set(int argc, char **argv)
         for (int i = 0; i < user_profile_count; i++)
             printf("  %s%-12s%s %s\n", C_BLU, user_profiles[i].name, C_RST,
                    user_profiles[i].help_desc);
+        g_stream_mode = prev;
         return 0;
     }
 
@@ -289,11 +297,11 @@ static int cmd_set(int argc, char **argv)
     }
 
     if (dry_run) {
-        printf("Dry run: profile %s\n", p->name);
+        stream_printf(STREAM_DELAY_US, "Dry run: profile %s\n", p->name);
         if (p->gpu_profile >= 0)
-            printf("  EC profile code: %s (%d)\n", gpu_profile_name(p->gpu_profile), p->gpu_profile);
-        else printf("  EC profile code: --\n");
-        printf("  Turbo: %s; governor: %s; EPP: %s\n",
+            stream_printf(STREAM_DELAY_US, "  EC profile code: %s (%d)\n", gpu_profile_name(p->gpu_profile), p->gpu_profile);
+        else stream_printf(STREAM_DELAY_US, "  EC profile code: --\n");
+        stream_printf(STREAM_DELAY_US, "  Turbo: %s; governor: %s; EPP: %s\n",
                p->turbo < 0 ? "--" : (p->turbo ? "on" : "off"),
                strcmp(p->gov, "skip") == 0 ? "--" : p->gov,
                strcmp(p->epp, "skip") == 0 ? "--" : p->epp);
@@ -303,12 +311,12 @@ static int cmd_set(int argc, char **argv)
             else snprintf(pl1, sizeof(pl1), "unchanged");
             if (p->rapl_pl2 > 0) snprintf(pl2, sizeof(pl2), "%dW", p->rapl_pl2);
             else snprintf(pl2, sizeof(pl2), "unchanged");
-            printf("  RAPL limits: PL1 %s; PL2 %s (preview only)\n", pl1, pl2);
+            stream_printf(STREAM_DELAY_US, "  RAPL limits: PL1 %s; PL2 %s (preview only)\n", pl1, pl2);
         } else {
-            printf("  RAPL limits: unchanged (use cctl rapl to change them)\n");
+            stream_printf(STREAM_DELAY_US, "  RAPL limits: unchanged (use cctl rapl to change them)\n");
         }
         if (p->fan_safety && !nosafe)
-            printf("  Fans: restore automatic control (safety default)\n");
+            stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
         return 0;
     }
 
@@ -349,6 +357,9 @@ static int cmd_fan(int argc, char **argv)
     if (npos < 0) return 1;
 
     if (npos == 0) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         printf("%sUsage:%s %scctl fan <mode> [pct] [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("%sValid Modes:%s\n", C_YLW, C_RST);
@@ -358,6 +369,7 @@ static int cmd_fan(int argc, char **argv)
         printf("  %s%-18s%s Set both fans to duty 25-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
         printf("  %s%-18s%s Set CPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "cpu <pct|auto>", C_RST);
         printf("  %s%-18s%s Set GPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "gpu <pct|auto>", C_RST);
+        g_stream_mode = prev;
         return 0;
     }
 
@@ -370,30 +382,30 @@ static int cmd_fan(int argc, char **argv)
 
     if (strcmp(mode, "auto") == 0) {
         if (val_str && strcmp(val_str, "cpu") == 0) {
-            printf("Setting CPU fan to AUTO...\n");
+            stream_printf(STREAM_DELAY_US, "Setting CPU fan to AUTO...\n");
             rc = legacy_fan_auto(FAN_CPU);
         } else if (val_str && strcmp(val_str, "gpu") == 0) {
-            printf("Setting GPU fan to AUTO...\n");
+            stream_printf(STREAM_DELAY_US, "Setting GPU fan to AUTO...\n");
             rc = legacy_fan_auto(FAN_GPU);
         } else {
-            printf("Setting both fans to AUTO...\n");
+            stream_printf(STREAM_DELAY_US, "Setting both fans to AUTO...\n");
             rc = fan_auto_all();
         }
     } else if (strcmp(mode, "max") == 0) {
-        printf("Setting both fans to MAX...\n");
+        stream_printf(STREAM_DELAY_US, "Setting both fans to MAX...\n");
         rc = fan_max_all();
     } else if (strcmp(mode, "silent") == 0) {
         if (!nosafe) {
-            printf("Applying: eco profile (safety default for silent fans; use --nosafe to bypass)...\n");
+            stream_printf(STREAM_DELAY_US, "Applying: eco profile (safety default for silent fans; use --nosafe to bypass)...\n");
             profile_eco();
         }
-        printf("Setting both fans to SILENT...\n");
+        stream_printf(STREAM_DELAY_US, "Setting both fans to SILENT...\n");
         rc = fan_silent_all();
     } else if (strcmp(mode, "cpu") == 0) {
         if (!val_str)
             return fail("Missing duty percentage or 'auto'");
         if (strcmp(val_str, "auto") == 0) {
-            printf("Setting CPU fan to AUTO...\n");
+            stream_printf(STREAM_DELAY_US, "Setting CPU fan to AUTO...\n");
             rc = legacy_fan_auto(FAN_CPU);
         } else {
             int pct;
@@ -409,7 +421,7 @@ static int cmd_fan(int argc, char **argv)
         if (!val_str)
             return fail("Missing duty percentage or 'auto'");
         if (strcmp(val_str, "auto") == 0) {
-            printf("Setting GPU fan to AUTO...\n");
+            stream_printf(STREAM_DELAY_US, "Setting GPU fan to AUTO...\n");
             rc = legacy_fan_auto(FAN_GPU);
         } else {
             int pct;
@@ -429,7 +441,7 @@ static int cmd_fan(int argc, char **argv)
                 return fail("Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n"
                             "       Fixed duty ignores temperature and may cause overheating or damage.\n"
                             "       Use manual fan duty for experimental purposes only.", pct);
-            printf("Setting both fans to %d%%...\n", pct);
+            stream_printf(STREAM_DELAY_US, "Setting both fans to %d%%...\n", pct);
             rc = fan_set_duty(0, pct);
         } else {
             fail("Unknown fan mode '%s'", mode);
@@ -453,7 +465,7 @@ static int cmd_turbo(int argc, char **argv)
     if (npos == 0) {
         long no_turbo = read_sysfs_long(TURBO_PATH, -1);
         if (no_turbo >= 0)
-            printf("%sCurrent Turbo:%s %s%s%s\n\n",
+            stream_printf(STREAM_DELAY_US, "%sCurrent Turbo:%s %s%s%s\n\n",
                    C_YLW, C_RST,
                    no_turbo == 0 ? C_GRN : C_RED,
                    no_turbo == 0 ? "ON" : "OFF",
@@ -475,7 +487,7 @@ static int cmd_turbo(int argc, char **argv)
     require_root(argc, argv);
 
     if (enabled && !nosafe) {
-        printf("Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
+        stream_printf(STREAM_DELAY_US, "Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
         fan_auto_all();
     }
 
@@ -507,12 +519,19 @@ static int cmd_fnlock(int argc, char **argv)
 static int cmd_gov(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         struct cpu_profile_state cpu_profile;
         read_cpu_profile(&cpu_profile);
         if (cpu_profile.have_governor)
             printf("%sCurrent Governor:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN,
                    cpu_profile.governor, C_RST);
-        printf("%sUsage:%s %scctl gov <powersave | performance>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        printf("%sUsage:%s %scctl gov <governor>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        printf("%sValid Values:%s\n", C_YLW, C_RST);
+        printf("  %spowersave%s\n", C_CYN, C_RST);
+        printf("  %sperformance%s\n", C_CYN, C_RST);
+        g_stream_mode = prev;
         return 0;
     }
     const char *gov = argv[2];
@@ -528,6 +547,9 @@ static int cmd_gov(int argc, char **argv)
 static int cmd_epp(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         struct cpu_profile_state cpu_profile;
         read_cpu_profile(&cpu_profile);
         if (cpu_profile.have_epp)
@@ -539,6 +561,7 @@ static int cmd_epp(int argc, char **argv)
         printf("  %sbalance_performance%s\n", C_CYN, C_RST);
         printf("  %sbalance_power%s\n", C_CYN, C_RST);
         printf("  %spower%s\n", C_CYN, C_RST);
+        g_stream_mode = prev;
         return 0;
     }
     const char *epp = argv[2];
@@ -557,6 +580,9 @@ static int cmd_epp(int argc, char **argv)
 static int cmd_rapl(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         int cur_pl1 = -1, cur_pl2 = -1;
         if (read_rapl_current(&cur_pl1, &cur_pl2) == 0 && cur_pl1 > 0 && cur_pl2 > 0) {
             printf("%sCurrent RAPL Limits:%s\n", C_YLW, C_RST);
@@ -569,6 +595,7 @@ static int cmd_rapl(int argc, char **argv)
         printf("       %scctl rapl <pl2>%s           (one value = PL2 only)\n\n", C_CYN_BLD, C_RST);
         printf("  %sLimits:%s PL1 1-%dW (up to %dW with EC profile code 2), PL2 1-%dW\n",
                 C_DIM, C_RST, RAPL_PL1_MAX_WATTS, RAPL_PL1_MAX_WATTS_MAX, RAPL_PL2_MAX_WATTS);
+        g_stream_mode = prev;
         return 0;
     }
 
@@ -632,7 +659,11 @@ static int cmd_rapl(int argc, char **argv)
 static int cmd_kbc(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         kbd_show_presets();
+        g_stream_mode = prev;
         return 0;
     }
 
@@ -656,10 +687,14 @@ static int cmd_kbc(int argc, char **argv)
 static int cmd_kbb(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         int cur_bri = kbd_get_brightness();
         if (cur_bri >= 0)
             printf("%sCurrent Brightness:%s %s%d%%%s\n\n", C_YLW, C_RST, C_CYN, cur_bri, C_RST);
         printf("%sUsage:%s %scctl kbb <0-100>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        g_stream_mode = prev;
         return 0;
     }
     int pct;
@@ -683,6 +718,9 @@ static int cmd_kbe(int argc, char **argv)
         if (geteuid() != 0 && access(KBE_STATE_PATH, F_OK) == 0 &&
             access(KBE_STATE_PATH, R_OK) != 0)
             self_elevate(argc, argv);
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         struct kbe_state ks;
         if (kbe_is_running(&ks)) {
             printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
@@ -705,6 +743,7 @@ static int cmd_kbe(int argc, char **argv)
             printf("  %s%-16s%s %s\n", C_CYN, kbe_effects[i].name, C_RST, kbe_effects[i].desc);
         }
         printf("\n%sUsage:%s %scctl kbe <effect>  |  cctl kbe stop%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        g_stream_mode = prev;
         return 0;
     }
 
@@ -745,11 +784,15 @@ static int cmd_webcam(int argc, char **argv)
 static int cmd_bat(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         /* Show current thresholds */
         int start = bat_read_start();
         int end = bat_read_end();
         if (start < 0 || end < 0) {
             fprintf(stderr, "Error: Cannot read battery thresholds\n");
+            g_stream_mode = prev;
             return 1;
         }
         printf("%sCurrent Thresholds:%s\n", C_YLW, C_RST);
@@ -777,6 +820,7 @@ static int cmd_bat(int argc, char **argv)
             }
         }
         printf("\n%sUsage:%s %scctl bat <start> <end>  |  cctl bat max%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        g_stream_mode = prev;
         return 0;
     }
 
@@ -1048,7 +1092,7 @@ static int cmd_uninstall(int argc, char **argv)
         return 1;
     }
 
-    puts("cctl was uninstalled. TUXEDO/Clevo drivers, if installed, were left untouched.");
+    stream_text("cctl was uninstalled. TUXEDO/Clevo drivers, if installed, were left untouched.", STREAM_DELAY_US);
     return 0;
 }
 
@@ -1070,14 +1114,14 @@ static int cmd_install(int argc, char **argv)
 
     /* If running from /usr/local/bin/cctl directly, it's already installed */
     if (strcmp(src, "/usr/local/bin/cctl") == 0) {
-        printf("cctl is already installed at /usr/local/bin/cctl\n");
+        stream_printf(STREAM_DELAY_US, "cctl is already installed at /usr/local/bin/cctl\n");
         return 0;
     }
 
     /* Check microversion of currently installed binary */
     int installed_ver = get_installed_microversion();
     if (!force && installed_ver > CCTL_MICROVERSION) {
-        printf("Installed cctl is newer (build %d > build %d). Use --force to downgrade.\n",
+        stream_printf(STREAM_DELAY_US, "Installed cctl is newer (build %d > build %d). Use --force to downgrade.\n",
                installed_ver, CCTL_MICROVERSION);
         return 0;
     }
@@ -1086,26 +1130,26 @@ static int cmd_install(int argc, char **argv)
 
     /* Confirmation prompt: simple enter is not allowed, must type y or n */
     if (installed_ver == CCTL_MICROVERSION)
-        printf("Reinstall cctl at /usr/local/bin/cctl (build %d)? [y/n] ", CCTL_MICROVERSION);
+        stream_printf(STREAM_DELAY_US, "Reinstall cctl at /usr/local/bin/cctl (build %d)? [y/n] ", CCTL_MICROVERSION);
     else if (installed_ver > 0)
-        printf("Upgrade cctl at /usr/local/bin/cctl (build %d → build %d)? [y/n] ",
+        stream_printf(STREAM_DELAY_US, "Upgrade cctl at /usr/local/bin/cctl (build %d → build %d)? [y/n] ",
                installed_ver, CCTL_MICROVERSION);
     else
-        printf("Install cctl to /usr/local/bin/cctl with passwordless sudo? [y/n] ");
+        stream_printf(STREAM_DELAY_US, "Install cctl to /usr/local/bin/cctl with passwordless sudo? [y/n] ");
     fflush(stdout);
 
     char ans[32] = {0};
     if (!fgets(ans, sizeof(ans), stdin) ||
         (ans[0] != 'y' && ans[0] != 'Y') ||
         (ans[1] != '\n' && strcasecmp(ans, "yes\n") != 0)) {
-        printf("Aborted.\n");
+        stream_printf(STREAM_DELAY_US, "Aborted.\n");
         return 0;
     }
 
     if (installed_ver > 0)
-        printf("%sUpgrading cctl...%s\n", C_CYN, C_RST);
+        stream_printf(STREAM_DELAY_US, "%sUpgrading cctl...%s\n", C_CYN, C_RST);
     else
-        printf("%sInstalling cctl...%s\n", C_CYN, C_RST);
+        stream_printf(STREAM_DELAY_US, "%sInstalling cctl...%s\n", C_CYN, C_RST);
 
     /* Cache the matching driver archive when possible, but keep cctl
      * installation independent of network availability. */
@@ -1118,7 +1162,7 @@ static int cmd_install(int argc, char **argv)
         fprintf(stderr, "Error: failed to install binary to /usr/local/bin/cctl\n");
         return 1;
     }
-    printf("Installed: /usr/local/bin/cctl (from %s)\n", src);
+    stream_printf(STREAM_DELAY_US, "Installed: /usr/local/bin/cctl (from %s)\n", src);
 
     /* 2. Determine the human user (prefer the sudo invoker) */
     const char *user = getenv("SUDO_USER");
@@ -1202,17 +1246,17 @@ static int cmd_install(int argc, char **argv)
         return 1;
     }
     chmod(sudoers, 0440); /* rename preserves 0440; enforce explicitly anyway */
-    printf("%sSudoers:%s %s (passwordless sudo for %s)\n", C_GRN, C_RST,
+    stream_printf(STREAM_DELAY_US, "%sSudoers:%s %s (passwordless sudo for %s)\n", C_GRN, C_RST,
            sudoers, user);
 
-    printf("\n%sDone.%s cctl is installed to /usr/local/bin/cctl and passwordless sudo is configured.\n",
+    stream_printf(STREAM_DELAY_US, "\n%sDone.%s cctl is installed to /usr/local/bin/cctl and passwordless sudo is configured.\n",
            C_GRN, C_RST);
-    printf("Privileged commands will auto-elevate seamlessly without needing any shell alias.\n");
+    stream_printf(STREAM_DELAY_US, "Privileged commands will auto-elevate seamlessly without needing any shell alias.\n");
     if (!drivers_cached && stale_driver_cache)
-        printf("%sNote:%s An older driver package remains in the cache. Run 'cctl drivers-manage' to refresh it; if its checksum does not match, update cctl first.\n",
+        stream_printf(STREAM_DELAY_US, "%sNote:%s An older driver package remains in the cache. Run 'cctl drivers-manage' to refresh it; if its checksum does not match, update cctl first.\n",
                C_YLW, C_RST);
     else if (!drivers_cached)
-        printf("%sNote:%s Driver package was not cached. Run 'cctl drivers-manage' when online; if its checksum does not match, update cctl first.\n",
+        stream_printf(STREAM_DELAY_US, "%sNote:%s Driver package was not cached. Run 'cctl drivers-manage' when online; if its checksum does not match, update cctl first.\n",
                C_YLW, C_RST);
     return 0;
 }

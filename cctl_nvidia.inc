@@ -939,7 +939,12 @@ static int nvidia_clock_show_target(const struct nvidia_clk_target *tgt)
         fprintf(stderr, "Error: Unable to query %s via nvidia-smi\n", tgt->desc);
         return 1;
     }
-    return nvidia_clock_display(tgt->desc, tgt->name, max_clk, tgt->def_val, tgt->ex_min, tgt->ex_max);
+    int prev = g_stream_mode;
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
+    int rc = nvidia_clock_display(tgt->desc, tgt->name, max_clk, tgt->def_val, tgt->ex_min, tgt->ex_max);
+    g_stream_mode = prev;
+    return rc;
 }
 
 #ifdef CCTL_NVIDIA
@@ -951,6 +956,9 @@ static int nvidia_clock_show_target(const struct nvidia_clk_target *tgt)
 static int cmd_nvidia(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         printf("%sUsage:%s %scctl %s%s\n\n", C_BLD, C_RST, C_CYN_BLD, NVIDIA_USAGE_STR, C_RST);
         printf("%sCommands:%s\n", C_YLW, C_RST);
 #ifdef CCTL_NVIDIA
@@ -958,6 +966,7 @@ static int cmd_nvidia(int argc, char **argv)
 #endif
         printf("  %s%-10s%s Lock/unlock GPU core clocks (no arg: show max clock)\n", C_CYN, "clock", C_RST);
         printf("  %s%-10s%s Lock/unlock GPU memory clocks (no arg: show max clock)\n", C_CYN, "memclock", C_RST);
+        g_stream_mode = prev;
         return 0;
     }
     const char *action = argv[2];
@@ -1049,15 +1058,27 @@ static int cmd_status(int argc, char **argv)
     if (argc > 3 || (argc == 3 && strcmp(argv[2], "--json") != 0))
         return fail("Unexpected extra argument '%s'", argv[2]);
     json_output = (argc == 3);
+    int prev = g_stream_mode;
+    if (!json_output) {
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
+    }
     show_status();
+    g_stream_mode = prev;
     json_output = 0;
     return 0;
 }
 
 static int cmd_rr(int argc, char **argv)
 {
-    if (argc < 3)
-        return rr_list();
+    if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
+        int rc = rr_list();
+        g_stream_mode = prev;
+        return rc;
+    }
 
     /* Shortcuts: 1 → highest rate, 2 → lowest rate (e.g. 165Hz / 40Hz) */
     const char *rate = argv[2];

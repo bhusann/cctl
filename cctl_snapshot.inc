@@ -681,6 +681,9 @@ static const char *cctl_snapshot_value(int value, char *buf, size_t size)
 
 static void cctl_snapshot_view(int number, const struct cctl_snapshot_data *st)
 {
+    int prev = g_stream_mode;
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
     char buf[64];
     printf("Snapshot %d:\n", number);
     if (st->ec_profile_code < 0)
@@ -716,6 +719,7 @@ static void cctl_snapshot_view(int number, const struct cctl_snapshot_data *st)
     if (st->display_scale_known < 0) printf("  Display scale: --\n");
     else if (st->display_scale_set) printf("  Display scale: %s\n", st->display_scale);
     else printf("  Display scale: native (1x1)\n");
+    g_stream_mode = prev;
 }
 
 static int cctl_snapshot_save(int number, unsigned long long mask)
@@ -750,7 +754,7 @@ static int cctl_snapshot_save(int number, unsigned long long mask)
         perror("Error: could not save snapshot");
         return 1;
     }
-    printf("Saved snapshot %d to %s/%d.conf\n", number, CCTL_SNAPSHOT_DIR, number);
+    stream_printf(STREAM_DELAY_US, "Saved snapshot %d to %s/%d.conf\n", number, CCTL_SNAPSHOT_DIR, number);
     return 0;
 }
 
@@ -767,7 +771,7 @@ static int cctl_snapshot_delete(int number)
         perror("Error: could not delete snapshot");
         return 1;
     }
-    printf("Deleted snapshot %d.\n", number);
+    stream_printf(STREAM_DELAY_US, "Deleted snapshot %d.\n", number);
     return 0;
 }
 
@@ -783,6 +787,9 @@ static int cctl_snapshot_apply_step(const char *name, int rc, int *errors)
 
 static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st)
 {
+    int prev = g_stream_mode;
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
     int errors = 0;
     printf("Restoring snapshot %d one setting at a time...\n", number);
 
@@ -884,15 +891,20 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
 
     if (errors) {
         fprintf(stderr, "Snapshot %d restored with %d error(s).\n", number, errors);
+        g_stream_mode = prev;
         return 1;
     }
     printf("Snapshot %d restored.\n", number);
+    g_stream_mode = prev;
     return 0;
 }
 
 static int cmd_snapshot(int argc, char **argv)
 {
     if (argc < 3) {
+        int prev = g_stream_mode;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
         printf("%sUsage:%s %scctl snapshot <save|restore|view|delete> <number> [--mask fields]%s\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("       %scctl snapshot restore <number> [--mask fields] [--dry-run]%s\n",
@@ -909,6 +921,7 @@ static int cmd_snapshot(int argc, char **argv)
         printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock\n");
         printf("\n%sNot included:%s fan settings are not saved or restored by snapshots.\n",
                C_YLW, C_RST);
+        g_stream_mode = prev;
         return 0;
     }
     if (strcmp(argv[2], "list") == 0) {

@@ -200,7 +200,7 @@ static int drivers_cache_warm(const char *binary_path, int *stale_cache)
     if (stale_cache)
         *stale_cache = 0;
     if (cache_lookup(cached, sizeof(cached), 1, stale_cache)) {
-        printf("%sDriver package cache is up to date.%s\n", C_DIM, C_RST);
+        stream_printf(STREAM_DELAY_US, "%sDriver package cache is up to date.%s\n", C_DIM, C_RST);
         return 0;
     }
 
@@ -223,10 +223,10 @@ static int drivers_cache_warm(const char *binary_path, int *stale_cache)
         access(adjacent, R_OK) == 0) {
         char sha[65];
         if (file_sha256(adjacent, sha) == 0 && strcmp(sha, DRIVERS_SHA256) == 0) {
-            printf("%sFound matching %s beside cctl.%s\n", C_DIM,
+            stream_printf(STREAM_DELAY_US, "%sFound matching %s beside cctl.%s\n", C_DIM,
                    DRIVERS_TARBALL, C_RST);
             if (cache_store(adjacent) == 0) {
-                printf("%sDriver package cached.%s\n", C_DIM, C_RST);
+                stream_printf(STREAM_DELAY_US, "%sDriver package cached.%s\n", C_DIM, C_RST);
                 return 0;
             }
         }
@@ -250,7 +250,7 @@ static int drivers_cache_warm(const char *binary_path, int *stale_cache)
             char sha[65];
             if (file_sha256(archive, sha) == 0 &&
                 strcmp(sha, DRIVERS_SHA256) == 0 && cache_store(archive) == 0) {
-                printf("%sDriver package cache refreshed.%s\n", C_DIM, C_RST);
+                stream_printf(STREAM_DELAY_US, "%sDriver package cache refreshed.%s\n", C_DIM, C_RST);
                 cached_ok = 1;
             }
         }
@@ -276,6 +276,10 @@ static int cmd_drivers_install(int argc, char **argv)
 
     if (geteuid() != 0)
         self_elevate(argc, argv);
+
+    int prev_mode = g_stream_mode;
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
 
     char tmpbase[] = "/tmp/cctl-drivers.XXXXXX";
     char *tmpdir = NULL;
@@ -460,7 +464,7 @@ static int cmd_drivers_install(int argc, char **argv)
         goto cleanup;
     }
 
-    printf("Launching driver installer (verified sources)...\n");
+    stream_printf(STREAM_DELAY_US, "Launching driver installer (verified sources)...\n");
     {
         char *const sh_args[] = { "bash", script, NULL };
         int installer_status = run(sh_args, 0, NULL, 0);
@@ -470,10 +474,11 @@ static int cmd_drivers_install(int argc, char **argv)
             goto cleanup;
         }
     }
-    printf("Drivers installed from verified %s.\n", DRIVERS_TARBALL);
+    stream_printf(STREAM_DELAY_US, "Drivers installed from verified %s.\n", DRIVERS_TARBALL);
     rc = 0;
 
 cleanup:
+    g_stream_mode = prev_mode;
     if (tmpdir) remove_tree(tmpdir);
     return rc;
 }
@@ -663,6 +668,8 @@ static void print_help_command(const struct command *cmd)
 
 static void print_usage(const char *prog)
 {
+    int prev_stream = g_stream_output;
+    g_stream_output = 0;
     const char *base = strrchr(prog, '/');
     prog = base ? base + 1 : prog;
 
@@ -733,6 +740,7 @@ static void print_usage(const char *prog)
     }
 
     printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
+    g_stream_output = prev_stream;
 }
 
 int main(int argc, char **argv)
@@ -752,9 +760,13 @@ int main(int argc, char **argv)
         }
     }
 
-    json_output = (argc >= 3 &&
-                   (strcasecmp(argv[1], "status") == 0) &&
-                   strcmp(argv[2], "--json") == 0);
+    json_output = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0) {
+            json_output = 1;
+            break;
+        }
+    }
     use_color = isatty(STDOUT_FILENO) && !json_output;
     init_colors();
 

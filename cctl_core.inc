@@ -22,9 +22,265 @@ static void init_colors(void)
     }
 }
 
+enum stream_mode {
+    STREAM_MODE_CHAR = 0,
+    STREAM_MODE_LINE = 1,
+};
+
+#define STREAM_DELAY_US 5000
+
+static int g_stream_output = 1;
+static int g_stream_mode = STREAM_MODE_CHAR;
+static int g_stream_line = 0;
+
+static void sleep_ms(long ms)
+{
+    if (ms <= 0) return;
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
+static int is_char_stream_prompt(const char *s, size_t len)
+{
+    if (!s || len == 0) return 0;
+    if (memmem(s, len, "tuxedo-drivers are installed. Reinstall or Uninstall", 52))
+        return 1;
+    if (memmem(s, len, "tuxedo-drivers are not installed. Install", 41))
+        return 1;
+    if (memmem(s, len, "Uninstall existing driver and install cctl drivers", 50))
+        return 1;
+    if (memmem(s, len, "tuxedo-drivers are in a broken/partial state", 43))
+        return 1;
+    return 0;
+}
+
+static void stream_write_file(FILE *stream, const char *text, int delay_us)
+{
+    if (!text) return;
+    if (!stream) stream = stdout;
+    if (stream != stdout && stream != stderr) {
+        fputs(text, stream);
+        fflush(stream);
+        return;
+    }
+
+    int is_out = (stream == stdout);
+    int fd = is_out ? STDOUT_FILENO : STDERR_FILENO;
+    if (!g_stream_output || json_output || !isatty(fd) || delay_us <= 0) {
+        fputs(text, stream);
+        fflush(stream);
+        return;
+    }
+
+    int mode = is_out ? g_stream_mode : STREAM_MODE_CHAR;
+
+    if (mode == STREAM_MODE_LINE) {
+        size_t len = strlen(text);
+        for (size_t i = 0; i < len; ) {
+            size_t start = i;
+            while (i < len && text[i] != '\n') {
+                i++;
+            }
+            if (is_char_stream_prompt(&text[start], i - start)) {
+                size_t seg_len = i - start;
+                for (size_t k = 0; k < seg_len; ) {
+                    if (text[start + k] == '\033' && k + 1 < seg_len && text[start + k + 1] == '[') {
+                        size_t j = k + 2;
+                        while (j < seg_len && (text[start + j] < 0x40 || text[start + j] > 0x7E)) j++;
+                        if (j < seg_len) j++;
+                        fwrite(&text[start + k], 1, j - k, stream);
+                        k = j;
+                        continue;
+                    }
+                    unsigned char c = (unsigned char)text[start + k];
+                    size_t clen = 1;
+                    if ((c & 0xE0) == 0xC0) clen = 2;
+                    else if ((c & 0xF0) == 0xE0) clen = 3;
+                    else if ((c & 0xF8) == 0xF0) clen = 4;
+                    if (k + clen > seg_len) clen = seg_len - k;
+
+                    fwrite(&text[start + k], 1, clen, stream);
+                    k += clen;
+                    fflush(stream);
+                    usleep((useconds_t)STREAM_DELAY_US);
+                }
+            } else if (i > start) {
+                fwrite(&text[start], 1, i - start, stream);
+            }
+            if (i < len && text[i] == '\n') {
+                fputc('\n', stream);
+                fflush(stream);
+                long delay = 20 - (g_stream_line * 1);
+                if (delay < 10) delay = 10;
+                sleep_ms(delay);
+                g_stream_line++;
+                i++;
+            } else {
+                fflush(stream);
+            }
+        }
+        return;
+    }
+
+    /* STREAM_MODE_CHAR */
+    size_t len = strlen(text);
+    for (size_t i = 0; i < len; ) {
+        /* Pass ANSI escape sequences immediately without delay */
+        if (text[i] == '\033' && i + 1 < len && text[i + 1] == '[') {
+            size_t j = i + 2;
+            while (j < len && (text[j] < 0x40 || text[j] > 0x7E)) j++;
+            if (j < len) j++;
+            fwrite(&text[i], 1, j - i, stream);
+            i = j;
+            continue;
+        }
+
+        /* UTF-8 multi-byte sequence */
+        unsigned char c = (unsigned char)text[i];
+        size_t clen = 1;
+        if ((c & 0xE0) == 0xC0) clen = 2;
+        else if ((c & 0xF0) == 0xE0) clen = 3;
+        else if ((c & 0xF8) == 0xF0) clen = 4;
+        if (i + clen > len) clen = len - i;
+
+        fwrite(&text[i], 1, clen, stream);
+        i += clen;
+        fflush(stream);
+        usleep((useconds_t)delay_us);
+    }
+}
+
+static void stream_write(const char *text, int delay_us)
+{
+    stream_write_file(stdout, text, delay_us);
+}
+
+static void stream_text(const char *text, int delay_us)
+{
+    if (!text) return;
+    stream_write_file(stdout, text, delay_us);
+    size_t len = strlen(text);
+    if (len == 0 || text[len - 1] != '\n') {
+        stream_write_file(stdout, "\n", delay_us);
+    }
+}
+
+static void stream_printf(int delay_us, const char *fmt, ...)
+    __attribute__((format(__printf__, 2, 3)));
+
+static void stream_printf(int delay_us, const char *fmt, ...)
+{
+    char buf[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    stream_write_file(stdout, buf, delay_us);
+}
+
+static int cctl_stream_fprintf(FILE *stream, const char *fmt, ...)
+    __attribute__((format(__printf__, 2, 3)));
+
+static int cctl_stream_fprintf(FILE *stream, const char *fmt, ...)
+{
+    if (!stream) return -1;
+    if (stream != stdout && stream != stderr) {
+        va_list ap;
+        va_start(ap, fmt);
+        int n = vfprintf(stream, fmt, ap);
+        va_end(ap);
+        return n;
+    }
+
+    char buf[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (n >= (int)sizeof(buf)) {
+        char *dyn = malloc((size_t)n + 1);
+        if (dyn) {
+            vsnprintf(dyn, (size_t)n + 1, fmt, ap2);
+            stream_write_file(stream, dyn, STREAM_DELAY_US);
+            free(dyn);
+        } else {
+            stream_write_file(stream, buf, STREAM_DELAY_US);
+        }
+    } else if (n > 0) {
+        stream_write_file(stream, buf, STREAM_DELAY_US);
+    }
+    va_end(ap2);
+    va_end(ap);
+    return n;
+}
+
+static int cctl_stream_printf(const char *fmt, ...)
+    __attribute__((format(__printf__, 1, 2)));
+
+static int cctl_stream_printf(const char *fmt, ...)
+{
+    char buf[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (n >= (int)sizeof(buf)) {
+        char *dyn = malloc((size_t)n + 1);
+        if (dyn) {
+            vsnprintf(dyn, (size_t)n + 1, fmt, ap2);
+            stream_write_file(stdout, dyn, STREAM_DELAY_US);
+            free(dyn);
+        } else {
+            stream_write_file(stdout, buf, STREAM_DELAY_US);
+        }
+    } else if (n > 0) {
+        stream_write_file(stdout, buf, STREAM_DELAY_US);
+    }
+    va_end(ap2);
+    va_end(ap);
+    return n;
+}
+
+static int cctl_stream_puts(const char *s)
+{
+    if (!s) return EOF;
+    stream_write_file(stdout, s, STREAM_DELAY_US);
+    stream_write_file(stdout, "\n", STREAM_DELAY_US);
+    return 0;
+}
+
+static int cctl_stream_putchar(int c)
+{
+    char ch = (char)c;
+    char str[2] = { ch, '\0' };
+    stream_write_file(stdout, str, STREAM_DELAY_US);
+    return c;
+}
+
+static void cctl_stream_perror(const char *s)
+{
+    int err = errno;
+    if (s && *s) {
+        cctl_stream_fprintf(stderr, "%s: %s\n", s, strerror(err));
+    } else {
+        cctl_stream_fprintf(stderr, "%s\n", strerror(err));
+    }
+}
+
+#define printf(...)    cctl_stream_printf(__VA_ARGS__)
+#define fprintf(...)   cctl_stream_fprintf(__VA_ARGS__)
+#define puts(s)        cctl_stream_puts(s)
+#define putchar(c)     cctl_stream_putchar(c)
+#define perror(s)      cctl_stream_perror(s)
+
 enum run_flags {
     RUN_SILENT  = 1 << 0, /* redirect stdout & stderr to /dev/null */
     RUN_CAPTURE = 1 << 1, /* capture stdout into out buffer */
+    RUN_RAW     = 1 << 2, /* inherit raw stdout/stdin (e.g. interactive editors) */
 };
 
 /* Unified process spawner: replaces run_cmd, run_cmd_silent, popen, system, and fork/pipe.
@@ -34,7 +290,10 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
     if ((flags & RUN_CAPTURE) && out && out_sz > 0)
         out[0] = '\0';
     int pipefd[2] = { -1, -1 };
-    if ((flags & RUN_CAPTURE) && pipe(pipefd) != 0)
+    int stream_child = !(flags & (RUN_CAPTURE | RUN_SILENT | RUN_RAW)) &&
+                       g_stream_output && !json_output && isatty(STDOUT_FILENO);
+
+    if (((flags & RUN_CAPTURE) || stream_child) && pipe(pipefd) != 0)
         return -1;
 
     pid_t pid = fork();
@@ -49,14 +308,16 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
         sigemptyset(&none);
         sigprocmask(SIG_SETMASK, &none, NULL);
 
-        if (flags & RUN_CAPTURE) {
+        if ((flags & RUN_CAPTURE) || stream_child) {
             close(pipefd[0]);
             dup2(pipefd[1], STDOUT_FILENO);
             close(pipefd[1]);
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) {
-                dup2(devnull, STDERR_FILENO);
-                close(devnull);
+            if (flags & RUN_CAPTURE) {
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) {
+                    dup2(devnull, STDERR_FILENO);
+                    close(devnull);
+                }
             }
         } else if (flags & RUN_SILENT) {
             int devnull = open("/dev/null", O_WRONLY);
@@ -93,6 +354,21 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
         }
         if (out && out_sz > 0) out[total] = '\0';
         close(pipefd[0]);
+    } else if (stream_child) {
+        close(pipefd[1]);
+        char buf[512];
+        for (;;) {
+            ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
+            if (n > 0) {
+                buf[n] = '\0';
+                stream_write(buf, STREAM_DELAY_US);
+            } else if (n < 0 && errno == EINTR) {
+                continue;
+            } else {
+                break;
+            }
+        }
+        close(pipefd[0]);
     }
 
     int status = 0;
@@ -108,19 +384,38 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
 static void run_quiet(char *const argv[]) { int r = run(argv, RUN_SILENT, NULL, 0); (void)r; }
 
 static int fail(const char *fmt, ...)
+    __attribute__((format(__printf__, 1, 2)));
+
+static int fail(const char *fmt, ...)
 {
+    char buf[4096];
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "Error: ");
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (n >= (int)sizeof(buf)) {
+        char *dyn = malloc((size_t)n + 1);
+        if (dyn) {
+            vsnprintf(dyn, (size_t)n + 1, fmt, ap2);
+            cctl_stream_fprintf(stderr, "Error: %s\n", dyn);
+            free(dyn);
+        } else {
+            cctl_stream_fprintf(stderr, "Error: %s\n", buf);
+        }
+    } else if (n > 0) {
+        cctl_stream_fprintf(stderr, "Error: %s\n", buf);
+    } else {
+        cctl_stream_fprintf(stderr, "Error:\n");
+    }
+    va_end(ap2);
     va_end(ap);
     return 1;
 }
 
 static void print_done(void)
 {
-    puts(dry_run ? "Dry run complete." : "Done.");
+    stream_text(dry_run ? "Dry run complete." : "Done.", STREAM_DELAY_US);
 }
 
 #define require_root(argc, argv) do { if (!dry_run) self_elevate(argc, argv); } while (0)
@@ -264,7 +559,7 @@ static int wait_ibf(void)
 static int send_ec_cmd(uint8_t cmd, const uint8_t *data, int len)
 {
     if (dry_run) {
-        printf("Dry run: EC command 0x%02X with %d data byte(s)\n", cmd, len);
+        stream_printf(STREAM_DELAY_US, "Dry run: EC command 0x%02X with %d data byte(s)\n", cmd, len);
         return 0;
     }
     if (ec_acquire_ports() < 0)
@@ -287,7 +582,7 @@ static int send_ec_cmd(uint8_t cmd, const uint8_t *data, int len)
 static int write_sysfs(const char *path, const char *value)
 {
     if (dry_run) {
-        printf("Dry run: write %s = %s\n", path, value);
+        stream_printf(STREAM_DELAY_US, "Dry run: write %s = %s\n", path, value);
         return 0;
     }
     int fd = open(path, O_WRONLY);
@@ -967,12 +1262,13 @@ static int mux_switch(void)
         return 1;
     }
 
-    printf("GPU MUX switched: %s%s%s → %s%s%s\n",
-           C_DIM, mux_mode_str(current), C_RST,
-           C_BLD, mux_mode_str(target), C_RST);
-    printf("%sReboot to apply.%s\n", C_YLW, C_RST);
+    stream_printf(STREAM_DELAY_US, "GPU MUX switched: %s%s%s → %s%s%s\n",
+                  C_DIM, mux_mode_str(current), C_RST,
+                  C_BLD, mux_mode_str(target), C_RST);
+    stream_printf(STREAM_DELAY_US, "%sReboot to apply.%s\n", C_YLW, C_RST);
     if (target == MUX_VAL_DGPU) {
-        printf("After reboot in dGPU mode, the X11 display may start at 40 Hz due to a hardware quirk.\n"
+        stream_printf(STREAM_DELAY_US,
+               "After reboot in dGPU mode, the X11 display may start at 40 Hz due to a hardware quirk.\n"
                "Run 'cctl rr 165' to restore 165 Hz.\n");
     }
     return 0;

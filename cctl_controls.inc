@@ -175,7 +175,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
     closedir(d);
 
     if (dry_run) {
-        printf("Dry run: RAPL limits would be applied\n");
+        stream_printf(STREAM_DELAY_US, "Dry run: RAPL limits would be applied\n");
         return 0;
     }
 
@@ -258,7 +258,7 @@ static int tuxedo_ioctl(unsigned long req, void *arg)
 static int set_gpu_profile_tuxedo(int profile)
 {
     if (dry_run) {
-        printf("Dry run: set EC profile code %s (%d)\n", gpu_profile_name(profile), profile);
+        stream_printf(STREAM_DELAY_US, "Dry run: set EC profile code %s (%d)\n", gpu_profile_name(profile), profile);
         return 0;
     }
     return tuxedo_ioctl(W_CL_PERF_PROFILE, &profile);
@@ -313,7 +313,7 @@ static int set_gpu_profile(int profile)
 static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
 {
     if (dry_run) {
-        printf("Dry run: set fan duties to %u/%u (raw)\n", raw_fan1, raw_fan2);
+        stream_printf(STREAM_DELAY_US, "Dry run: set fan duties to %u/%u (raw)\n", raw_fan1, raw_fan2);
         return 0;
     }
     /* Byte order in packed argument: fan1 | (fan2 << 8) */
@@ -329,7 +329,7 @@ static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
 static int fan_auto_tuxedo(int32_t mask)
 {
     if (dry_run) {
-        printf("Dry run: restore automatic control for fan mask 0x%X\n", mask ? mask : 15);
+        stream_printf(STREAM_DELAY_US, "Dry run: restore automatic control for fan mask 0x%X\n", mask ? mask : 15);
         return 0;
     }
     /* Note: arg MUST be passed as a pointer (&arg) because tuxedo_io
