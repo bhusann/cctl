@@ -5,7 +5,7 @@
  * Run:     cctl cpumon [--json] [--interval SEC] [--once]
  *          Press q or Ctrl-C to quit the visual monitor.
  *
- * Needs a terminal of at least 118x38 with truecolor + UTF-8.
+ * Needs a terminal of at least 118x36 with truecolor + UTF-8.
  *
  * ---------------------------------------------------------------------------
  * LIVE DATA SOURCES (all plain file reads, nothing is spawned)
@@ -57,7 +57,7 @@
 
 /* ------------------------------------------------------------------ layout */
 #define W 118                     /* canvas size in cells */
-#define H 38
+#define H 36
 #define HIST 33                   /* usage history samples (= chart width) */
 #define PHIST 49                  /* power history samples (= power bar width) */
 #define MAX_CPU 128
@@ -77,12 +77,12 @@
 #define X_RAM   53
 #define W_RAM   11
 #define H_RAM   18
-#define Y_FAN   24
+#define Y_FAN   22
 #define W_FAN   64
 #define H_FAN   13
 #define X_R     65
 #define W_R     53
-#define Y_PW    21
+#define Y_PW    19
 #define H_PW    16
 
 /* ------------------------------------------------------------------- types */
@@ -115,17 +115,16 @@ typedef struct {
 } CpuSnapshot;
 
 typedef struct {
-    bool   live, once, noturbo, json;
-    double interval, once_t;
+    bool   once, json;
+    double interval;
 } Config;
 
-static Config g_cfg = { false, false, false, false, 0.5, 22.0 };
+static Config g_cfg = { false, false, 0.5 };
 
 /* ----------------------------------------------------------------- globals */
 static CpuSnapshot       g_snap;
 static pthread_mutex_t   g_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile sig_atomic_t g_quit = 0;
-static atomic_int        g_turbo = 1;           /* mock turbo */
 static atomic_int        g_show_threads = 1;    /* toggle physical cores vs threads with 't' */
 static double            g_t0 = 0;
 static float             g_amt = 1.0f;          /* 0 = dull/grey, 1 = full colour */
@@ -134,7 +133,6 @@ static float             g_amt = 1.0f;          /* 0 = dull/grey, 1 = full colou
 static double clampd(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static double clamp01(double v) { return clampd(v, 0.0, 1.0); }
 static uint8_t u8(double v) { return (uint8_t)(clampd(v, 0, 255) + 0.5); }
-static double smooth01(double x) { x = clamp01(x); return x * x * (3 - 2 * x); }
 
 static double now_s(void)
 {
@@ -558,18 +556,7 @@ static void draw_thermo(const CpuSnapshot *s, const Ui *u, double t)
     if (ok) {
         text_c(x0 + (4 + 8) / 2, BOT + 2, dark, 1, "%.0f\xC2\xB0""C", u->temp_disp);
     } else text_c(x0 + (4 + 8) / 2, BOT + 2, dark, 1, "--");
-
-    /* state chip */
-    if (!ok) { text_c(x0 + 5, BOT + 4, C_DIM, 0, "\xE2\x97\x8B N/A"); return; }
-    double tc = s->temp_c;
-    if (tc < 55)      text_c(x0 + 5, BOT + 4, C_CYAN, 1, "\xE2\x97\x8F COOL");
-    else if (tc < 75) text_c(x0 + 5, BOT + 4, C_GREEN, 1, "\xE2\x97\x8F NORMAL");
-    else if (tc < 90) text_c(x0 + 5, BOT + 4, C_AMBER, 1, "\xE2\x96\xB2 WARM");
-    else if (tc < s->tjmax_c - 3) text_c(x0 + 5, BOT + 4, C_RED, 1, "\xE2\x96\xB2 HOT");
-    else {
-        bool on = fmod(t, 0.7) < 0.35;
-        text_c(x0 + 5, BOT + 4, on ? C_WHITE : C_RED, 1, "\xE2\x96\xB2 THROTTLE");
-    }
+    (void)t;
 }
 
 /* ---------------------------------------------------------------- CPU chip */
@@ -1034,14 +1021,10 @@ static void render(const CpuSnapshot *s, const Ui *u, double t)
     }
     draw_power(s, u, t);
 
-    if (g_cfg.live)
-        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 t toggle %s \xC2\xB7 source: LIVE \xC2\xB7 poll %.1fs%s",
-               show_threads ? "cores" : "threads",
-               g_cfg.interval,
-               (s->valid && !s->power_ok) ? " \xC2\xB7 package watts need root (RAPL energy_uj)" : "");
-    else
-        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 t toggle %s \xC2\xB7 source: MOCK DATA",
-               show_threads ? "cores" : "threads");
+    text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 t toggle %s \xC2\xB7 poll %.1fs%s",
+           show_threads ? "cores" : "threads",
+           g_cfg.interval,
+           (s->valid && !s->power_ok) ? " \xC2\xB7 package watts need root (RAPL energy_uj)" : "");
 }
 
 /* ----------------------------------------------------------- frame emission */
@@ -1461,93 +1444,6 @@ static void live_poll(CpuSnapshot *s)
     s->valid = true;
 }
 
-/* ---- mock data: 8 P cores (HT) + 16 E cores = 24C / 32T ---- */
-static void mock_poll(CpuSnapshot *s, double t)
-{
-    static double last_t = -1, temp = 38, boost_left = 14, pkg = 8;
-    double dt = (last_t < 0 || t < last_t || t - last_t > 2.0) ? 0.25 : t - last_t;
-    last_t = t;
-
-    snprintf(s->name, sizeof s->name, "Intel Core i9-14900HX");
-    snprintf(s->governor, sizeof s->governor, "powersave");
-    snprintf(s->epp, sizeof s->epp, "balance_performance");
-    s->ncpu = 32; s->ncore = 24; s->hybrid = true;
-    s->grp_ncore[0] = 8; s->grp_ncore[1] = 16;
-    s->grp_ncpu[0] = 16; s->grp_ncpu[1] = 16;
-    for (int c = 0; c < 32; c++) {
-        s->cpu_group[c] = c >= 16;
-        s->cpu_core[c] = c < 16 ? c / 2 : 8 + (c - 16);
-    }
-    for (int c = 0; c < 24; c++) s->core_group[c] = c >= 8;
-
-    bool turbo = atomic_load(&g_turbo) != 0;
-    s->turbo_known = true; s->turbo_on = turbo;
-    double pmax = turbo ? 5800 : 2200, emax = turbo ? 4100 : 1600;
-    s->grp_max_mhz[0] = pmax; s->grp_max_mhz[1] = emax;
-
-    /* 60 s workload script: idle -> medium -> full blast -> cool down */
-    double ph = fmod(t, 60.0), L;
-    if      (ph < 6)  L = 0.05;
-    else if (ph < 12) L = 0.05 + 0.40 * smooth01((ph - 6) / 6);
-    else if (ph < 16) L = 0.45 + 0.50 * smooth01((ph - 12) / 4);
-    else if (ph < 44) L = 0.95;
-    else if (ph < 50) L = 0.95 - 0.55 * smooth01((ph - 44) / 6);
-    else              L = 0.40 - 0.35 * smooth01((ph - 50) / 10);
-
-    double tot = 0;
-    for (int i = 0; i < 32; i++) {
-        double w = i < 16 ? 1.0 : (L > 0.5 ? 0.85 : 0.35);
-        double n = 0.5 + 0.5 * sin(t * (1.1 + 0.23 * i) + i * 1.7);
-        double u = clamp01(L * w * (0.75 + 0.5 * n) + 0.03 * n + 0.01);
-        s->cpu_util[i] = u * 100.0; tot += u;
-    }
-    s->util_total = tot / 32.0 * 100.0;
-
-    /* power model: PL2 boost for a while, then PL1 */
-    double pl1 = 55, pl2 = 157, tau = 14;
-    double want = 7 + 175 * pow(s->util_total / 100.0, 1.25) * (turbo ? 1.0 : 0.42);
-    double lim = boost_left > 0 ? pl2 : pl1;
-    if (want > pl1) boost_left = fmax(-1, boost_left - dt); else boost_left = fmin(tau, boost_left + dt * 0.8);
-    if (boost_left <= 0 && want <= pl1 * 0.8) boost_left = 1.0;
-    double target_w = fmin(want, lim);
-    pkg += (target_w - pkg) * (1 - exp(-dt * 4.0));
-    s->pkg_w = pkg + 0.8 * sin(t * 9.1);
-    s->power_ok = true; s->pl_ok = true; s->pl1_w = pl1; s->pl2_w = pl2; s->tau_s = tau;
-    double tf = want > pkg ? clamp01(pkg / want) : 1.0;       /* power-limited -> clocks sag */
-
-    for (int c = 0; c < 24; c++) {
-        double demand;
-        if (c < 8) demand = fmax(s->cpu_util[2 * c], s->cpu_util[2 * c + 1]) / 100.0;
-        else       demand = s->cpu_util[16 + (c - 8)] / 100.0;
-        double mx = c < 8 ? pmax : emax, mn = c < 8 ? 800 : 800;
-        double f = mn + (mx - mn) * pow(clamp01(demand * 1.1), 0.75) * (0.62 + 0.38 * tf);
-        f += 25.0 * sin(t * 3.0 + c);
-        s->core_mhz[c] = clampd(f, mn, mx);
-    }
-    for (int i = 0; i < 32; i++) {
-        int core = s->cpu_core[i];
-        double var = 15.0 * sin(t * 4.0 + i * 2.1);
-        double mx = s->grp_max_mhz[s->cpu_group[i]];
-        s->cpu_mhz[i] = clampd(s->core_mhz[core] + var, 800, mx);
-    }
-
-    temp += ((34.0 + 0.36 * s->pkg_w) - temp) * (1 - exp(-dt / 5.0));
-    s->temp_ok = true; s->temp_c = temp + 0.7 * sin(t * 1.9); s->tjmax_c = 100;
-
-    s->ram_total_gb = 32.0;
-    s->ram_used_gb = 8.5 + 9.0 * (0.5 + 0.5 * sin(t * 0.13)) + 5.0 * L;
-
-    s->fan_ok = true;
-    s->fan_duty_pct = s->temp_c < 48 ? 20 : clampd(20 + (s->temp_c - 48) * 2.0, 20, 100);
-    s->fan_rpm = 1100 + s->fan_duty_pct * 46.0;
-    s->valid = true;
-}
-
-static void source_poll(CpuSnapshot *s, double t)
-{
-    if (g_cfg.live) live_poll(s); else mock_poll(s, t);
-}
-
 static void init_snapshot(CpuSnapshot *s)
 {
     memset(s, 0, sizeof *s);
@@ -1561,10 +1457,9 @@ static void *poller(void *arg)
     CpuSnapshot cur;
     init_snapshot(&cur);
     while (!g_quit) {
-        source_poll(&cur, now_s() - g_t0);
+        live_poll(&cur);
         pthread_mutex_lock(&g_lock); g_snap = cur; pthread_mutex_unlock(&g_lock);
-        double iv = g_cfg.live ? g_cfg.interval : 0.25;
-        for (double w = 0; w < iv && !g_quit; w += 0.05) sleep_s(0.05);
+        for (double w = 0; w < g_cfg.interval && !g_quit; w += 0.05) sleep_s(0.05);
     }
     return NULL;
 }
@@ -1677,7 +1572,6 @@ static void print_json_snapshot(const CpuSnapshot *s)
 
 int cctl_cpumon(int argc, char **argv)
 {
-    g_cfg.live = true;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--once")) {
             g_cfg.once = true;
@@ -1709,14 +1603,14 @@ int cctl_cpumon(int argc, char **argv)
     if (g_cfg.once) {
         static CpuSnapshot s;
         init_snapshot(&s);
-        if (g_cfg.live) { source_poll(&s, 0); sleep_s(0.4); }
-        for (double tt = fmax(0.0, g_cfg.once_t - 20.0); tt < g_cfg.once_t && !g_cfg.live; tt += 0.25) source_poll(&s, tt);
-        source_poll(&s, g_cfg.once_t);
+        live_poll(&s);
+        sleep_s(0.4);
+        live_poll(&s);
         for (int k = 0; k < 40; k++) ui_update(&ui, &s, 0.25);       /* jump straight to steady state */
         if (g_cfg.json) {
             print_json_snapshot(&s);
         } else {
-            render(&s, &ui, g_cfg.once_t);
+            render(&s, &ui, 0);
             emit_frame(&b, 0, 0, false);
             write_all(b.p, b.n);
         }

@@ -104,21 +104,18 @@ typedef struct {
 } GpuSnapshot;
 
 typedef struct {
-    bool   live, auto_cycle, start_asleep, once;
     char   bdf[32];
     double interval;
-    double once_t;
     bool   json;
 } Config;
 
-static Config g_cfg = { false, false, false, false, "", 1.0, 6.0, false };
+static Config g_cfg = { "", 1.0, false };
 
 /* ----------------------------------------------------------------- globals */
 static GpuSnapshot       g_snap;
 static pthread_mutex_t   g_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile sig_atomic_t g_quit = 0;
-static atomic_int        g_force_sleep = 0;     /* mock only: 'd' key */
-static atomic_int        g_wait_d3cold = 0;     /* live: pause NVIDIA queries until D3cold */
+static atomic_int        g_wait_d3cold = 0;     /* pause NVIDIA queries until D3cold */
 static double            g_t0 = 0;
 static float             g_amt = 1.0f;          /* 0 = dull/grey, 1 = full colour */
 
@@ -664,10 +661,7 @@ static void render(const GpuSnapshot *s, const Ui *u, double t, const char *bdf)
     draw_left_module(s, u);
     draw_right_module(s, u);
 
-    if (g_cfg.live)
-        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 p stop nvidia-smi polling to allow D3cold \xC2\xB7 LIVE \xC2\xB7 poll %.1fs", g_cfg.interval);
-    else
-        text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 d toggle D3cold \xC2\xB7 source: MOCK DATA%s", g_cfg.auto_cycle ? " (auto-cycling)" : "");
+    text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 p pause nvidia-smi to allow D3cold \xC2\xB7 poll %.1fs", g_cfg.interval);
 }
 
 /* ----------------------------------------------------------- frame emission */
@@ -1006,48 +1000,6 @@ static void live_poll(GpuSnapshot *s)
     }
 }
 
-/* ---- mock data ---- */
-static void mock_poll(GpuSnapshot *s, double t)
-{
-    static bool was_asleep = false;
-    static double wake_at = -1;
-    bool asleep = atomic_load(&g_force_sleep) != 0;
-    if (g_cfg.auto_cycle) asleep = fmod(t, 36.0) > 24.0;          /* 24 s awake, 12 s asleep */
-
-    snprintf(s->name, sizeof s->name, "NVIDIA GeForce RTX 4060 Ti");
-    s->smi_error = false;
-    if (asleep) { s->pm = PM_D3COLD; s->valid = false; was_asleep = true; return; }
-    if (was_asleep) { was_asleep = false; wake_at = t + 1.4; }     /* short "syncing" phase after wake */
-    s->pm = PM_D0;
-    if (t < wake_at) { s->valid = false; return; }
-    s->valid = true;
-
-    double load = 0.5 + 0.5 * sin(t * 0.5 - 1.2);
-    load = load * load * (3 - 2 * load);
-    load = clamp01(load + 0.02 * sin(t * 7.3) + 0.015 * sin(t * 13.1));
-
-    s->gpu_util_pct = load * 100.0;
-    s->temp_c = 36.0 + 44.0 * load + 2.0 * sin(t * 1.7);
-    s->gpu_clock_max_mhz = 2850; s->gpu_clock_mhz = 210 + (2850 - 210) * load;
-    s->mem_clock_max_mhz = 9001; s->mem_clock_mhz = load > 0.12 ? 9001 : (load > 0.05 ? 810 : 405);
-    s->power_limit_w = 160;      s->power_w = 12 + 148 * load;
-    s->fan_duty_pct = s->temp_c < 52 ? 0 : clampd(28 + (s->temp_c - 52) * 2.6, 28, 100);   /* 0-RPM mode when cool */
-    s->fan_rpm = s->fan_duty_pct > 0 ? 600 + s->fan_duty_pct * 26 : 0;
-    s->vram_total_mib = 8188;
-    s->vram_used_mib = 900 + 5800 * (0.5 + 0.5 * sin(t * 0.21 + 0.7));
-    s->pstate = load > 0.85 ? 0 : (load > 0.6 ? 2 : (load > 0.35 ? 3 : (load > 0.12 ? 5 : 8)));
-    s->clk_reasons = s->pstate == 8 ? 0 : (s->pstate == 0 ? 0x4 : ((s->pstate == 2 || s->pstate == 3) ? 0x24 : 0));
-    s->pcie_gen = load > 0.12 ? 4 : 1; s->pcie_gen_max = 4; s->pcie_width = 8;
-    double burst = 0.5 + 0.5 * sin(t * 2.3);
-    s->pcie_rx_mbs = load > 0.2 ? load * load * 2400 * burst : 0;
-    s->pcie_tx_mbs = load > 0.2 ? load * 700 * (1 - burst * 0.6) : 0;
-}
-
-static void source_poll(GpuSnapshot *s, double t)
-{
-    if (g_cfg.live) live_poll(s); else mock_poll(s, t);
-}
-
 static void init_snapshot(GpuSnapshot *s)
 {
     memset(s, 0, sizeof *s);
@@ -1061,10 +1013,9 @@ static void *poller(void *arg)
     GpuSnapshot cur;
     init_snapshot(&cur);
     while (!g_quit) {
-        source_poll(&cur, now_s() - g_t0);
+        live_poll(&cur);
         pthread_mutex_lock(&g_lock); g_snap = cur; pthread_mutex_unlock(&g_lock);
-        double iv = g_cfg.live ? g_cfg.interval : 0.25;
-        for (double w = 0; w < iv && !g_quit; w += 0.05) sleep_s(0.05);
+        for (double w = 0; w < g_cfg.interval && !g_quit; w += 0.05) sleep_s(0.05);
     }
     return NULL;
 }
@@ -1115,8 +1066,7 @@ static void handle_keys(void)
     char k[16]; ssize_t n = read(STDIN_FILENO, k, sizeof k);
     for (ssize_t i = 0; i < n; i++) {
         if (k[i] == 'q' || k[i] == 'Q' || k[i] == 3) g_quit = 1;
-        else if ((k[i] == 'd' || k[i] == 'D') && !g_cfg.live) atomic_store(&g_force_sleep, !atomic_load(&g_force_sleep));
-        else if ((k[i] == 'p' || k[i] == 'P') && g_cfg.live) atomic_store(&g_wait_d3cold, !atomic_load(&g_wait_d3cold));
+        else if (k[i] == 'p' || k[i] == 'P') atomic_store(&g_wait_d3cold, !atomic_load(&g_wait_d3cold));
     }
 }
 
@@ -1184,7 +1134,6 @@ static void print_json_snapshot(const GpuSnapshot *s)
 
 int cctl_gpumon(int argc, char **argv)
 {
-    g_cfg.live = true;
     if (argc > 3 || (argc == 3 && strcmp(argv[2], "--json") != 0)) {
         fprintf(stderr, "Usage: cctl gpumon [--json]\n");
         return 1;
@@ -1248,7 +1197,7 @@ int cctl_gpumon(int argc, char **argv)
         pthread_mutex_lock(&g_lock); s = g_snap; pthread_mutex_unlock(&g_lock);
 
         ui_update(&ui, &s, dt);
-        render(&s, &ui, t - g_t0, g_cfg.live ? g_cfg.bdf : NULL);
+        render(&s, &ui, t - g_t0, g_cfg.bdf);
         b.n = 0;
         emit_frame(&b, (cols - W) / 2, (rows - H) / 2, true);
         write_all(b.p, b.n);
