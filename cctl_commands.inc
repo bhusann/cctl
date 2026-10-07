@@ -317,6 +317,12 @@ static int cmd_set(int argc, char **argv)
         }
         if (p->fan_safety && !nosafe)
             stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
+        if (strcmp(p->name, "max") == 0) {
+            stream_printf(STREAM_DELAY_US, "\n%sNote:%s 'max' is extreme performance mode; CPU will draw sustained 60–90W (vs normal 45W) and reach ~98°C.\n"
+                   "      Recommended for heavy tasks like compiling or demanding games.\n"
+                   "      For day-to-day use or lighter gaming, prefer 'cpuperf' or 'balanced'.\n",
+                   C_YLW, C_RST);
+        }
         return 0;
     }
 
@@ -344,6 +350,12 @@ static int cmd_set(int argc, char **argv)
         if (mode_write(profile, "set", active_ec_code) < 0)
             fprintf(stderr, "Warning: could not record active mode in %s\n", MODE_FILE);
         kbe_profile_pulse(profile);
+        if (strcmp(profile, "max") == 0) {
+            printf("\n%sNote:%s 'max' is extreme performance mode; CPU will draw sustained 60–90W (vs normal 45W) and reach ~98°C.\n"
+                   "      Recommended for heavy tasks like compiling or demanding games.\n"
+                   "      For day-to-day use or lighter gaming, prefer 'cpuperf' or 'balanced'.\n",
+                   C_YLW, C_RST);
+        }
         print_done();
     }
     return rc;
@@ -618,6 +630,8 @@ static int cmd_rapl(int argc, char **argv)
     if (argc > 4)
         return fail("Unexpected extra argument '%s'", argv[4]);
 
+    require_root(argc, argv);
+
     int pl1 = 0, pl2 = 0;
     int skip_pl1 = 0, skip_pl2 = 0;
     int pl1_cap = rapl_pl1_ceiling(); /* 45W; 90W only while EC profile code 2 */
@@ -663,11 +677,9 @@ static int cmd_rapl(int argc, char **argv)
     if (skip_pl1 && skip_pl2)
         return fail("Nothing to set — both PL1 and PL2 are skipped");
 
-    require_root(argc, argv);
-
     /* Pass ≤ 0 to skip (set_rapl_limits treats pl1_w ≤ 0 as skip) */
     int rc = set_rapl_limits(skip_pl1 ? -1 : pl1, skip_pl2 ? -1 : pl2,
-                             rapl_pl1_ceiling());
+                             pl1_cap);
     if (rc == 0) print_done();
     return rc;
 }

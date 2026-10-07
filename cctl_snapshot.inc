@@ -616,7 +616,10 @@ static void cctl_snapshot_preview_restore(int number,
     SNAPSHOT_PREVIEW("Governor", strcmp(st->governor, "skip") == 0 ? "skip (not saved)" : st->governor);
     SNAPSHOT_PREVIEW("EPP", strcmp(st->epp, "skip") == 0 ? "skip (not saved)" : st->epp);
     if (st->pl1 >= 0) {
-        snprintf(value, sizeof(value), "%dW", st->pl1);
+        if (st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2)
+            snprintf(value, sizeof(value), "%dW (skipped: requires EC profile code 2)", st->pl1);
+        else
+            snprintf(value, sizeof(value), "%dW", st->pl1);
         printf("  %-22s %s\n", "PL1", value);
     } else SNAPSHOT_PREVIEW("PL1", "skip (not saved)");
     if (st->pl2 >= 0) {
@@ -883,14 +886,31 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
     int need_pl2 = (st->pl2 >= 0 && st->pl2 != cur_pl2);
 
     cctl_snapshot_divider();
+    int pl1_rejected = 0;
+    if (st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2) {
+        if (st->pl2 >= 0) {
+            printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
+                   "        Skipping PL1 and restoring PL2 (%dW) alone.\n",
+                   C_YLW, C_RST, st->pl1, st->pl2);
+        } else {
+            printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
+                   "        Skipping PL1.\n",
+                   C_YLW, C_RST, st->pl1);
+        }
+        pl1_rejected = 1;
+        need_pl1 = 0;
+    }
+
     if (st->pl1 < 0 && st->pl2 < 0) {
         printf("  %sSkipping RAPL (not saved).%s\n", C_DIM, C_RST);
+    } else if (pl1_rejected && st->pl2 < 0) {
+        /* PL1 rejected and PL2 not saved; nothing more to do */
     } else if (!need_pl1 && !need_pl2) {
-        if (st->pl1 >= 0 && st->pl2 >= 0)
+        if (!pl1_rejected && st->pl1 >= 0 && st->pl2 >= 0)
             printf("  RAPL: PL1 %dW, PL2 %dW%s\n", st->pl1, st->pl2, snapshot_unchanged_tag());
-        else if (st->pl1 >= 0)
+        else if (!pl1_rejected && st->pl1 >= 0)
             printf("  RAPL: PL1 %dW%s\n", st->pl1, snapshot_unchanged_tag());
-        else
+        else if (st->pl2 >= 0)
             printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
     } else {
         int apply_pl1 = need_pl1 ? st->pl1 : 0;
