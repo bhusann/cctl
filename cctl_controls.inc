@@ -148,6 +148,13 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
     int old_pl1 = -1, old_pl2 = -1;
     read_rapl_current(&old_pl1, &old_pl2);
 
+    int eff_pl1 = pl1_w > 0 ? pl1_w : old_pl1;
+    int eff_pl2 = pl2_w > 0 ? pl2_w : old_pl2;
+    if (eff_pl1 > 0 && eff_pl2 > 0 && eff_pl2 <= eff_pl1) {
+        fprintf(stderr, "Error: PL2 (%dW) must be greater than PL1 (%dW)\n", eff_pl2, eff_pl1);
+        return -1;
+    }
+
     char pl1_str[32], pl2_str[32];
     if (pl1_w > 0) snprintf(pl1_str, sizeof(pl1_str), "%d000000", pl1_w);
     if (pl2_w > 0) snprintf(pl2_str, sizeof(pl2_str), "%d000000", pl2_w);
@@ -585,6 +592,8 @@ static void load_user_profiles(void)
                  (safe_atoi(pl1_text, &pl1) < 0 || pl1 < 1 || pl1 > pl1_max)) ||
                 (strcmp(pl2_text, "skip") != 0 &&
                  (safe_atoi(pl2_text, &pl2) < 0 || pl2 < 1 || pl2 > RAPL_PL2_MAX_WATTS)))
+                continue;
+            if (pl1 > 0 && pl2 > 0 && pl2 <= pl1)
                 continue;
         }
         int duplicate = 0;

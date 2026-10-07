@@ -615,6 +615,9 @@ static void cctl_snapshot_preview_restore(int number,
     else SNAPSHOT_PREVIEW("Turbo", "skip (not saved)");
     SNAPSHOT_PREVIEW("Governor", strcmp(st->governor, "skip") == 0 ? "skip (not saved)" : st->governor);
     SNAPSHOT_PREVIEW("EPP", strcmp(st->epp, "skip") == 0 ? "skip (not saved)" : st->epp);
+    int preview_cur_pl1 = -1, preview_cur_pl2 = -1;
+    read_rapl_current(&preview_cur_pl1, &preview_cur_pl2);
+
     if (st->pl1 >= 0) {
         if (st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2)
             snprintf(value, sizeof(value), "%dW (skipped: requires EC profile code 2)", st->pl1);
@@ -623,7 +626,13 @@ static void cctl_snapshot_preview_restore(int number,
         printf("  %-22s %s\n", "PL1", value);
     } else SNAPSHOT_PREVIEW("PL1", "skip (not saved)");
     if (st->pl2 >= 0) {
-        snprintf(value, sizeof(value), "%dW", st->pl2);
+        int eff_p1 = (st->pl1 >= 0 && !(st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2))
+                     ? st->pl1 : preview_cur_pl1;
+        if (eff_p1 > 0 && st->pl2 <= eff_p1)
+            snprintf(value, sizeof(value), "%dW (skipped: not > %s PL1 %dW)", st->pl2,
+                     st->pl1 < 0 ? "current" : "effective", eff_p1);
+        else
+            snprintf(value, sizeof(value), "%dW", st->pl2);
         printf("  %-22s %s\n", "PL2", value);
     } else SNAPSHOT_PREVIEW("PL2", "skip (not saved)");
 
@@ -901,16 +910,44 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
         need_pl1 = 0;
     }
 
+    int pl2_rejected = 0;
+    int eff_pl1 = (st->pl1 >= 0 && !pl1_rejected) ? st->pl1 : cur_pl1;
+    if (st->pl2 >= 0 && eff_pl1 > 0 && st->pl2 <= eff_pl1) {
+        printf("  %sNote:%s Saved PL2 (%dW) must be greater than %s PL1 (%dW). Skipping PL2.\n",
+               C_YLW, C_RST, st->pl2,
+               (st->pl1 < 0) ? "current system" : (pl1_rejected ? "live" : "restored"),
+               eff_pl1);
+        pl2_rejected = 1;
+        need_pl2 = 0;
+    }
+
     if (st->pl1 < 0 && st->pl2 < 0) {
         printf("  %sSkipping RAPL (not saved).%s\n", C_DIM, C_RST);
-    } else if (pl1_rejected && st->pl2 < 0) {
-        /* PL1 rejected and PL2 not saved; nothing more to do */
+    } else if (st->pl1 < 0) {
+        printf("  %sSkipping PL1 (not saved).%s\n", C_DIM, C_RST);
+        if (pl2_rejected) {
+            /* PL2 rejected with note above */
+        } else if (!need_pl2) {
+            printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("RAPL PL2", set_rapl_limits(0, st->pl2, pl1_cap), &errors);
+        }
+    } else if (pl1_rejected) {
+        if (st->pl2 < 0) {
+            /* PL1 rejected and PL2 not saved */
+        } else if (pl2_rejected) {
+            /* Both rejected */
+        } else if (!need_pl2) {
+            printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
+        } else {
+            cctl_snapshot_apply_step("RAPL PL2", set_rapl_limits(0, st->pl2, pl1_cap), &errors);
+        }
     } else if (!need_pl1 && !need_pl2) {
-        if (!pl1_rejected && st->pl1 >= 0 && st->pl2 >= 0)
+        if (!pl1_rejected && !pl2_rejected && st->pl1 >= 0 && st->pl2 >= 0)
             printf("  RAPL: PL1 %dW, PL2 %dW%s\n", st->pl1, st->pl2, snapshot_unchanged_tag());
         else if (!pl1_rejected && st->pl1 >= 0)
             printf("  RAPL: PL1 %dW%s\n", st->pl1, snapshot_unchanged_tag());
-        else if (st->pl2 >= 0)
+        else if (!pl2_rejected && st->pl2 >= 0)
             printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
     } else {
         int apply_pl1 = need_pl1 ? st->pl1 : 0;

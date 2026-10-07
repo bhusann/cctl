@@ -621,7 +621,7 @@ static int cmd_rapl(int argc, char **argv)
         printf("       %scctl rapl skip <pl2>%s      (set PL2 only)\n", C_CYN_BLD, C_RST);
         printf("       %scctl rapl <pl1> skip%s      (set PL1 only)\n", C_CYN_BLD, C_RST);
         printf("       %scctl rapl <pl2>%s           (one value = PL2 only)\n\n", C_CYN_BLD, C_RST);
-        printf("  %sLimits:%s PL1 1-%dW (up to %dW with EC profile code 2), PL2 1-%dW\n",
+        printf("  %sLimits:%s PL1 1-%dW (up to %dW with EC profile code 2), PL2 up to %dW (must be > PL1)\n",
                 C_DIM, C_RST, RAPL_PL1_MAX_WATTS, RAPL_PL1_MAX_WATTS_MAX, RAPL_PL2_MAX_WATTS);
         g_stream_mode = prev;
         return 0;
@@ -631,6 +631,9 @@ static int cmd_rapl(int argc, char **argv)
         return fail("Unexpected extra argument '%s'", argv[4]);
 
     require_root(argc, argv);
+
+    int cur_pl1 = -1, cur_pl2 = -1;
+    read_rapl_current(&cur_pl1, &cur_pl2);
 
     int pl1 = 0, pl2 = 0;
     int skip_pl1 = 0, skip_pl2 = 0;
@@ -643,7 +646,9 @@ static int cmd_rapl(int argc, char **argv)
         if (strcmp(argv[2], "skip") == 0)
             return fail("Nothing to set — give a PL2 wattage");
         if (safe_atoi(argv[2], &pl2) < 0 || pl2 < 1 || pl2 > RAPL_PL2_MAX_WATTS)
-            return fail("Invalid PL2 value '%s' (use a wattage 1-%d)", argv[2], RAPL_PL2_MAX_WATTS);
+            return fail("Invalid PL2 value '%s' (use a wattage up to %d, must be > PL1)", argv[2], RAPL_PL2_MAX_WATTS);
+        if (cur_pl1 > 0 && pl2 <= cur_pl1)
+            return fail("PL2 (%dW) must be greater than current PL1 (%dW)", pl2, cur_pl1);
         skip_pl1 = 1;
     } else {
         /* Parse PL1 */
@@ -667,9 +672,21 @@ static int cmd_rapl(int argc, char **argv)
             skip_pl2 = 1;
         } else {
             if (safe_atoi(argv[3], &pl2) < 0 || pl2 < 1)
-                return fail("Invalid PL2 value '%s' (use a wattage 1-%d or 'skip')", argv[3], RAPL_PL2_MAX_WATTS);
+                return fail("Invalid PL2 value '%s' (use a wattage up to %d or 'skip')", argv[3], RAPL_PL2_MAX_WATTS);
             if (pl2 > RAPL_PL2_MAX_WATTS)
                 return fail("PL2 %dW exceeds the %dW platform limit", pl2, RAPL_PL2_MAX_WATTS);
+        }
+
+        /* Enforce PL2 > PL1 rule */
+        if (!skip_pl1 && !skip_pl2) {
+            if (pl2 <= pl1)
+                return fail("PL2 (%dW) must be greater than PL1 (%dW)", pl2, pl1);
+        } else if (skip_pl1 && !skip_pl2) {
+            if (cur_pl1 > 0 && pl2 <= cur_pl1)
+                return fail("PL2 (%dW) must be greater than current PL1 (%dW)", pl2, cur_pl1);
+        } else if (!skip_pl1 && skip_pl2) {
+            if (cur_pl2 > 0 && pl1 >= cur_pl2)
+                return fail("PL1 (%dW) must be less than current PL2 (%dW)", pl1, cur_pl2);
         }
     }
 
