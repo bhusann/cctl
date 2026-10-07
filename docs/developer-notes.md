@@ -4,6 +4,18 @@
 
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
 - **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while EC profile code 2 is active; the active profile is recorded and shown as `Mode:` in `cctl status`, and `EC default` appears when no profile has been applied yet.
+- **OEM PROCHOT Throttle Trip Points & CPU State Telemetry (`cpumon`)** — Hardware thermal throttling is governed by the laptop manufacturer's EC firmware rather than the silicon TjMax (100°C):
+  - **EC Code 2 (Performance):** The OEM PROCHOT trip point is **97°C** (97–98°C).
+  - **EC Codes 0, 1, 3 (Quiet, Balanced, Standard / EC default):** The OEM PROCHOT trip point is **87°C**. If `/run/cctl/mode` does not exist, the EC defaults to code 3 (87°C PROCHOT threshold).
+  - In `cctl cpumon`, the `STATE` readout dynamically tracks this active threshold:
+    - `▲ PROCHOT THROTTLE` (Red): CPU temperature $\ge$ active PROCHOT limit (87°C or 97°C) or within 3°C of TjMax.
+    - `▲ PL2 LIMIT` (Magenta): Package power $\ge 95\%$ of short-term burst limit (PL2).
+    - `▲ BOOST` (Amber): Package power exceeds sustained ceiling ($> 102\%$ of PL1).
+    - `■ PL1 LIMIT` (Amber): Sustained power wall ($\ge 90\%$ of PL1 under $> 60\%$ utilization).
+    - `■ SOFT THROTTLE` (Amber): Soft frequency throttling when Turbo is disabled (`turbo_on == false`) and CPU utilization is heavy ($\ge 50\%$). The CPU is clamped at base clock and consumes only ~25W (far below 45W PL1) even at 100% load.
+    - `● IDLE` (Cyan): Total CPU utilization $< 10\%$.
+    - `● NORMAL` (Green): Operating normally between 10% and 50% load without hitting thermal or power limits.
+  - **TAU (Time Window):** The TAU value displayed in `cpumon` is **not assumed** — it is live-read directly from `/sys/class/powercap/intel-rapl:0/constraint_0_time_window_us`.
 
 - **Direct EC Port I/O Fan Control & Protocol Quirks (Legacy Method)** — `cctl` uses direct port I/O (`ioperm`, `inb`/`outb` on port `0x66` command and `0x62` data) for individual fan control (`cctl fan cpu <pct>`, `cctl fan gpu <pct>`), Max, and Silent modes. This preserves the ability to adjust a single fan independently without kicking the other fan off its automatic EC thermal curve (which the `tuxedo_io` `W_CL_FANSPEED` ioctl cannot do, as it forces all channels into fixed manual mode).
   - **Hardware Handshake:** All writes require polling Input Buffer Full (IBF, bit 1 of port `0x66`): wait until `((inb(0x66) >> 1) & 1) == 0` before sending each command or data byte.

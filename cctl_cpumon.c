@@ -107,6 +107,8 @@ typedef struct {
     double  util_total;                    /* 0..100 */
     bool    turbo_known, turbo_on;
     char    governor[24], epp[40];
+    int     ec_code;
+    double  prochot_c;
     bool    temp_ok;  double temp_c, tjmax_c;
     bool    power_ok; double pkg_w;
     bool    pl_ok;    double pl1_w, pl2_w, tau_s;
@@ -913,7 +915,7 @@ static void draw_power(const CpuSnapshot *s, const Ui *u, double t)
     text_l(x + 2 + big_width(b) + 1, y + 6, C_TEXT, 1, "W");
 
     /* PL1 / PL2 readouts */
-    int rx = x + 28, rw = 23;
+    int rx = x + 26, rw = 25;
     if (s->pl_ok) {
         snprintf(b, sizeof b, "%.0f W", s->pl2_w); kvw(rx, y + 1, rw, "PL2 (burst)", C_LABEL, b, C_MAG);
         snprintf(b, sizeof b, "%.0f W", s->pl1_w); kvw(rx, y + 2, rw, "PL1 (sustained)", C_LABEL, b, C_CYAN);
@@ -929,18 +931,21 @@ static void draw_power(const CpuSnapshot *s, const Ui *u, double t)
     const char *st = "--"; RGB sc = C_DIM;
     if (act) {
         bool pw = s->power_ok && s->pl_ok;
-        if (s->temp_ok && s->temp_c >= s->tjmax_c - 3)
-            { st = "\xE2\x96\xB2 THERMAL";  sc = C_RED; }
+        double prochot = s->prochot_c > 0 ? s->prochot_c : (s->ec_code == 2 ? 97.0 : 87.0);
+        if (s->temp_ok && (s->temp_c >= prochot || (s->tjmax_c > 0 && s->temp_c >= s->tjmax_c - 3)))
+            { st = "\xE2\x96\xB2 PROCHOT THROTTLE"; sc = C_RED; }
         else if (pw && s->pkg_w >= s->pl2_w * 0.95)
-            { st = "\xE2\x96\xB2 PL2 LIMIT"; sc = C_MAG; }
+            { st = "\xE2\x96\xB2 PL2 LIMIT";        sc = C_MAG; }
         else if (pw && s->pkg_w > s->pl1_w * 1.02)
-            { st = "\xE2\x96\xB2 BOOST";    sc = C_AMBER; }
+            { st = "\xE2\x96\xB2 BOOST";            sc = C_AMBER; }
         else if (pw && s->pkg_w >= s->pl1_w * 0.90 && s->util_total > 60)
-            { st = "\xE2\x96\xA0 PL1 LIMIT"; sc = C_AMBER; }
-        else if (s->util_total < 5)
-            { st = "\xE2\x97\x8F IDLE";      sc = C_CYAN; }
+            { st = "\xE2\x96\xA0 PL1 LIMIT";        sc = C_AMBER; }
+        else if (s->turbo_known && !s->turbo_on && s->util_total >= 50 && (!pw || s->pkg_w < s->pl1_w * 0.90))
+            { st = "\xE2\x96\xA0 SOFT THROTTLE";    sc = C_AMBER; }
+        else if (s->util_total < 10)
+            { st = "\xE2\x97\x8F IDLE";             sc = C_CYAN; }
         else
-            { st = "\xE2\x97\x8F NORMAL";    sc = C_GREEN; }
+            { st = "\xE2\x97\x8F NORMAL";           sc = C_GREEN; }
     }
     kvw(rx, y + 5, rw, "STATE", C_LABEL, st, sc);
 
@@ -1112,6 +1117,26 @@ static bool read_ull(const char *path, unsigned long long *v)
     if (e == b) return false;
     *v = x;
     return true;
+}
+
+static int read_ec_profile_code(void)
+{
+    int fd = open("/run/cctl/mode", O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) return 3; /* EC default of code 3 if no /run/cctl/mode */
+    FILE *f = fdopen(fd, "r");
+    if (!f) { close(fd); return 3; }
+    char line[128];
+    int code = 3;
+    /* Line 1: profile, Line 2: method, Line 3: ec_profile_code */
+    if (fgets(line, sizeof line, f) &&
+        fgets(line, sizeof line, f) &&
+        fgets(line, sizeof line, f)) {
+        char *e = NULL;
+        long x = strtol(line, &e, 10);
+        if (e != line && x >= 0 && x <= 3) code = (int)x;
+    }
+    fclose(f);
+    return code;
 }
 
 #define SYSCPU "/sys/devices/system/cpu"
@@ -1388,6 +1413,10 @@ static void live_poll(CpuSnapshot *s)
     for (int c = 0; c < s->ncore; c++) { int g = s->core_group[c]; if (s->core_mhz[c] > peak[g]) peak[g] = s->core_mhz[c]; }
     for (int g = 0; g < 2; g++) s->grp_max_mhz[g] = lim[g] > peak[g] ? lim[g] : peak[g];   /* never let a bar overflow */
 
+    /* EC profile code and PROCHOT limit (default: EC code 3 -> 87°C) */
+    s->ec_code = read_ec_profile_code();
+    s->prochot_c = (s->ec_code == 2) ? 97.0 : 87.0;
+
     /* temperature */
     s->temp_ok = false;
     if (T.temp_path[0] && read_ll(T.temp_path, &v)) {
@@ -1449,6 +1478,7 @@ static void init_snapshot(CpuSnapshot *s)
     memset(s, 0, sizeof *s);
     snprintf(s->name, sizeof s->name, "CPU");
     s->ncpu = s->ncore = 1; s->grp_ncore[0] = 1; s->grp_ncpu[0] = 1;
+    s->ec_code = 3; s->prochot_c = 87.0;
 }
 
 static void *poller(void *arg)
@@ -1548,6 +1578,8 @@ static void print_json_snapshot(const CpuSnapshot *s)
     fputs("{\"cpu_model\":", stdout); json_string(s->name);
     fputs(",\"cpu_usage_pct\":", stdout); json_number(s->util_total, s->valid, 1);
     fputs(",\"cpu_temp_c\":", stdout); json_number(s->temp_c, s->temp_ok, 1);
+    fputs(",\"prochot_c\":", stdout); json_number(s->prochot_c, s->valid, 0);
+    fputs(",\"ec_profile_code\":", stdout); if (s->valid) printf("%d", s->ec_code); else fputs("null", stdout);
     fputs(",\"package_power_w\":", stdout); json_number(s->pkg_w, s->power_ok, 2);
     fputs(",\"pl1_w\":", stdout); json_number(s->pl1_w, s->pl_ok, 1);
     fputs(",\"pl2_w\":", stdout); json_number(s->pl2_w, s->pl_ok, 1);

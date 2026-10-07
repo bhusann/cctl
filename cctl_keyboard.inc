@@ -637,48 +637,6 @@ static void fx_police(int fd, int r, int g, int b, int *step)
     }
 }
 
-static void fx_gunfire(int fd, int r, int g, int b, int *step)
-{
-    (void)r; (void)g; (void)b; (void)step;
-    enum { GUNFIRE_FLASH, GUNFIRE_AFTERGLOW, GUNFIRE_GAP, GUNFIRE_PAUSE };
-    static int phase = GUNFIRE_FLASH;
-    static int shots_left = 0;
-
-    if (phase == GUNFIRE_PAUSE) {
-        kbe_sleep_ms(350 + rand() % 501);
-        shots_left = 4 + rand() % 5; /* short automatic-fire burst */
-        phase = GUNFIRE_FLASH;
-        return;
-    }
-    if (shots_left == 0) {
-        shots_left = 4 + rand() % 5;
-    }
-
-    switch (phase) {
-    case GUNFIRE_FLASH:
-        kbe_write_frame(fd, 255, 238 + rand() % 18, 190 + rand() % 66);
-        kbe_sleep_ms(25 + rand() % 16);
-        phase = GUNFIRE_AFTERGLOW;
-        break;
-    case GUNFIRE_AFTERGLOW:
-        kbe_write_frame(fd, 255, 90 + rand() % 81, 8 + rand() % 25);
-        kbe_sleep_ms(20 + rand() % 21);
-        phase = GUNFIRE_GAP;
-        break;
-    case GUNFIRE_GAP:
-        kbe_write_frame(fd, 0, 0, 0);
-        if (--shots_left > 0) {
-            kbe_sleep_ms(35 + rand() % 46); /* irregular rapid shot spacing */
-            phase = GUNFIRE_FLASH;
-        } else {
-            phase = GUNFIRE_PAUSE;
-        }
-        break;
-    case GUNFIRE_PAUSE:
-        break; /* handled above */
-    }
-}
-
 static void fx_fire(int fd, int r, int g, int b, int *step)
 {
     (void)r; (void)g; (void)b; (void)step;
@@ -998,7 +956,6 @@ static const struct kbe_effect_def kbe_effects[] = {
     { "pulse",         { "heartbeat", NULL },                                                          fx_pulse,         "Heartbeat double-pulse (uses current color)" },
     { "pulse-cycle",   { "pulse+colorchange", "pulse_cycle", "pulsecycle", "heartbeat-cycle", NULL }, fx_pulse_cycle,   "Heartbeat double-pulse cycling colors" },
     { "police",        { "siren", "cop", "emergency", NULL },                                          fx_police,        "Emergency red and blue alternating strobe" },
-    { "gunfire",       { "gun-fire", "machinegun", NULL },                                              fx_gunfire,       "Rapid irregular warm muzzle flashes in short bursts" },
     { "fire",          { "flame", "embers", "burn", NULL },                                            fx_fire,          "Dynamic warm flickering campfire flames" },
     { "aurora",        { "arora", "northern-lights", "borealis", NULL },                               fx_aurora,        "Northern Lights emerald, cyan, and violet drift" },
     { "storm",         { "lightning", "thunder", NULL },                                               fx_storm,         "Dark moody sky with electric lightning strikes" },

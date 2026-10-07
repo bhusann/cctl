@@ -157,7 +157,7 @@ cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/
 
 Color presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
 
-Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `gunfire` `fire` `aurora` `storm` `temp` `ram` `sos` `firecrackers`
+Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `fire` `aurora` `storm` `temp` `ram` `sos` `firecrackers`
 
 - `temp`: CPU temperature is cyan below 40°C. From 40°C it shifts gradually
   from light green to dark green, then through yellow and orange to red as it
