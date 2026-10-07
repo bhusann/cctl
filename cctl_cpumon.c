@@ -875,11 +875,20 @@ static void draw_power(const CpuSnapshot *s, const Ui *u, double t)
     if (act && s->pl_ok) { snprintf(b, sizeof b, "%+.0f W", s->pl2_w - s->pkg_w); kvw(rx, y + 4, rw, "HEADROOM", C_LABEL, b, C_TEXT); }
     else                   kvw(rx, y + 4, rw, "HEADROOM", C_LABEL, "--", C_DIM);
     const char *st = "--"; RGB sc = C_DIM;
-    if (act && s->pl_ok) {
-        if      (s->pkg_w >= s->pl2_w * 0.97) { st = "\xE2\x96\xB2 PL2 BOOST"; sc = C_MAG; }
-        else if (s->pkg_w >= s->pl1_w * 0.97) { st = "\xE2\x96\xA0 PL1 LIMIT"; sc = C_AMBER; }
-        else if (s->pkg_w <  s->pl1_w * 0.25) { st = "\xE2\x97\x8F IDLE";      sc = C_CYAN; }
-        else                                  { st = "\xE2\x97\x8F NORMAL";    sc = C_GREEN; }
+    if (act) {
+        bool pw = s->power_ok && s->pl_ok;
+        if (s->temp_ok && s->temp_c >= s->tjmax_c - 3)
+            { st = "\xE2\x96\xB2 THERMAL";  sc = C_RED; }
+        else if (pw && s->pkg_w >= s->pl2_w * 0.95)
+            { st = "\xE2\x96\xB2 PL2 LIMIT"; sc = C_MAG; }
+        else if (pw && s->pkg_w > s->pl1_w * 1.02)
+            { st = "\xE2\x96\xB2 BOOST";    sc = C_AMBER; }
+        else if (pw && s->pkg_w >= s->pl1_w * 0.90 && s->util_total > 60)
+            { st = "\xE2\x96\xA0 PL1 LIMIT"; sc = C_AMBER; }
+        else if (s->util_total < 5)
+            { st = "\xE2\x97\x8F IDLE";      sc = C_CYAN; }
+        else
+            { st = "\xE2\x97\x8F NORMAL";    sc = C_GREEN; }
     }
     kvw(rx, y + 5, rw, "STATE", C_LABEL, st, sc);
 
