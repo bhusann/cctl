@@ -558,9 +558,9 @@ static const struct command commands[] = {
     { "mic",            0, cmd_mic,             SEC_PRIVACY,   "[on|off]",                        "Toggle/set internal microphone (laptop mic only, needs alsa/amixer)", NULL },
 
     /* Battery */
-    { "bat",            0, cmd_bat,             SEC_BATTERY,   "",                                "Show current thresholds", NULL },
-    { "bat",            0, cmd_bat,             SEC_BATTERY,   "<start> <stop>",                   "Set charge thresholds (custom)", NULL },
-    { "bat",            0, cmd_bat,             SEC_BATTERY,   "max",                              "standard mode (charge to 100%, resume at 95%)", NULL },
+    { "bat",            0, cmd_bat,             SEC_BATTERY,   "",                                "Show charge mode and thresholds", NULL },
+    { "bat",            0, cmd_bat,             SEC_BATTERY,   "<start> <stop>",                   "Select Custom mode and set thresholds", NULL },
+    { "bat",            0, cmd_bat,             SEC_BATTERY,   "standard",                         "Select Standard charge mode", NULL },
 
     /* Info */
     { "status",         1, cmd_status,          SEC_INFO,      "[--json]",                        "Show current settings (JSON with --json)", NULL },

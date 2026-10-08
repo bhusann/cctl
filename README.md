@@ -268,9 +268,9 @@ cctl mic [on|off]               # Toggle or set internal microphone (laptop mic 
 
 ### Battery
 ```bash
-cctl bat                        # Show current thresholds and battery health
-cctl bat <start> <stop>         # Set charge thresholds (custom, e.g. 40 80)
-cctl bat max                    # Standard: charge to 100%, resume at 95%
+cctl bat                        # Show charge mode and current thresholds
+cctl bat <start> <stop>         # Select Custom mode, then set thresholds (e.g. 40 80)
+cctl bat standard               # Select Standard charge mode
 ```
 
 ### Info

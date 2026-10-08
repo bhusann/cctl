@@ -1113,6 +1113,25 @@ static void bat_start_path(char *out, size_t sz) { bat_sysfs(out, sz, "charge_co
 static void bat_end_path(char *out, size_t sz)   { bat_sysfs(out, sz, "charge_control_end_threshold"); }
 static void bat_start_avail_path(char *out, size_t sz) { bat_sysfs(out, sz, "charge_control_start_available_thresholds"); }
 static void bat_end_avail_path(char *out, size_t sz)   { bat_sysfs(out, sz, "charge_control_end_available_thresholds"); }
+static void bat_charge_type_path(char *out, size_t sz) { bat_sysfs(out, sz, "charge_type"); }
+
+static int bat_read_charge_type(char *out, size_t sz)
+{
+    char path[256];
+    bat_charge_type_path(path, sizeof(path));
+    return read_sysfs_str(path, out, sz);
+}
+
+static int bat_set_charge_type(const char *type)
+{
+    char path[256];
+    bat_charge_type_path(path, sizeof(path));
+    if (write_sysfs(path, type) < 0) {
+        fprintf(stderr, "Error: Failed to set battery charge mode to %s\n", type);
+        return -1;
+    }
+    return 0;
+}
 
 /* Read available threshold values into an array. Returns count or -1. */
 static int read_avail_thresholds(const char *path, int *out, int max)
@@ -1168,28 +1187,11 @@ static int bat_read_end(void)
     return (v >= 0) ? (int)v : -1;
 }
 
-/* Set battery charge thresholds. "off" (the start==end==0 sentinel) selects
- * a near-full top-up range: charge all the way to the max stop threshold,
- * but only resume charging once the battery drops below the highest usable
- * start threshold (e.g. 95/100). Avoids keeping cells at mid-charge without
- * deep-discharge cycling. */
+/* Select Custom before applying thresholds; thresholds have no effect in
+ * Standard mode, and changing to Custom alone may not re-evaluate charging. */
 static int bat_set(int start, int end)
 {
     char pa[256];
-    /* "off" → stop=max, start=highest listed value below stop */
-    if (start == 0 && end == 0) {
-        int avail[16], cnt;
-        bat_end_avail_path(pa, sizeof(pa));
-        cnt = read_avail_thresholds(pa, avail, 16);
-        end = (cnt > 0) ? avail[cnt - 1] : 100;
-        bat_start_avail_path(pa, sizeof(pa));
-        cnt = read_avail_thresholds(pa, avail, 16);
-        start = 95;
-        for (int i = cnt - 1; i >= 0; i--) {
-            if (avail[i] < end) { start = avail[i]; break; }
-        }
-    }
-
     /* Validate start threshold */
     int start_avail[16], start_count;
     bat_start_avail_path(pa, sizeof(pa));
@@ -1214,6 +1216,11 @@ static int bat_set(int start, int end)
         fprintf(stderr, "Error: Start threshold (%d%%) must be less than end threshold (%d%%)\n", start, end);
         return -1;
     }
+
+    /* Set Custom first, then rewrite both limits so the EC re-evaluates the
+     * threshold policy even when switching from Standard mode. */
+    if (bat_set_charge_type("Custom") < 0)
+        return -1;
 
     bat_start_path(pa, sizeof(pa));
     if (write_sysfs_int(pa, start) < 0) {

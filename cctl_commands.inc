@@ -842,7 +842,12 @@ static int cmd_bat(int argc, char **argv)
         int prev = g_stream_mode;
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
-        /* Show current thresholds */
+        /* Show current charge mode and thresholds. */
+        char charge_type[32] = {0};
+        if (bat_read_charge_type(charge_type, sizeof(charge_type)) >= 0)
+            printf("%sCharge mode:%s %s\n", C_CYN, C_RST, charge_type);
+        else
+            printf("%sCharge mode:%s unavailable\n", C_CYN, C_RST);
         int start = bat_read_start();
         int end = bat_read_end();
         if (start < 0 || end < 0) {
@@ -874,24 +879,28 @@ static int cmd_bat(int argc, char **argv)
                        i < cnt - 1 ? " " : "\n");
             }
         }
-        printf("\n%sUsage:%s %scctl bat <start> <end>  |  cctl bat max%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        printf("\n%sUsage:%s %scctl bat <start> <stop>  |  cctl bat standard%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         g_stream_mode = prev;
         return 0;
     }
 
-    /* "max" → widest usable range (95%→100% top-up; the driver rejects 0,
-     * so thresholds cannot actually be turned off — the old off/default
-     * aliases implied an impossible "off" and were removed). */
-    if (strcmp(argv[2], "max") == 0) {
+    /* Standard mode ignores custom charge thresholds. Keep "max" as a
+     * deprecated alias so existing scripts still work. */
+    if ((strcmp(argv[2], "standard") == 0 || strcmp(argv[2], "max") == 0) && argc == 3) {
         require_root(argc, argv);
-        int rc = bat_set(0, 0);
+        if (strcmp(argv[2], "max") == 0)
+            fprintf(stderr, "%sDeprecated:%s use 'cctl bat standard' instead of 'cctl bat max'.\n",
+                    C_YLW, C_RST);
+        int rc = bat_set_charge_type("Standard");
+        if (rc == 0)
+            printf("  %s battery charge mode: Standard\n", dry_run ? "Would set" : "Set");
         if (rc == 0) print_done();
         return rc;
     }
 
-    /* set <start> <end> */
+    /* set <start> <stop>; bat_set selects Custom before writing limits. */
     if (argc < 4)
-        return fail("Usage: bat <start> <end> or bat max");
+        return fail("Usage: bat <start> <stop> or bat standard");
 
     require_root(argc, argv);
     int start, end;

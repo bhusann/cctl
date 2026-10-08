@@ -1179,9 +1179,13 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
     if (st->battery_start >= 0 || st->battery_stop >= 0) {
         int cur_start = bat_read_start();
         int cur_stop = bat_read_end();
+        char cur_charge_type[32] = {0};
+        int have_charge_type = bat_read_charge_type(cur_charge_type, sizeof(cur_charge_type)) >= 0;
         int target_start = st->battery_start >= 0 ? st->battery_start : cur_start;
         int target_stop = st->battery_stop >= 0 ? st->battery_stop : cur_stop;
-        if (cur_start > 0 && cur_stop > 0 && target_start == cur_start && target_stop == cur_stop) {
+        if (cur_start > 0 && cur_stop > 0 && have_charge_type &&
+            strcmp(cur_charge_type, "Custom") == 0 &&
+            target_start == cur_start && target_stop == cur_stop) {
             printf("  Set charge thresholds: start %d%% → stop %d%%%s\n",
                    cur_start, cur_stop, snapshot_unchanged_tag());
         } else if (target_start > 0 && target_stop > 0) {
