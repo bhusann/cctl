@@ -326,7 +326,7 @@ static int cmd_set(int argc, char **argv)
         } else {
             stream_printf(STREAM_DELAY_US, "  RAPL limits: unchanged (use cctl rapl to change them)\n");
         }
-        if (p->fan_safety && !nosafe)
+        if (profile_requires_fan_auto(p) && !nosafe)
             stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
         else if (strcmp(p->name, "silent") == 0)
             stream_printf(STREAM_DELAY_US, "  Fans: set both to SILENT\n");
@@ -342,7 +342,7 @@ static int cmd_set(int argc, char **argv)
 
     require_root(argc, argv);
 
-    if (p->fan_safety && !nosafe) {
+    if (profile_requires_fan_auto(p) && !nosafe) {
         printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
         fan_auto_all();
     }
@@ -507,7 +507,8 @@ static int cmd_turbo(int argc, char **argv)
 
     require_root(argc, argv);
 
-    if (enabled && !nosafe) {
+    int live_ec_code = enabled ? cctl_live_ec_state(NULL, NULL) : -1;
+    if (enabled && !nosafe && (live_ec_code == 2 || live_ec_code == 3)) {
         stream_printf(STREAM_DELAY_US, "Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
         fan_auto_all();
     }

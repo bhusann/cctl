@@ -91,27 +91,21 @@ silent/eco  0               OFF    powersave    power              15/30W  + GPU
 ```
 
 > [!CAUTION]
-> High-power profiles (`max`, `cpuperf`, `balanced`) and `turbo on` set fans
-> to **AUTO** by default because silent fans may not cool the system under
-> load. `--nosafe` bypasses this protection and keeps the current fan setting;
-> manual fan duty also requires it. Use `--nosafe` only for deliberate testing:
-> fixed or suppressed fan speeds can cause overheating.
+> Silent mode and manual fan duty may keep fans quiet or fixed regardless of
+> CPU temperature, even under heavy load. To protect the hardware, applying EC
+> profile code `2` or `3`, or enabling Turbo while EC code `2` or `3` is
+> active, sets fans to **AUTO** by default.
+> `--nosafe` skips that automatic change and keeps the current fan setting.
+> Use manual fan duty only for experimental purposes.
 
 ### EC Profiles and Governor/EPP Load Test Results
 
 These full-load measurements on the author's 10-core, 16-thread CPU compare
-the performance, power, and temperature tradeoffs. Results vary with cooling,
-firmware, and workload.
+the performance, power, and temperature tradeoffs. Results vary with cooling
+and workload.
 
 The `performance` EPP results were the same with either governor, so they are
-combined below. `balance_power` and `power` also behaved similarly across EC
-codes and are listed once; codes `0` and `1` sustain lower clocks on
-`balance_power` after reaching their 15W PL1 limit.
-
-| Governor / EPP | Turbo | P / E frequency | Power and behavior across EC codes |
-|---|---:|---:|---|
-| powersave / balance_power | On or off | P: 2200; E: 1600 | About 22W. Codes `2` and `3` sustain this; codes `0` and `1` drop to 15W after TAU and settle around P 1500–1600, E 1200. |
-| powersave / power | On or off | P: 1100; E: 1100 | About 12W, peak and sustained across all codes. |
+combined below.
 
 For the highest measured performance, code `2` with Turbo on and EPP
 `performance` reached 85–87W, then sustained 75–76W near 98°C. Code `2` with
@@ -123,24 +117,24 @@ offers a lower-power standard mode; codes `0` and `1` have 15W PL1 defaults.
 Defaults during this test: TAU 28 seconds, PL1 45W, PL2 115W, TCC offset 13°C
 (87°C PROCHOT).
 
-| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
+| Governor / EPP | Turbo | Peak and sustained frequency and power |
 |---|---:|---:|---|
-| performance or powersave / performance | On | P: 4300, 4100, 3900; E: 3285, 3100 | 67–70W; reaches 87°C PROCHOT. After the 28-second TAU, settles at PL1 45W, P 3300, E 2600. |
-| performance or powersave / performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
-| powersave / balance_performance | On | P: 3800; E: 2800 | Peaks at 63W and 87°C PROCHOT. After TAU, settles at PL1 45W, P 3300, E 2600. |
-| powersave / balance_performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
+| performance or powersave / performance | On | Peak: P 4100 ± 200 MHz; E 3100–3285 MHz; 67–70W; reaches 87°C PROCHOT.<br>────────────<br>Sustained: P 3300 MHz; E 2600 MHz; 45W after the 28-second TAU. |
+| performance or powersave / performance | Off | Peak & sustained: P 2400 MHz; E 1800 MHz; about 24W (frequency-limited). |
+| powersave / balance_performance | On | Peak: P 3800 MHz; E 2800 MHz; 63W; reaches 87°C PROCHOT.<br>────────────<br>Sustained: P 3300 MHz; E 2600 MHz; 45W after TAU. |
+| powersave / balance_performance | Off | Peak & sustained: P 2400 MHz; E 1800 MHz; about 24W (frequency-limited). |
 
 #### EC code 2 — High performance
 
 Defaults during this test: TAU 80 seconds, PL1 90W, PL2 115W, TCC offset 2°C
 (98°C PROCHOT).
 
-| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
+| Governor / EPP | Turbo | Peak and sustained frequency and power |
 |---|---:|---:|---|
-| performance or powersave / performance | On | P: 4300 or 4100; E: 3300 or 3200 | Peaks at 85–87W and reaches 98–99°C PROCHOT. Later sustains 75–76W at 98°C, around P 3800–3900 and E 3000–3100. |
-| performance or powersave / performance | Off | P: 2400; E: 1800 | Peaks around 25W and sustains there. |
-| powersave / balance_performance | On | P: 3800; E: 2800 | 63–64W peak and sustained, around 91°C. |
-| powersave / balance_performance | Off | P: 2400; E: 1800 | 25W peak and sustained. |
+| performance or powersave / performance | On | Peak: P 4100–4300 MHz; E 3200–3300 MHz; 85–87W at 98–99°C PROCHOT.<br>────────────<br>Sustained: P 3800–3900 MHz; E 3000–3100 MHz; 75–76W at 98°C. |
+| performance or powersave / performance | Off | Peak & sustained: P 2400 MHz; E 1800 MHz; about 25W. |
+| powersave / balance_performance | On | Peak & sustained: P 3800 MHz; E 2800 MHz; 63–64W at about 91°C. |
+| powersave / balance_performance | Off | Peak & sustained: P 2400 MHz; E 1800 MHz; about 25W. |
 
 #### EC code 1 — Powersave, and EC code 0 — Silent
 
@@ -148,12 +142,21 @@ These two codes behaved the same in the test. Defaults: TAU 8 seconds, PL1
 15W, PL2 30W. TCC offset is 15°C for code 1 (85°C PROCHOT) and 10°C for code
 0 (90°C PROCHOT). No PROCHOT event was observed in these test cases.
 
-| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
+| Governor / EPP | Turbo | Peak and sustained frequency and power |
 |---|---:|---:|---|
-| performance or powersave / performance | On | P: 2700; E: 2100 | Peaks at 30W. After the 8-second TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
-| performance or powersave / performance | Off | P: 2400; E: 1800 | Peaks at 25W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
-| powersave / balance_performance | On | P: 2700 or 2600; E: 2100 | Peaks at 30W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
-| powersave / balance_performance | Off | P: 2400; E: 1800 | Peaks at 25W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
+| performance or powersave / performance | On | Peak: P 2700 MHz; E 2100 MHz; 30W.<br>────────────<br>Sustained: P 1500–1600 MHz; E 1200 MHz; 15W after the 8-second TAU. |
+| performance or powersave / performance | Off | Peak: P 2400 MHz; E 1800 MHz; 25W.<br>────────────<br>Sustained: P 1500–1600 MHz; E 1200 MHz; 15W after TAU. |
+| powersave / balance_performance | On | Peak: P 2600–2700 MHz; E 2100 MHz; 30W.<br>────────────<br>Sustained: P 1500–1600 MHz; E 1200 MHz; 15W after TAU. |
+| powersave / balance_performance | Off | Peak: P 2400 MHz; E 1800 MHz; 25W.<br>────────────<br>Sustained: P 1500–1600 MHz; E 1200 MHz; 15W after TAU. |
+
+`balance_power` and `power` behaved similarly across EC codes and are listed
+once here. Codes `0` and `1` sustain lower clocks on `balance_power` after
+reaching their 15W PL1 limit.
+
+| Governor / EPP | Turbo | Peak and sustained frequency and power across EC codes |
+|---|---:|---:|---|
+| powersave / balance_power | On or off | Peak: P 2200 MHz; E 1600 MHz; about 22W.<br>────────────<br>Sustained: Codes `2` and `3` remain around P 2200 MHz, E 1600 MHz, 22W; codes `0` and `1` reach 15W after TAU and settle around P 1500–1600 MHz, E 1200 MHz. |
+| powersave / power | On or off | Peak & sustained: P 1100 MHz; E 1100 MHz; about 12W across all codes. |
 
 
 ### Custom Profiles
@@ -205,9 +208,11 @@ Use EC code `3`, `2`, `1`, or `0`; Turbo `1` (on) or `0` (off); governor
 > **Caution:** If a profile line contains a typo or unsupported value, cctl
 > skips it, so the profile will not appear in `cctl set` or `cctl --help`.
 
-Custom profiles use the normal fan-safety behavior. Skipped or unset values
-show as `--` in the help table; custom PL1/PL2 values appear in the EC TDP
-column, for example `PL1 90W / PL2 115W (custom)`.
+Custom profiles trigger automatic fan control when they apply EC code `2` or
+`3`, or enable Turbo while the resulting EC code is `2` or `3`; `--nosafe`
+bypasses it. Skipped or unset values show as `--` in the help table; custom
+PL1/PL2 values appear in the EC TDP column, for example
+`PL1 90W / PL2 115W (custom)`.
 
 Append `--dry-run` to preview changes without applying them. Dry-run is
 available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
@@ -289,10 +294,14 @@ cctl snapshot delete <number>  # Delete a saved snapshot
 Use `--mask` to omit fields while saving or skip them while restoring. Separate
 field names with commas. For example: `cctl snapshot save 2 --mask epp,pl1,turbo`.
 Add `--dry-run` to `snapshot restore` to preview the settings and skipped
-fields without applying changes.
+fields without applying changes. Restoring EC code `2`/`3` sets fans to AUTO;
+restoring Turbo ON does so only when the active EC code is `2`/`3`. Add
+`nosafe` to the restore mask to bypass the automatic fan change (for example,
+`cctl snapshot restore 2 --mask nosafe`).
 Available names are `nvidia_clock`, `nvidia_memclock`,
 `ec_code`, `turbo`, `gov`, `epp`, `pl1`, `pl2`, `kbe`, `kbc`, `kbb`,
-`fn_lock`, `webcam`, `mic`, `bat`, `rr`, and `scale`. `kbc` masks keyboard
+`fn_lock`, `webcam`, `mic`, `bat`, `rr`, and `scale`; `nosafe` is restore-only.
+`kbc` masks keyboard
 color, `kbb` brightness, `kbe` effect, and `bat` both battery thresholds.
 
 Snapshots save system settings, CPU power settings, keyboard settings, Fn Lock,
@@ -325,7 +334,7 @@ cctl scale <factor|WxH|off>    # X11 display scaling (0.75, 1920x1080, or off to
 
 ### Profile Individual Overrides
 ```bash
-cctl turbo on|off [--nosafe]    # Toggle Intel turbo boost (on sets fans to auto; bypass with --nosafe)
+cctl turbo on|off [--nosafe]    # Turbo ON sets fans to auto only in EC code 2/3
 cctl gov powersave|performance  # CPU scaling governor
 cctl epp <preference>           # performance, balance_performance, balance_power, power
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)

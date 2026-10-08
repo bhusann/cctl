@@ -47,7 +47,8 @@ enum snapshot_mask {
     MASK_MIC           = 1ULL << 13,
     MASK_BAT           = 1ULL << 14,
     MASK_RR            = 1ULL << 15,
-    MASK_SCALE         = 1ULL << 16
+    MASK_SCALE         = 1ULL << 16,
+    MASK_NOSAFE        = 1ULL << 17
 };
 
 struct snapshot_mask_option {
@@ -61,7 +62,8 @@ static const struct snapshot_mask_option snapshot_mask_options[] = {
     { "epp", MASK_EPP }, { "pl1", MASK_PL1 }, { "pl2", MASK_PL2 },
     { "kbe", MASK_KBE }, { "kbc", MASK_KBC }, { "kbb", MASK_KBB },
     { "fn_lock", MASK_FN_LOCK }, { "webcam", MASK_WEBCAM }, { "mic", MASK_MIC },
-    { "bat", MASK_BAT }, { "rr", MASK_RR }, { "scale", MASK_SCALE }
+    { "bat", MASK_BAT }, { "rr", MASK_RR }, { "scale", MASK_SCALE },
+    { "nosafe", MASK_NOSAFE }
 };
 
 static int cctl_snapshot_parse_mask(const char *arg, unsigned long long *mask)
@@ -598,8 +600,26 @@ static int cctl_snapshot_read_file(int number, struct cctl_snapshot_data *st)
     return failed ? -1 : 0;
 }
 
+static int cctl_snapshot_ec_needs_fan_auto(int ec_code)
+{
+    return ec_code == 2 || ec_code == 3;
+}
+
+static int cctl_snapshot_restore_needs_fan_auto(const struct cctl_snapshot_data *st)
+{
+    if (cctl_snapshot_ec_needs_fan_auto(st->ec_profile_code))
+        return 1;
+    if (st->turbo != 1)
+        return 0;
+
+    int ec_code = st->ec_profile_code >= 0
+                ? st->ec_profile_code : cctl_live_ec_state(NULL, NULL);
+    return cctl_snapshot_ec_needs_fan_auto(ec_code);
+}
+
 static void cctl_snapshot_preview_restore(int number,
-                                          const struct cctl_snapshot_data *st)
+                                          const struct cctl_snapshot_data *st,
+                                          int nosafe)
 {
     char value[96];
     printf("Dry run: snapshot %d would restore these settings; nothing was changed.\n",
@@ -684,7 +704,14 @@ static void cctl_snapshot_preview_restore(int number,
     if (st->display_scale_known < 0) SNAPSHOT_PREVIEW("Display scale", "skip (not saved)");
     else SNAPSHOT_PREVIEW("Display scale", st->display_scale_set ? st->display_scale : "native (reset)");
 #undef SNAPSHOT_PREVIEW
-    puts("Fan settings are not part of snapshots.");
+    int needs_fan_auto = cctl_snapshot_restore_needs_fan_auto(st);
+    if (!nosafe && needs_fan_auto)
+        puts("Fan safety: fans would be set to AUTO (use --mask nosafe to bypass).");
+    else if (nosafe && needs_fan_auto)
+        puts("Fan safety: automatic fan change bypassed (--mask nosafe).");
+    else
+        puts("Fan safety: no automatic fan change for these targets.");
+    puts("Fan settings are not saved in snapshots.");
 }
 
 static const char *cctl_snapshot_value(int value, char *buf, size_t size)
@@ -810,19 +837,31 @@ static int cctl_snapshot_apply_step(const char *name, int rc, int *errors)
     return 0;
 }
 
-static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st)
+static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st, int nosafe)
 {
     int prev = g_stream_mode;
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
     g_snapshot_restoring = 1;
     int errors = 0;
+    int fans_auto_applied = 0;
+    int fan_safety_bypassed = 0;
     printf("Restoring snapshot %d one setting at a time...\n", number);
 
     /* 1. EC profile code: apply the saved code when present. */
     cctl_snapshot_divider();
     if (st->ec_profile_code >= 0) {
         cctl_snapshot_apply_step("EC profile code", set_gpu_profile(st->ec_profile_code), &errors);
+        if (cctl_snapshot_ec_needs_fan_auto(st->ec_profile_code)) {
+            if (nosafe) {
+                printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
+                fan_safety_bypassed = 1;
+            } else {
+                printf("  Setting both fans to AUTO for EC profile code %d...\n", st->ec_profile_code);
+                if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), &errors) == 0)
+                    fans_auto_applied = 1;
+            }
+        }
     } else {
         printf("  %sSkipping EC profile code (not saved).%s\n", C_DIM, C_RST);
     }
@@ -830,6 +869,19 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
     /* 2. Turbo: query live state; skip if already matching */
     cctl_snapshot_divider();
     if (st->turbo >= 0) {
+        if (st->turbo == 1) {
+            int live_ec_code = cctl_live_ec_state(NULL, NULL);
+            if (cctl_snapshot_ec_needs_fan_auto(live_ec_code) && !fans_auto_applied) {
+                if (nosafe) {
+                    if (!fan_safety_bypassed)
+                        printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
+                } else {
+                    printf("  Setting both fans to AUTO for Turbo ON in EC profile code %d...\n", live_ec_code);
+                    if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), &errors) == 0)
+                        fans_auto_applied = 1;
+                }
+            }
+        }
         long cur_turbo_raw = read_sysfs_long(TURBO_PATH, -1);
         int cur_turbo = (cur_turbo_raw == 0) ? 1 : ((cur_turbo_raw == 1) ? 0 : -1);
         if (cur_turbo >= 0 && cur_turbo == st->turbo) {
@@ -1213,8 +1265,11 @@ static int cmd_snapshot(int argc, char **argv)
         printf("  delete <number>   Delete a saved snapshot\n");
         printf("\n%sMask fields:%s\n", C_YLW, C_RST);
         printf("  nvidia_clock,nvidia_memclock,ec_code,turbo,gov,epp,pl1,pl2,\n");
-        printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock\n");
-        printf("\n%sNot included:%s fan settings are not saved or restored by snapshots.\n",
+        printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,nosafe\n");
+        printf("  Use 'nosafe' only with restore to bypass automatic fan safety.\n");
+        printf("\n%sFan settings:%s not saved by snapshots; restore sets fans to AUTO when\n"
+               "  EC profile code 2/3 is applied, or Turbo ON is restored while EC is 2/3,\n"
+               "  unless masked with nosafe.\n",
                C_YLW, C_RST);
         g_stream_mode = prev;
         return 0;
@@ -1247,6 +1302,8 @@ static int cmd_snapshot(int argc, char **argv)
     }
     if (mask && strcmp(argv[2], "save") != 0 && strcmp(argv[2], "restore") != 0)
         return fail("--mask is supported only for snapshot save and restore");
+    if ((mask & MASK_NOSAFE) && strcmp(argv[2], "restore") != 0)
+        return fail("--mask nosafe is supported only for snapshot restore");
     if (snapshot_dry_run && strcmp(argv[2], "restore") != 0)
         return fail("--dry-run is supported only for snapshot restore");
 
@@ -1269,10 +1326,10 @@ static int cmd_snapshot(int argc, char **argv)
         }
         cctl_snapshot_apply_mask(&st, mask);
         if (snapshot_dry_run) {
-            cctl_snapshot_preview_restore(number, &st);
+            cctl_snapshot_preview_restore(number, &st, (mask & MASK_NOSAFE) != 0);
             return 0;
         }
-        return cctl_snapshot_restore(number, &st);
+        return cctl_snapshot_restore(number, &st, (mask & MASK_NOSAFE) != 0);
     }
     return fail("Unknown snapshot action '%s' (use list, save, restore, view, or delete)", argv[2]);
 }

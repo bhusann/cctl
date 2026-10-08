@@ -584,7 +584,7 @@ static const struct command commands[] = {
     { "scale",          0, cmd_scale,           SEC_DISPLAY,   "<factor|WxH|off>",                "GPU-side scaling (no arg: explain in detail)", has_display_support },
 
     /* Overrides */
-    { "turbo",          0, cmd_turbo,           SEC_OVERRIDES, "<on|off> [--nosafe]",              "Turbo boost override (on sets fans to auto; bypass with --nosafe)", NULL },
+    { "turbo",          0, cmd_turbo,           SEC_OVERRIDES, "<on|off> [--nosafe]",              "Turbo on sets fans to auto only in EC code 2/3; bypass with --nosafe", NULL },
     { "gov",            0, cmd_gov,             SEC_OVERRIDES, "<governor>",                       "CPU governor (powersave, performance)", NULL },
     { "epp",            0, cmd_epp,             SEC_OVERRIDES, "<value>",                          "EPP (performance, balance_performance, balance_power, power)", NULL },
     { "rapl",           0, cmd_rapl,            SEC_OVERRIDES, "<pl1> <pl2>",                      "RAPL power limits (watts, use 'skip' to omit)", NULL },
@@ -708,7 +708,7 @@ static void print_usage(const char *prog)
                 print_help_command(cmd);
                 printf("\n");
             }
-            printf("      %s(max, cpuperf, balanced set fans to auto; bypass with --nosafe)%s\n\n", C_DIM, C_RST);
+            printf("      %sEC code 2/3, or Turbo ON while in EC code 2/3, sets fans to auto; bypass with --nosafe%s\n\n", C_DIM, C_RST);
             print_profile_table();
             continue;
         }

@@ -478,8 +478,8 @@ static int legacy_fan_auto_all(void)
  *   display=auto
  *
  * Fan behavior note:
- *   max, cpuperf, and balanced automatically switch fans to AUTO unless
- *   --nosafe is passed, preventing silent fan lock from causing thermal throttling.
+ *   Applying EC profile code 2 or 3 switches fans to AUTO. Enabling Turbo
+ *   does so only when the active EC code is 2 or 3. --nosafe bypasses this.
  */
 
 enum prof_color {
@@ -517,7 +517,6 @@ struct profile_def {
     int turbo;
     const char *gov;
     const char *epp;
-    int fan_safety;
     uint8_t pulse_r, pulse_g, pulse_b;
     const char *ec_tdp;
     int rapl_pl1;
@@ -525,11 +524,11 @@ struct profile_def {
 };
 
 static const struct profile_def PROFILES[] = {
-    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         1, 255,   0,   0, "90/115W + GPU 100W", 0, 0 },
-    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "powersave",   "performance",         1, 255, 110,   0, "45/115W + GPU 70W",  0, 0 },
-    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 1, 200,  50, 255, "45/115W + GPU 70W",  0, 0 },
-    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",       0,   0, 255,   0, "15/30W  + GPU 70W", 0, 0 },
-    { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                0,  80, 180, 255, "15/30W  + GPU 70W", 0, 0 },
+    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         255,   0,   0, "90/115W + GPU 100W", 0, 0 },
+    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "powersave",   "performance",         255, 110,   0, "45/115W + GPU 70W",  0, 0 },
+    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 200,  50, 255, "45/115W + GPU 70W",  0, 0 },
+    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",         0, 255,   0, "15/30W  + GPU 70W", 0, 0 },
+    { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                 80, 180, 255, "15/30W  + GPU 70W", 0, 0 },
 };
 
 #define USER_PROFILE_FILE "/etc/cctl/profiles.conf"
@@ -614,7 +613,7 @@ static void load_user_profiles(void)
             .name = user_profile_names[i], .label = user_profile_names[i],
             .color = PROF_COL_BLU, .help_desc = "User-defined profile",
             .gpu_profile = gpu, .turbo = turbo,
-            .gov = user_profile_governors[i], .epp = user_profile_epps[i], .fan_safety = 1,
+            .gov = user_profile_governors[i], .epp = user_profile_epps[i],
             .pulse_r = 0, .pulse_g = 0, .pulse_b = 0, .ec_tdp = "custom",
             .rapl_pl1 = pl1, .rapl_pl2 = pl2
         };
@@ -710,6 +709,15 @@ static int profile_apply(const struct profile_def *p)
                             : rapl_pl1_ceiling()) < 0)
         err++;
     return err ? -1 : 0;
+}
+
+static int profile_requires_fan_auto(const struct profile_def *p)
+{
+    if (!p) return 0;
+    int ec_code = p->gpu_profile;
+    if (ec_code < 0 && p->turbo == 1)
+        ec_code = cctl_live_ec_state(NULL, NULL);
+    return ec_code == 2 || ec_code == 3;
 }
 
 static int profile_silent(void)
