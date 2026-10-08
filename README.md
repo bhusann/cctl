@@ -76,20 +76,9 @@ cctl status                # view all current settings
 ## Power Profiles
 
 `set <profile> [--nosafe]` applies preset (EC defaults + table values below).
-The built-in profiles are quick-use presets, not official or universally best
-settings. Try the combinations that suit your workload; if you find a setup you
-prefer, create a custom profile with those EC, Turbo, governor, and EPP values.
-
-For supported settings commands, append `--dry-run` to print the planned sysfs or
-EC changes without applying them:
-
-```bash
-cctl set balanced --dry-run
-cctl fan cpu 60 --nosafe --dry-run
-cctl rapl 30 50 --dry-run
-```
-
-Dry-run is available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
+Built-in profiles are quick-use presets, not official or universal
+recommendations. Choose what suits your workload, or save a preferred
+combination as a [custom profile](#custom-profiles).
 
 ```
 Profile     EC profile code Turbo  Governor     EPP                EC default CPU & GPU TDP
@@ -101,37 +90,33 @@ powersave   1               OFF    powersave    balance_power      15/30W  + GPU
 silent/eco  0               OFF    powersave    power              15/30W  + GPU 70W
 ```
 
-> **Fan Safety Defaults & Safety Disclaimer**: `--nosafe` is a flag that bypasses cctl's fan safety and keeps your current fan state instead of letting cctl change it. The safety exists because if fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat — so to prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass that reset. Setting manual fan duty (`cctl fan <pct> --nosafe` or `cctl fan cpu|gpu <pct> --nosafe`) strictly requires `--nosafe`.
->
-> ⚠️ **Safety Notice & Disclaimer**: Safety defaults (running without `--nosafe`) are strongly recommended for daily use to protect your hardware. The `--nosafe` flag is intended strictly for experimenting or one-time use for a specific purpose — **not for daily or regular use**. Overriding safety mechanisms can lead to severe overheating, thermal throttling, or hardware stress; the author is not responsible for any damage or instability caused by using this flag.
->
-> Built-in profiles and custom profiles without RAPL values leave existing limits unchanged. Custom profiles can set PL1/PL2 in `profiles.conf`; use `cctl rapl <pl1> <pl2>` to change them separately.
+> [!CAUTION]
+> High-power profiles (`max`, `cpuperf`, `balanced`) and `turbo on` set fans
+> to **AUTO** by default because silent fans may not cool the system under
+> load. `--nosafe` bypasses this protection and keeps the current fan setting;
+> manual fan duty also requires it. Use `--nosafe` only for deliberate testing:
+> fixed or suppressed fan speeds can cause overheating.
 
 ### EC Profiles and Governor/EPP Load Test Results
 
-This comparison is here to help you choose an EC profile, governor, EPP, and
-Turbo setting that fits your needs. There is no single best combination: the
-choices trade peak and sustained performance against power draw and temperature.
+These full-load measurements on the author's 10-core, 16-thread CPU compare
+the performance, power, and temperature tradeoffs. Results vary with cooling,
+firmware, and workload.
 
-The results below were measured on the project author's 10-core, 16-thread CPU
-while stress-testing all 16 threads at full load. Frequencies and power are
-observed values; they can vary with cooling, firmware, and workload. The TCC
-offset is the value reported by `tcc_offset_degree_celsius`. P-core and E-core
-frequencies are shown in MHz.
+The `performance` EPP results were the same with either governor, so they are
+combined below. `balance_power` and `power` also behaved similarly across EC
+codes and are listed once; codes `0` and `1` sustain lower clocks on
+`balance_power` after reaching their 15W PL1 limit.
 
-As a quick guide from these tests:
+| Governor / EPP | Turbo | P / E frequency | Power and behavior across EC codes |
+|---|---:|---:|---|
+| powersave / balance_power | On or off | P: 2200; E: 1600 | About 22W. Codes `2` and `3` sustain this; codes `0` and `1` drop to 15W after TAU and settle around P 1500–1600, E 1200. |
+| powersave / power | On or off | P: 1100; E: 1100 | About 12W, peak and sustained across all codes. |
 
-- **Highest CPU performance:** EC code `2`, Turbo on, EPP `performance` reached
-  the highest clocks and power, then sustained 75–76W near 98°C.
-- **A lower-temperature high-performance option:** EC code `2` with
-  `powersave` / `balance_performance` sustained 63–64W around 91°C.
-- **Standard performance:** EC code `3` with Turbo on and EPP `performance` or
-  `balance_performance` gave strong short-term performance, then settled at
-  the 45W PL1 limit after TAU.
-- **Lower power draw:** EPP `balance_power` used about 22W, while EPP `power`
-  used about 12W in these tests; Turbo made little difference in those cases.
-- **Lower-power EC modes:** Codes `0` and `1` use 15W PL1 defaults and showed
-  lower sustained clocks than codes `2` and `3`.
+For the highest measured performance, code `2` with Turbo on and EPP
+`performance` reached 85–87W, then sustained 75–76W near 98°C. Code `2` with
+`powersave` / `balance_performance` sustained 63–64W around 91°C. Code `3`
+offers a lower-power standard mode; codes `0` and `1` have 15W PL1 defaults.
 
 #### EC code 3 — Standard
 
@@ -140,14 +125,22 @@ Defaults during this test: TAU 28 seconds, PL1 45W, PL2 115W, TCC offset 13°C
 
 | Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
 |---|---:|---:|---|
-| performance / performance | On | P: 4300, 4100, 3900; E: 3285, 3100 | 67–70W; reaches 87°C PROCHOT. After the 28-second TAU, settles at PL1 45W, P 3300, E 2600. |
-| performance / performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
-| powersave / performance | On | P: 3800; E: 2800 | Peaks at 63W and 87°C PROCHOT. After TAU, settles at PL1 45W, P 3300, E 2600. |
-| powersave / performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
+| performance or powersave / performance | On | P: 4300, 4100, 3900; E: 3285, 3100 | 67–70W; reaches 87°C PROCHOT. After the 28-second TAU, settles at PL1 45W, P 3300, E 2600. |
+| performance or powersave / performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
 | powersave / balance_performance | On | P: 3800; E: 2800 | Peaks at 63W and 87°C PROCHOT. After TAU, settles at PL1 45W, P 3300, E 2600. |
 | powersave / balance_performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
-| powersave / balance_power | On or off | P: 2200; E: 1600 | About 22W, steady. |
-| powersave / power | On or off | P: 1100; E: 1100 | About 12W, steady. |
+
+#### EC code 2 — High performance
+
+Defaults during this test: TAU 80 seconds, PL1 90W, PL2 115W, TCC offset 2°C
+(98°C PROCHOT).
+
+| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
+|---|---:|---:|---|
+| performance or powersave / performance | On | P: 4300 or 4100; E: 3300 or 3200 | Peaks at 85–87W and reaches 98–99°C PROCHOT. Later sustains 75–76W at 98°C, around P 3800–3900 and E 3000–3100. |
+| performance or powersave / performance | Off | P: 2400; E: 1800 | Peaks around 25W and sustains there. |
+| powersave / balance_performance | On | P: 3800; E: 2800 | 63–64W peak and sustained, around 91°C. |
+| powersave / balance_performance | Off | P: 2400; E: 1800 | 25W peak and sustained. |
 
 #### EC code 1 — Powersave, and EC code 0 — Silent
 
@@ -161,22 +154,6 @@ These two codes behaved the same in the test. Defaults: TAU 8 seconds, PL1
 | performance or powersave / performance | Off | P: 2400; E: 1800 | Peaks at 25W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
 | powersave / balance_performance | On | P: 2700 or 2600; E: 2100 | Peaks at 30W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
 | powersave / balance_performance | Off | P: 2400; E: 1800 | Peaks at 25W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
-| powersave / balance_power | On or off | P: 2200; E: 1600 | Peaks around 22W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
-| powersave / power | On or off | P: 1100; E: 1100 | About 12W at peak and sustained. |
-
-#### EC code 2 — High performance
-
-Defaults during this test: TAU 80 seconds, PL1 90W, PL2 115W, TCC offset 2°C
-(98°C PROCHOT).
-
-| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
-|---|---:|---:|---|
-| performance or powersave / performance | On | P: 4300 or 4100; E: 3300 or 3200 | Peaks at 85–87W and reaches 98–99°C PROCHOT. Later sustains 75–76W at 98°C, around P 3800–3900 and E 3000–3100. |
-| performance or powersave / performance | Off | P: 2400; E: 1800 | Peaks around 25W and sustains there. |
-| powersave / balance_performance | On | P: 3800; E: 2800 | 63–64W peak and sustained, around 91°C. |
-| powersave / balance_performance | Off | P: 2400; E: 1800 | 25W peak and sustained. |
-| powersave / balance_power | On or off | P: 2200; E: 1600 | About 22W, peak and sustained. |
-| powersave / power | On or off | P: 1100; E: 1100 | About 12W, peak and sustained. |
 
 
 ### Custom Profiles
@@ -205,6 +182,9 @@ Turbo, CPU governor, EPP, and optional CPU power limits (PL1 and PL2). Write
 `skip` for any value you want cctl to leave unchanged. You can also use the
 original five-field format by leaving off both PL1 and PL2 values.
 
+Profiles without custom RAPL values leave existing limits unchanged. Set
+limits in `profiles.conf` or use `cctl rapl <pl1> <pl2>`.
+
 EC profile codes select modes; they are not a ranking:
 
 - `0` — Silent
@@ -228,6 +208,9 @@ Use EC code `3`, `2`, `1`, or `0`; Turbo `1` (on) or `0` (off); governor
 Custom profiles use the normal fan-safety behavior. Skipped or unset values
 show as `--` in the help table; custom PL1/PL2 values appear in the EC TDP
 column, for example `PL1 90W / PL2 115W (custom)`.
+
+Append `--dry-run` to preview changes without applying them. Dry-run is
+available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
 
 ---
 

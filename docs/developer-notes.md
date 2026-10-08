@@ -4,6 +4,7 @@
 
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
 - **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies only while live TCC-offset detection identifies EC profile code 2. cctl reads `tcc_offset_degree_celsius` from Intel processor thermal sysfs first and falls back to the MSR when unavailable. `cctl status` infers the mode from the live EC code and current CPU governor/EPP; it does not record the mode or EC code in `/run`.
+- **EC load-test README data** — The documented TCC offset comes from `tcc_offset_degree_celsius`; P-core and E-core frequencies in the test tables are in MHz.
 - **OEM PROCHOT Throttle Trip Points & CPU State Telemetry (`cpumon`)** — Hardware thermal throttling is governed by the laptop manufacturer's EC firmware rather than the silicon TjMax (100°C):
   - **EC Code 2 (High performance):** The OEM PROCHOT trip point is **98°C** (TCC offset 2°C).
   - **EC Code 3 (Standard):** The OEM PROCHOT trip point is **87°C** (offset 13°C); code 1 (Powersave) is **85°C** (offset 15°C); code 0 (Silent) is **90°C** (offset 10°C).
