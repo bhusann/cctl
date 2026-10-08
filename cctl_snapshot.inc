@@ -301,11 +301,11 @@ static void cctl_snapshot_read_current(struct cctl_snapshot_data *st)
 {
     cctl_snapshot_init(st);
 
-    /* Runtime metadata is the source for the EC code and cctl-applied GPU
-     * clock locks. The profile label itself is intentionally not snapshotted. */
+    /* Read EC code live from the TCC offset; GPU locks use cctl runtime data. */
+    st->ec_profile_code = cctl_live_ec_state(NULL, NULL);
+
     struct mode_runtime_data mode;
     if (mode_runtime_read(&mode) == 0) {
-        st->ec_profile_code = mode.ec_profile_code;
         if (mode.core_clock_known) {
             st->core_clock_known = 1;
             st->core_clock_set = mode.core_clock_set;
@@ -318,16 +318,19 @@ static void cctl_snapshot_read_current(struct cctl_snapshot_data *st)
             st->mem_clock_min = mode.mem_clock_min;
             st->mem_clock_max = mode.mem_clock_max;
         }
-        if (mode.display_scale_known) {
-            st->display_scale_known = 1;
-            st->display_scale_set = mode.display_scale_set;
-            snprintf(st->display_scale, sizeof(st->display_scale), "%s", mode.display_scale);
-        }
     }
 
     struct display_info display;
-    if (has_display_support() && query_display_info(&display) == 0 && display.current_rate[0])
+    if (has_display_support() && query_display_info(&display) == 0 && display.current_rate[0]) {
         snprintf(st->display_rate, sizeof(st->display_rate), "%s", display.current_rate);
+        if (display.current_resolution[0] && display.resolution[0]) {
+            st->display_scale_known = 1;
+            st->display_scale_set = strcmp(display.current_resolution, display.resolution) != 0;
+            snprintf(st->display_scale, sizeof(st->display_scale), "%.*s",
+                     (int)sizeof(st->display_scale) - 1,
+                     st->display_scale_set ? display.current_resolution : "none");
+        }
+    }
 
     long turbo = read_sysfs_long(TURBO_PATH, -1);
     if (turbo == 0 || turbo == 1) st->turbo = turbo == 0 ? 1 : 0;
@@ -816,18 +819,10 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
     int errors = 0;
     printf("Restoring snapshot %d one setting at a time...\n", number);
 
-    /* 1. EC profile code: always apply if saved (hardware EC state cannot be queried) */
+    /* 1. EC profile code: apply the saved code when present. */
     cctl_snapshot_divider();
     if (st->ec_profile_code >= 0) {
-        if (cctl_snapshot_apply_step("EC profile code", set_gpu_profile(st->ec_profile_code), &errors) == 0) {
-            char label[32];
-            snprintf(label, sizeof(label), "snapshot-%d", number);
-            if (mode_write(label, "restore", st->ec_profile_code) < 0) {
-                fprintf(stderr, "  %sWarning: could not record restored EC code in %s%s\n",
-                        C_YLW, MODE_FILE, C_RST);
-                errors++;
-            }
-        }
+        cctl_snapshot_apply_step("EC profile code", set_gpu_profile(st->ec_profile_code), &errors);
     } else {
         printf("  %sSkipping EC profile code (not saved).%s\n", C_DIM, C_RST);
     }
@@ -1162,22 +1157,22 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
         printf("  %sSkipping display refresh rate (not saved).%s\n", C_DIM, C_RST);
     }
 
-    /* 13. Display scale: query live metadata; skip if already matching */
+    /* 13. Display scale: compare the live X11 desktop dimensions. */
     cctl_snapshot_divider();
     if (st->display_scale_known < 0) {
         printf("  %sSkipping display scale (not saved).%s\n", C_DIM, C_RST);
     } else {
-        struct mode_runtime_data mode;
-        int have_mode = (mode_runtime_read(&mode) == 0);
+        struct display_info disp;
+        int have_disp = has_display_support() && query_display_info(&disp) == 0 &&
+                        disp.current_resolution[0] && disp.resolution[0];
         if (st->display_scale_set) {
-            if (have_mode && mode.display_scale_known && mode.display_scale_set &&
-                strcmp(mode.display_scale, st->display_scale) == 0) {
+            if (have_disp && strcmp(disp.current_resolution, st->display_scale) == 0) {
                 printf("  Display scale: %s%s\n", st->display_scale, snapshot_unchanged_tag());
             } else {
                 cctl_snapshot_apply_step("display scale", scale_set(st->display_scale), &errors);
             }
         } else {
-            if (have_mode && mode.display_scale_known && !mode.display_scale_set) {
+            if (have_disp && strcmp(disp.current_resolution, disp.resolution) == 0) {
                 printf("  Scale: native (1x1)%s\n", snapshot_unchanged_tag());
             } else {
                 cctl_snapshot_apply_step("display scale reset", scale_reset(), &errors);

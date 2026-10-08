@@ -3,10 +3,11 @@
 - **Source layout** — `cctl.c` includes subsystem fragments in a fixed order: core, power controls, platform/privacy/status, keyboard, monitor, runtime helpers, NVIDIA, command handlers, and driver/install commands. They remain one translation unit so hardware helpers stay private and link behavior is unchanged; edit the owning fragment instead of growing the main file.
 
 - **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
-- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies while EC profile code 2 is active; the active profile is recorded and shown as `Mode:` in `cctl status`, and `EC default` appears when no profile has been applied yet.
+- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies only while live TCC-offset detection identifies EC profile code 2. cctl reads `tcc_offset_degree_celsius` from Intel processor thermal sysfs first and falls back to the MSR when unavailable. `cctl status` infers the mode from the live EC code and current CPU governor/EPP; it does not record the mode or EC code in `/run`.
 - **OEM PROCHOT Throttle Trip Points & CPU State Telemetry (`cpumon`)** — Hardware thermal throttling is governed by the laptop manufacturer's EC firmware rather than the silicon TjMax (100°C):
-  - **EC Code 2 (Performance):** The OEM PROCHOT trip point is **97°C** (97–98°C).
-  - **EC Codes 0, 1, 3 (Quiet, Balanced, Standard / EC default):** The OEM PROCHOT trip point is **87°C**. If `/run/cctl/mode` does not exist, the EC defaults to code 3 (87°C PROCHOT threshold).
+  - **EC Code 2 (High performance):** The OEM PROCHOT trip point is **98°C** (TCC offset 2°C).
+  - **EC Code 3 (Standard):** The OEM PROCHOT trip point is **87°C** (offset 13°C); code 1 (Powersave) is **85°C** (offset 15°C); code 0 (Silent) is **90°C** (offset 10°C).
+  - The active EC code is read from the live TCC offset, independently of `/run/cctl/mode`.
   - In `cctl cpumon`, the `STATE` readout dynamically tracks this active threshold:
     - `▲ PROCHOT THROTTLE` (Red): CPU temperature $\ge$ active PROCHOT limit (87°C or 97°C) or within 3°C of TjMax.
     - `▲ PL2 LIMIT` (Magenta): Package power $\ge 95\%$ of short-term burst limit (PL2).

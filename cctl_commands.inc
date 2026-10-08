@@ -17,8 +17,6 @@ static int scale_set(const char *resolution)
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to set scale to %s", resolution);
-    if (mode_record_display_scale(resolution) < 0)
-        fprintf(stderr, "Warning: scale was applied but could not be recorded in %s\n", MODE_FILE);
     printf("  Display scale: %s → %s%s\n", resolution, info.resolution, snapshot_applied_tag());
     return 0;
 }
@@ -35,8 +33,6 @@ static int scale_reset(void)
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to reset scale");
-    if (mode_record_display_scale(NULL) < 0)
-        fprintf(stderr, "Warning: scale was reset but could not be recorded in %s\n", MODE_FILE);
     printf("  Scale: native (1x1)%s\n", snapshot_applied_tag());
     return 0;
 }
@@ -53,6 +49,8 @@ static void scale_show_details(void)
         printf("%sCurrent Display:%s\n", C_YLW, C_RST);
         printf("  %sOutput:%s %s  |  %sNative Resolution:%s %s  |  %sCurrent Rate:%s %sHz\n\n",
                C_CYN, C_RST, info.output, C_CYN, C_RST, info.resolution, C_CYN, C_RST, info.current_rate);
+        printf("  %sCurrent Desktop Size:%s %s (from xrandr)\n\n",
+               C_CYN, C_RST, info.current_resolution[0] ? info.current_resolution : "N/A");
     }
 
     printf("%sOptions:%s\n", C_YLW, C_RST);
@@ -252,6 +250,14 @@ static int cmd_editconf(int argc, char **argv)
     return 0;
 }
 
+static void print_max_profile_note(void)
+{
+    printf("\n%sNote:%s 'max' is extreme performance mode; CPU will draw sustained 60–90W (vs normal 45W) and reach ~98°C.\n"
+           "      Recommended for heavy tasks like compiling or demanding games.\n"
+           "      For day-to-day use or lighter gaming, prefer 'cpuperf' or 'balanced'.\n",
+           C_YLW, C_RST);
+}
+
 static int cmd_set(int argc, char **argv)
 {
     int nosafe = 0;
@@ -268,9 +274,11 @@ static int cmd_set(int argc, char **argv)
         printf("%sValid Profiles:%s\n", C_YLW, C_RST);
         load_user_profiles();
         for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
+            const char *display_name = strcmp(PROFILES[i].name, "silent") == 0
+                                     ? "silent/eco" : PROFILES[i].name;
             printf("  %s%-12s%s %s\n",
                    prof_color_str(PROFILES[i].color),
-                   PROFILES[i].name,
+                   display_name,
                    C_RST,
                    PROFILES[i].help_desc);
         }
@@ -287,7 +295,9 @@ static int cmd_set(int argc, char **argv)
         fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
         fprintf(stderr, "Valid profiles: ");
         for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
-            fprintf(stderr, "%s%s", PROFILES[i].name,
+            const char *name = strcmp(PROFILES[i].name, "silent") == 0
+                             ? "silent/eco" : PROFILES[i].name;
+            fprintf(stderr, "%s%s", name,
                     i + 1 < sizeof(PROFILES) / sizeof(PROFILES[0]) ? ", " : "\n");
         }
         for (int i = 0; i < user_profile_count; i++)
@@ -297,7 +307,8 @@ static int cmd_set(int argc, char **argv)
     }
 
     if (dry_run) {
-        stream_printf(STREAM_DELAY_US, "Dry run: profile %s\n", p->name);
+        stream_printf(STREAM_DELAY_US, "Dry run: profile %s\n",
+                      strcmp(p->name, "silent") == 0 ? "silent/eco" : p->name);
         if (p->gpu_profile >= 0)
             stream_printf(STREAM_DELAY_US, "  EC profile code: %s (%d)\n", gpu_profile_name(p->gpu_profile), p->gpu_profile);
         else stream_printf(STREAM_DELAY_US, "  EC profile code: --\n");
@@ -317,11 +328,14 @@ static int cmd_set(int argc, char **argv)
         }
         if (p->fan_safety && !nosafe)
             stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
+        else if (strcmp(p->name, "silent") == 0)
+            stream_printf(STREAM_DELAY_US, "  Fans: set both to SILENT\n");
         if (strcmp(p->name, "max") == 0) {
-            stream_printf(STREAM_DELAY_US, "\n%sNote:%s 'max' is extreme performance mode; CPU will draw sustained 60–90W (vs normal 45W) and reach ~98°C.\n"
-                   "      Recommended for heavy tasks like compiling or demanding games.\n"
-                   "      For day-to-day use or lighter gaming, prefer 'cpuperf' or 'balanced'.\n",
-                   C_YLW, C_RST);
+            int prev = g_stream_mode;
+            g_stream_mode = STREAM_MODE_LINE;
+            g_stream_line = 0;
+            print_max_profile_note();
+            g_stream_mode = prev;
         }
         return 0;
     }
@@ -333,30 +347,25 @@ static int cmd_set(int argc, char **argv)
         fan_auto_all();
     }
     int rc = profile_apply(p);
+    if (rc == 0 && strcmp(p->name, "silent") == 0) {
+        printf("Setting both fans to SILENT...\n");
+        if (fan_silent_all() < 0)
+            rc = -1;
+    }
 
     ec_release_ports();
     if (rc == 0) {
-        /* Record the active profile only once
-         * the profile actually landed, so `status` and the RAPL ceiling
-         * never report a mode that failed to apply. */
-        int active_ec_code = p->gpu_profile;
-        if (active_ec_code < 0) {
-            char old_profile[64], old_method[32];
-            int old_ec_code = -1;
-            if (mode_read(old_profile, sizeof(old_profile), old_method, sizeof(old_method),
-                          &old_ec_code) == 0)
-                active_ec_code = old_ec_code;
-        }
-        if (mode_write(profile, "set", active_ec_code) < 0)
-            fprintf(stderr, "Warning: could not record active mode in %s\n", MODE_FILE);
         kbe_profile_pulse(profile);
         if (strcmp(profile, "max") == 0) {
-            printf("\n%sNote:%s 'max' is extreme performance mode; CPU will draw sustained 60–90W (vs normal 45W) and reach ~98°C.\n"
-                   "      Recommended for heavy tasks like compiling or demanding games.\n"
-                   "      For day-to-day use or lighter gaming, prefer 'cpuperf' or 'balanced'.\n",
-                   C_YLW, C_RST);
+            int prev = g_stream_mode;
+            g_stream_mode = STREAM_MODE_LINE;
+            g_stream_line = 0;
+            print_max_profile_note();
+            print_done();
+            g_stream_mode = prev;
+        } else {
+            print_done();
         }
-        print_done();
     }
     return rc;
 }
@@ -377,7 +386,7 @@ static int cmd_fan(int argc, char **argv)
         printf("%sValid Modes:%s\n", C_YLW, C_RST);
         printf("  %s%-18s%s Automatic EC fan control (both fans, or cpu/gpu)\n", C_CYN, "auto [cpu|gpu]", C_RST);
         printf("  %s%-18s%s Full 100%% fan speed\n", C_CYN, "max", C_RST);
-        printf("  %s%-18s%s Quiet mode (forces eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
+        printf("  %s%-18s%s Quiet mode (forces silent/eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
         printf("  %s%-18s%s Set both fans to duty 25-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
         printf("  %s%-18s%s Set CPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "cpu <pct|auto>", C_RST);
         printf("  %s%-18s%s Set GPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "gpu <pct|auto>", C_RST);
@@ -408,8 +417,8 @@ static int cmd_fan(int argc, char **argv)
         rc = fan_max_all();
     } else if (strcmp(mode, "silent") == 0) {
         if (!nosafe) {
-            stream_printf(STREAM_DELAY_US, "Applying: eco profile (safety default for silent fans; use --nosafe to bypass)...\n");
-            profile_eco();
+            stream_printf(STREAM_DELAY_US, "Applying: silent/eco profile (safety default for silent fans; use --nosafe to bypass)...\n");
+            profile_silent();
         }
         stream_printf(STREAM_DELAY_US, "Setting both fans to SILENT...\n");
         rc = fan_silent_all();
@@ -1190,6 +1199,11 @@ static int cmd_install(int argc, char **argv)
         stream_printf(STREAM_DELAY_US, "Aborted.\n");
         return 0;
     }
+
+    /* Keep the interactive confirmation prompt character-streamed, then
+     * present install progress and completion one line at a time. */
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
 
     if (installed_ver > 0)
         stream_printf(STREAM_DELAY_US, "%sUpgrading cctl...%s\n", C_CYN, C_RST);

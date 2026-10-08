@@ -39,6 +39,18 @@ cctl fan auto              # set fans to automatic (auto-elevates via sudo)
 cctl status                # view all current settings
 ```
 
+## Updating cctl
+
+1. Download the latest `cctl` binary from the [official Releases page](https://github.com/bhusann/cctl/releases).
+2. In the folder where you downloaded it, run:
+
+   ```bash
+   chmod +x ./cctl
+   sudo ./cctl install
+   ```
+
+3. When asked to upgrade or reinstall cctl, type `y` to confirm. The installer updates the installed binary and sudo rule.
+
 ---
 
 ## Screenshots
@@ -64,6 +76,9 @@ cctl status                # view all current settings
 ## Power Profiles
 
 `set <profile> [--nosafe]` applies preset (EC defaults + table values below).
+The built-in profiles are quick-use presets, not official or universally best
+settings. Try the combinations that suit your workload; if you find a setup you
+prefer, create a custom profile with those EC, Turbo, governor, and EPP values.
 
 For supported settings commands, append `--dry-run` to print the planned sysfs or
 EC changes without applying them:
@@ -80,10 +95,10 @@ Dry-run is available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
 Profile     EC profile code Turbo  Governor     EPP                EC default CPU & GPU TDP
 ─────────── ─────────────── ────── ──────────── ────────────────── ──────────────────────────────
 max         2               ON     performance  performance        90/115W + GPU 100W
-cpuperf     3               ON     performance  performance        45/115W + GPU 70W
+cpuperf     3               ON     powersave    performance        45/115W + GPU 70W
 balanced    3               ON     powersave    balance_performance 45/115W + GPU 70W
 powersave   1               OFF    powersave    balance_power      15/30W  + GPU 70W
-eco         0               OFF    powersave    power              15/30W  + GPU 70W
+silent/eco  0               OFF    powersave    power              15/30W  + GPU 70W
 ```
 
 > **Fan Safety Defaults & Safety Disclaimer**: `--nosafe` is a flag that bypasses cctl's fan safety and keeps your current fan state instead of letting cctl change it. The safety exists because if fans were previously locked to `silent`, the EC suppresses fan speeds even under high heat — so to prevent overheating and thermal throttling, `cctl` automatically resets fans to **`AUTO`** when activating high-power profiles (`max`, `cpuperf`, `balanced`) or enabling `turbo on`. Pass `--nosafe` (e.g. `cctl set max --nosafe` or `cctl turbo on --nosafe`) to bypass that reset. Setting manual fan duty (`cctl fan <pct> --nosafe` or `cctl fan cpu|gpu <pct> --nosafe`) strictly requires `--nosafe`.
@@ -91,6 +106,77 @@ eco         0               OFF    powersave    power              15/30W  + GPU
 > ⚠️ **Safety Notice & Disclaimer**: Safety defaults (running without `--nosafe`) are strongly recommended for daily use to protect your hardware. The `--nosafe` flag is intended strictly for experimenting or one-time use for a specific purpose — **not for daily or regular use**. Overriding safety mechanisms can lead to severe overheating, thermal throttling, or hardware stress; the author is not responsible for any damage or instability caused by using this flag.
 >
 > Built-in profiles and custom profiles without RAPL values leave existing limits unchanged. Custom profiles can set PL1/PL2 in `profiles.conf`; use `cctl rapl <pl1> <pl2>` to change them separately.
+
+### EC Profiles and Governor/EPP Load Test Results
+
+This comparison is here to help you choose an EC profile, governor, EPP, and
+Turbo setting that fits your needs. There is no single best combination: the
+choices trade peak and sustained performance against power draw and temperature.
+
+The results below were measured on the project author's 10-core, 16-thread CPU
+while stress-testing all 16 threads at full load. Frequencies and power are
+observed values; they can vary with cooling, firmware, and workload. The TCC
+offset is the value reported by `tcc_offset_degree_celsius`. P-core and E-core
+frequencies are shown in MHz.
+
+As a quick guide from these tests:
+
+- **Highest CPU performance:** EC code `2`, Turbo on, EPP `performance` reached
+  the highest clocks and power, then sustained 75–76W near 98°C.
+- **A lower-temperature high-performance option:** EC code `2` with
+  `powersave` / `balance_performance` sustained 63–64W around 91°C.
+- **Standard performance:** EC code `3` with Turbo on and EPP `performance` or
+  `balance_performance` gave strong short-term performance, then settled at
+  the 45W PL1 limit after TAU.
+- **Lower power draw:** EPP `balance_power` used about 22W, while EPP `power`
+  used about 12W in these tests; Turbo made little difference in those cases.
+- **Lower-power EC modes:** Codes `0` and `1` use 15W PL1 defaults and showed
+  lower sustained clocks than codes `2` and `3`.
+
+#### EC code 3 — Standard
+
+Defaults during this test: TAU 28 seconds, PL1 45W, PL2 115W, TCC offset 13°C
+(87°C PROCHOT).
+
+| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
+|---|---:|---:|---|
+| performance / performance | On | P: 4300, 4100, 3900; E: 3285, 3100 | 67–70W; reaches 87°C PROCHOT. After the 28-second TAU, settles at PL1 45W, P 3300, E 2600. |
+| performance / performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
+| powersave / performance | On | P: 3800; E: 2800 | Peaks at 63W and 87°C PROCHOT. After TAU, settles at PL1 45W, P 3300, E 2600. |
+| powersave / performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
+| powersave / balance_performance | On | P: 3800; E: 2800 | Peaks at 63W and 87°C PROCHOT. After TAU, settles at PL1 45W, P 3300, E 2600. |
+| powersave / balance_performance | Off | P: 2400; E: 1800 | About 24W; frequency-limited. |
+| powersave / balance_power | On or off | P: 2200; E: 1600 | About 22W, steady. |
+| powersave / power | On or off | P: 1100; E: 1100 | About 12W, steady. |
+
+#### EC code 1 — Powersave, and EC code 0 — Silent
+
+These two codes behaved the same in the test. Defaults: TAU 8 seconds, PL1
+15W, PL2 30W. TCC offset is 15°C for code 1 (85°C PROCHOT) and 10°C for code
+0 (90°C PROCHOT). No PROCHOT event was observed in these test cases.
+
+| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
+|---|---:|---:|---|
+| performance or powersave / performance | On | P: 2700; E: 2100 | Peaks at 30W. After the 8-second TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
+| performance or powersave / performance | Off | P: 2400; E: 1800 | Peaks at 25W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
+| powersave / balance_performance | On | P: 2700 or 2600; E: 2100 | Peaks at 30W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
+| powersave / balance_performance | Off | P: 2400; E: 1800 | Peaks at 25W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
+| powersave / balance_power | On or off | P: 2200; E: 1600 | Peaks around 22W. After TAU, reaches PL1 15W and settles around P 1500–1600, E 1200. |
+| powersave / power | On or off | P: 1100; E: 1100 | About 12W at peak and sustained. |
+
+#### EC code 2 — High performance
+
+Defaults during this test: TAU 80 seconds, PL1 90W, PL2 115W, TCC offset 2°C
+(98°C PROCHOT).
+
+| Governor / EPP | Turbo | Peak P / E frequency | Power and behavior |
+|---|---:|---:|---|
+| performance or powersave / performance | On | P: 4300 or 4100; E: 3300 or 3200 | Peaks at 85–87W and reaches 98–99°C PROCHOT. Later sustains 75–76W at 98°C, around P 3800–3900 and E 3000–3100. |
+| performance or powersave / performance | Off | P: 2400; E: 1800 | Peaks around 25W and sustains there. |
+| powersave / balance_performance | On | P: 3800; E: 2800 | 63–64W peak and sustained, around 91°C. |
+| powersave / balance_performance | Off | P: 2400; E: 1800 | 25W peak and sustained. |
+| powersave / balance_power | On or off | P: 2200; E: 1600 | About 22W, peak and sustained. |
+| powersave / power | On or off | P: 1100; E: 1100 | About 12W, peak and sustained. |
 
 
 ### Custom Profiles
@@ -170,7 +256,7 @@ Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-c
 ### Fan Control
 ```bash
 cctl fan auto|max               # Both fans: EC automatic / 100% full speed
-cctl fan silent [--nosafe]      # Quiet mode (forces eco profile first; bypass with --nosafe)
+cctl fan silent [--nosafe]      # Quiet mode (forces silent/eco profile first; bypass with --nosafe)
 cctl fan <pct> --nosafe         # Set both fans to duty cycle (25-100%, requires --nosafe)
 cctl fan cpu|gpu <pct> --nosafe # Set individual fan duty (requires --nosafe)
 cctl fan cpu|gpu auto           # Restore individual fan to automatic EC control (independent)

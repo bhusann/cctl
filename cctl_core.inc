@@ -697,19 +697,15 @@ static int safe_atoi(const char *str, int *out)
 }
 
 /* ========================================================================
- * ACTIVE PROFILE MODE (/run/cctl/mode)
+ * RUNTIME GPU CLOCK RECORD (/run/cctl/mode)
  * ========================================================================
- * `cctl set` records the active profile (line 1), method (line 2), and EC
- * profile code (line 3). Lines 4-5 record NVIDIA core/memory clock locks,
- * and line 6 records cctl-managed display scaling. `cctl status` uses the
- * profile metadata, and the RAPL PL1 ceiling consults the EC code (90W
- * unlocked only for code 2).
- * /run is tmpfs, cleared on reboot, so this is runtime bookkeeping, not a
- * persistent snapshot.
+ * This file records only NVIDIA core and memory clock locks. EC code and mode
+ * are read live from the CPU's TCC offset; display scale is read live from
+ * X11. `/run` is tmpfs, cleared on reboot, so this is runtime bookkeeping,
+ * not a persistent snapshot.
  *
- * /run/cctl is root-owned (0700) — unlike /tmp, unprivileged users cannot
- * plant a fake mode file to manipulate the PL1 ceiling. Read paths refuse
- * symlinks and updates replace the file atomically. */
+ * /run/cctl is root-owned (0700); read paths refuse symlinks and updates
+ * replace the file atomically so unprivileged users cannot spoof clock data. */
 #ifndef MODE_FILE
 #define MODE_FILE "/run/cctl/mode"
 #endif
@@ -718,20 +714,41 @@ static int safe_atoi(const char *str, int *out)
 #endif
 
 struct mode_runtime_data {
-    char profile[64];
-    char method[32];
-    int ec_profile_code;
     int core_clock_known, core_clock_set, core_clock_min, core_clock_max;
     int mem_clock_known, mem_clock_set, mem_clock_min, mem_clock_max;
-    int display_scale_known, display_scale_set;
-    char display_scale[32];
 };
 
 static void mode_runtime_init(struct mode_runtime_data *data)
 {
     memset(data, 0, sizeof(*data));
-    data->ec_profile_code = -1;
-    snprintf(data->display_scale, sizeof(data->display_scale), "skip");
+}
+
+static void mode_runtime_parse_clock(const char *line, int *known, int *set,
+                                     int *min, int *max)
+{
+    if (strcmp(line, "none") == 0) {
+        *known = 1;
+        return;
+    }
+    int lo, hi;
+    char extra;
+    if (sscanf(line, "%d %d %c", &lo, &hi, &extra) == 2 && lo >= 0 && hi > 0) {
+        *known = *set = 1;
+        *min = lo;
+        *max = hi;
+    }
+}
+
+static void mode_runtime_write_clock(char *buf, size_t size, size_t *len,
+                                     const char *key, int known, int set,
+                                     int min, int max)
+{
+    const char *value = !known ? "skip" : !set ? "none" : NULL;
+    int n = value
+        ? snprintf(buf + *len, size - *len, "%s=%s\n", key, value)
+        : snprintf(buf + *len, size - *len, "%s=%d %d\n", key, min, max);
+    if (n > 0 && (size_t)n < size - *len)
+        *len += (size_t)n;
 }
 
 static int mode_runtime_read(struct mode_runtime_data *data)
@@ -742,62 +759,29 @@ static int mode_runtime_read(struct mode_runtime_data *data)
     FILE *fp = fdopen(fd, "r");
     if (!fp) { close(fd); return -1; }
 
-    char line[128];
-    if (fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        snprintf(data->profile, sizeof(data->profile), "%.*s",
-                 (int)sizeof(data->profile) - 1, line);
+    char lines[5][128] = {{0}};
+    size_t count = 0;
+    while (count < sizeof(lines) / sizeof(lines[0]) &&
+           fgets(lines[count], sizeof(lines[count]), fp)) {
+        lines[count][strcspn(lines[count], "\r\n")] = '\0';
+        count++;
     }
-    if (fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        snprintf(data->method, sizeof(data->method), "%.*s",
-                 (int)sizeof(data->method) - 1, line);
-    }
-    if (fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        int code;
-        if (safe_atoi(line, &code) == 0 && code >= 0 && code <= 3)
-            data->ec_profile_code = code;
-    }
-
-    if (fgets(line, sizeof(line), fp)) {
-        int min, max;
-        line[strcspn(line, "\r\n")] = '\0';
-        if (strcmp(line, "none") == 0) {
-            data->core_clock_known = 1;
-        } else if (sscanf(line, "%d %d", &min, &max) == 2 && min >= 0 && max > 0) {
-            data->core_clock_known = data->core_clock_set = 1;
-            data->core_clock_min = min;
-            data->core_clock_max = max;
-        }
-    }
-    if (fgets(line, sizeof(line), fp)) {
-        int min, max;
-        line[strcspn(line, "\r\n")] = '\0';
-        if (strcmp(line, "none") == 0) {
-            data->mem_clock_known = 1;
-        } else if (sscanf(line, "%d %d", &min, &max) == 2 && min >= 0 && max > 0) {
-            data->mem_clock_known = data->mem_clock_set = 1;
-            data->mem_clock_min = min;
-            data->mem_clock_max = max;
-        }
-    }
-    if (fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        if (strcmp(line, "none") == 0) {
-            data->display_scale_known = 1;
-            data->display_scale_set = 0;
-            snprintf(data->display_scale, sizeof(data->display_scale), "none");
-        } else {
-            int width, height;
-            char extra;
-            if (sscanf(line, "%dx%d%c", &width, &height, &extra) == 2 &&
-                width >= 640 && height >= 360) {
-                data->display_scale_known = data->display_scale_set = 1;
-                snprintf(data->display_scale, sizeof(data->display_scale), "%.*s",
-                         (int)sizeof(data->display_scale) - 1, line);
-            }
-        }
+    if (count >= 2 && strncmp(lines[0], "core=", 5) == 0 &&
+        strncmp(lines[1], "memory=", 7) == 0) {
+        mode_runtime_parse_clock(lines[0] + 5, &data->core_clock_known,
+                                 &data->core_clock_set, &data->core_clock_min,
+                                 &data->core_clock_max);
+        mode_runtime_parse_clock(lines[1] + 7, &data->mem_clock_known,
+                                 &data->mem_clock_set, &data->mem_clock_min,
+                                 &data->mem_clock_max);
+    } else if (count >= 5) {
+        /* Read old runtime files once so GPU locks survive a binary upgrade. */
+        mode_runtime_parse_clock(lines[3], &data->core_clock_known,
+                                 &data->core_clock_set, &data->core_clock_min,
+                                 &data->core_clock_max);
+        mode_runtime_parse_clock(lines[4], &data->mem_clock_known,
+                                 &data->mem_clock_set, &data->mem_clock_min,
+                                 &data->mem_clock_max);
     }
     fclose(fp);
     return 0;
@@ -814,48 +798,24 @@ static int mode_runtime_write(const struct mode_runtime_data *data)
     if (fd < 0) return -1;
     fchmod(fd, 0600);
 
-    char buf[384];
-    int len = snprintf(buf, sizeof(buf), "%s\n%s\n%d\n",
-                       data->profile, data->method, data->ec_profile_code);
-    if (data->core_clock_known) {
-        int n = data->core_clock_set
-            ? snprintf(buf + len, sizeof(buf) - (size_t)len, "%d %d\n",
-                       data->core_clock_min, data->core_clock_max)
-            : snprintf(buf + len, sizeof(buf) - (size_t)len, "none\n");
-        if (n > 0) len += n;
-    } else {
-        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "skip\n");
-        if (n > 0) len += n;
-    }
-    if (data->mem_clock_known) {
-        int n = data->mem_clock_set
-            ? snprintf(buf + len, sizeof(buf) - (size_t)len, "%d %d\n",
-                       data->mem_clock_min, data->mem_clock_max)
-            : snprintf(buf + len, sizeof(buf) - (size_t)len, "none\n");
-        if (n > 0) len += n;
-    } else {
-        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "skip\n");
-        if (n > 0) len += n;
-    }
-    if (data->display_scale_known) {
-        const char *scale = data->display_scale_set ? data->display_scale : "none";
-        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "%s\n", scale);
-        if (n > 0) len += n;
-    } else {
-        int n = snprintf(buf + len, sizeof(buf) - (size_t)len, "skip\n");
-        if (n > 0) len += n;
-    }
-
+    char buf[128];
+    size_t len = 0;
+    mode_runtime_write_clock(buf, sizeof(buf), &len, "core",
+                             data->core_clock_known, data->core_clock_set,
+                             data->core_clock_min, data->core_clock_max);
+    mode_runtime_write_clock(buf, sizeof(buf), &len, "memory",
+                             data->mem_clock_known, data->mem_clock_set,
+                             data->mem_clock_min, data->mem_clock_max);
     size_t offset = 0;
-    while (offset < (size_t)len) {
-        ssize_t written = write(fd, buf + offset, (size_t)len - offset);
+    while (offset < len) {
+        ssize_t written = write(fd, buf + offset, len - offset);
         if (written > 0) offset += (size_t)written;
         else if (written < 0 && errno == EINTR) continue;
         else break;
     }
     int saved_errno = errno;
-    if (offset != (size_t)len || fsync(fd) != 0) {
-        if (offset == (size_t)len) saved_errno = errno;
+    if (offset != len || fsync(fd) != 0) {
+        if (offset == len) saved_errno = errno;
         close(fd);
         unlink(tmp_path);
         errno = saved_errno;
@@ -887,95 +847,14 @@ static int mode_record_nvidia_clock(int memory_clock, int is_set, int min, int m
     return mode_runtime_write(&data);
 }
 
-static int mode_record_display_scale_root(const char *resolution)
-{
-    if (geteuid() != 0) { errno = EPERM; return -1; }
-    if (resolution) {
-        int width, height;
-        char extra;
-        if (sscanf(resolution, "%dx%d%c", &width, &height, &extra) != 2 ||
-            width < 640 || height < 360 || strlen(resolution) >= 32) {
-            errno = EINVAL;
-            return -1;
-        }
-    }
-    struct mode_runtime_data data;
-    if (mode_runtime_read(&data) != 0)
-        mode_runtime_init(&data);
-    data.display_scale_known = 1;
-    data.display_scale_set = resolution != NULL;
-    snprintf(data.display_scale, sizeof(data.display_scale), "%s",
-             resolution ? resolution : "none");
-    return mode_runtime_write(&data);
-}
+/* Live TCC detection is shared with the standalone CPU monitor object. */
+int cctl_live_ec_state(int *tcc_offset, int *prochot_c);
 
-static int mode_record_display_scale(const char *resolution)
-{
-    if (geteuid() == 0)
-        return mode_record_display_scale_root(resolution);
-
-    char self[PATH_MAX];
-    if (get_self_exe(self, sizeof(self)) != 0)
-        return -1;
-    char *const args[] = {
-        "sudo", "-n", self, "--cctl-record-display-scale",
-        (char *)(resolution ? resolution : "none"), NULL
-    };
-    return run(args, RUN_SILENT, NULL, 0);
-}
-
-static int mode_write(const char *profile, const char *method, int ec_profile_code)
-{
-    struct mode_runtime_data data;
-    if (mode_runtime_read(&data) != 0)
-        mode_runtime_init(&data);
-    snprintf(data.profile, sizeof(data.profile), "%s", profile);
-    snprintf(data.method, sizeof(data.method), "%s", method);
-    data.ec_profile_code = ec_profile_code;
-    return mode_runtime_write(&data);
-}
-
-/* Returns 0 and fills profile/method when a valid mode file exists,
- * -1 otherwise (no file / empty / corrupt). */
-static int mode_read(char *profile, size_t psz, char *method, size_t msz,
-                     int *ec_profile_code)
-{
-    if (psz == 0 || msz == 0) return -1;
-    profile[0] = '\0';
-    method[0] = '\0';
-    if (ec_profile_code) *ec_profile_code = -1;
-    int fd = open(MODE_FILE, O_RDONLY | O_NOFOLLOW);
-    if (fd < 0) return -1;
-    FILE *fp = fdopen(fd, "r");
-    if (!fp) { close(fd); return -1; }
-    char line[64];
-    if (fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        snprintf(profile, psz, "%.*s", (int)psz - 1, line);
-    }
-    if (fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        snprintf(method, msz, "%.*s", (int)msz - 1, line);
-    }
-    if (ec_profile_code && fgets(line, sizeof(line), fp)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        int code;
-        if (safe_atoi(line, &code) == 0 && code >= 0 && code <= 3)
-            *ec_profile_code = code;
-    }
-    fclose(fp); /* also closes fd */
-    return profile[0] ? 0 : -1;
-}
-
-/* RAPL PL1 ceiling in watts: 45 normally; 90 only while EC profile code 2
- * is active (the high-power EC profile). */
+/* RAPL PL1 ceiling in watts: 45 normally; 90 only when live TCC detection
+ * identifies EC profile code 2. */
 static int rapl_pl1_ceiling(void)
 {
-    char profile[32] = {0}, method[16] = {0};
-    int ec_profile_code = -1;
-    if (mode_read(profile, sizeof(profile), method, sizeof(method),
-                  &ec_profile_code) == 0 &&
-        (strcmp(profile, "max") == 0 || ec_profile_code == 2))
+    if (cctl_live_ec_state(NULL, NULL) == 2)
         return 90;
     return 45;
 }

@@ -107,7 +107,7 @@ static int set_epp(const char *val)
 
 /* RAPL ceilings (watts): PL2 hard max 115W (OEM platform limit); PL1 hard
  * max 45W — raised to 90W only while EC profile code 2 is active (see
- * rapl_pl1_ceiling(), fed by /run/cctl/mode). */
+ * rapl_pl1_ceiling(), based on live TCC detection). */
 #define RAPL_PL1_MAX_WATTS      45
 #define RAPL_PL1_MAX_WATTS_MAX  90
 #define RAPL_PL2_MAX_WATTS     115
@@ -462,7 +462,7 @@ static int legacy_fan_auto_all(void)
  *   display=auto; built-in profiles leave RAPL limits unchanged.
  *
  * cpuperf (perf_cpu):
- *   GPU=3(turbo), turbo=ON, governor=performance, EPP=performance,
+ *   GPU=3(turbo), turbo=ON, governor=powersave, EPP=performance,
  *   display=auto (no RAPL change)
  *
  * balanced:
@@ -473,7 +473,7 @@ static int legacy_fan_auto_all(void)
  *   GPU=1(quiet), turbo=OFF, governor=powersave, EPP=balance_power,
  *   display=auto, OEM defaults (PL1=15W, PL2=30W, GPU 70W)
  *
- * eco:
+ * silent (eco alias):
  *   GPU=0(silent), turbo=OFF, governor=powersave, EPP=power,
  *   display=auto
  *
@@ -526,10 +526,10 @@ struct profile_def {
 
 static const struct profile_def PROFILES[] = {
     { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         1, 255,   0,   0, "90/115W + GPU 100W", 0, 0 },
-    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "performance", "performance",         1, 255, 110,   0, "45/115W + GPU 70W",  0, 0 },
+    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "powersave",   "performance",         1, 255, 110,   0, "45/115W + GPU 70W",  0, 0 },
     { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 1, 200,  50, 255, "45/115W + GPU 70W",  0, 0 },
     { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",       0,   0, 255,   0, "15/30W  + GPU 70W", 0, 0 },
-    { "eco",       "Ultra Powersave",                  PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                0,  80, 180, 255, "15/30W  + GPU 70W", 0, 0 },
+    { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                0,  80, 180, 255, "15/30W  + GPU 70W", 0, 0 },
 };
 
 #define USER_PROFILE_FILE "/etc/cctl/profiles.conf"
@@ -597,6 +597,7 @@ static void load_user_profiles(void)
                 continue;
         }
         int duplicate = 0;
+        if (strcmp(name, "eco") == 0) duplicate = 1; /* reserved alias for built-in silent */
         for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++)
             if (strcmp(PROFILES[i].name, name) == 0) duplicate = 1;
         for (int i = 0; i < user_profile_count; i++)
@@ -623,7 +624,7 @@ static void load_user_profiles(void)
 
 static void print_profile_table(void)
 {
-    size_t name_width = 12;
+    size_t name_width = strlen("silent/eco");
     for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
         size_t len = strlen(PROFILES[i].name);
         if (len > name_width) name_width = len;
@@ -641,8 +642,9 @@ static void print_profile_table(void)
     printf(" ─────────────── ────── ──────────── ────────────────── ──────────────────────────────%s\n", C_RST);
     for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
         const struct profile_def *p = &PROFILES[i];
+        const char *display_name = strcmp(p->name, "silent") == 0 ? "silent/eco" : p->name;
         printf("      %s%-*s%s %-15d %-6s %-12s %-18s %s\n",
-               prof_color_str(p->color), (int)name_width, p->name, C_RST,
+               prof_color_str(p->color), (int)name_width, display_name, C_RST,
                p->gpu_profile,
                p->turbo ? "ON" : "OFF",
                p->gov,
@@ -678,6 +680,9 @@ static void print_profile_table(void)
 
 static const struct profile_def *find_profile(const char *name)
 {
+    /* Keep the former built-in name working as an alias. */
+    if (strcmp(name, "eco") == 0)
+        name = "silent";
     for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
         if (strcmp(PROFILES[i].name, name) == 0)
             return &PROFILES[i];
@@ -707,8 +712,8 @@ static int profile_apply(const struct profile_def *p)
     return err ? -1 : 0;
 }
 
-static int profile_eco(void)
+static int profile_silent(void)
 {
-    const struct profile_def *p = find_profile("eco");
+    const struct profile_def *p = find_profile("silent");
     return p ? profile_apply(p) : -1;
 }

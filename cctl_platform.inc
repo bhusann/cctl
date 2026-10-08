@@ -318,10 +318,34 @@ static int mic_toggle(void)
 struct display_info {
     char output[64];
     char resolution[64];
+    char current_resolution[64];
     char current_rate[16];
     char available_rates[32][16];
     int rate_count;
 };
+
+static void display_parse_current_resolution(const char *line, char *out, size_t out_sz)
+{
+    const char *p = strstr(line, " connected");
+    if (!p) return;
+    p += strlen(" connected");
+    while (*p) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        char token[64];
+        size_t n = 0;
+        while (p[n] && !isspace((unsigned char)p[n]) && n + 1 < sizeof(token)) n++;
+        memcpy(token, p, n);
+        token[n] = '\0';
+        int width, height, x, y;
+        if (sscanf(token, "%dx%d%*[+-]%d%*[+-]%d", &width, &height, &x, &y) == 4 &&
+            width > 0 && height > 0) {
+            snprintf(out, out_sz, "%dx%d", width, height);
+            return;
+        }
+        p += n;
+    }
+}
 
 static int query_display_info(struct display_info *info)
 {
@@ -352,6 +376,8 @@ static int query_display_info(struct display_info *info)
             if (sscanf(line, "%63s connected", name) == 1) {
                 strcpy(info->output, name);
                 found_output = 1;
+                display_parse_current_resolution(line, info->current_resolution,
+                                                 sizeof(info->current_resolution));
             }
         }
 
@@ -507,7 +533,10 @@ static int rr_list(void)
         return -1;
     }
     printf("%sCurrent Display:%s\n", C_YLW, C_RST);
-    printf("  %sOutput:%s       %s (%s)\n", C_CYN, C_RST, info.output, info.resolution);
+    printf("  %sOutput:%s       %s (%s)", C_CYN, C_RST, info.output, info.resolution);
+    if (info.current_resolution[0] && strcmp(info.current_resolution, info.resolution) != 0)
+        printf(" (%s scaled)", info.current_resolution);
+    putchar('\n');
     printf("  %sCurrent Rate:%s %sHz\n\n", C_CYN, C_RST, info.current_rate);
     printf("%sAvailable Rates:%s\n", C_YLW, C_RST);
     for (int i = 0; i < info.rate_count; i++) {
@@ -592,6 +621,139 @@ static void pin_to_e_cores(void)
 /* ========================================================================
  * STATUS
  * ======================================================================== */
+
+static void status_ensure_msr_module(void)
+{
+    FILE *fp = fopen("/proc/modules", "r");
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            if (strncmp(line, "msr ", 4) == 0) {
+                fclose(fp);
+                return;
+            }
+        }
+        fclose(fp);
+    }
+
+    char *const args[] = { "modprobe", "msr", NULL };
+    (void)run(args, RUN_SILENT, NULL, 0);
+}
+
+static int status_ec_code_from_tcc_offset(int offset)
+{
+    switch (offset) {
+        case 2:  return 2; /* high performance */
+        case 13: return 3; /* standard */
+        case 15: return 1; /* powersave */
+        case 10: return 0; /* silent */
+        default: return -1;
+    }
+}
+
+static int status_tcc_temp_from_offset(int offset)
+{
+    switch (offset) {
+        case 2:  return 98;
+        case 13: return 87;
+        case 15: return 85;
+        case 10: return 90;
+        default: return -1;
+    }
+}
+
+static int status_sysfs_tcc_offset(int *offset)
+{
+    static char cached_path[PATH_MAX];
+    if (cached_path[0]) {
+        long value = read_sysfs_long(cached_path, -1);
+        if (value >= 0 && value <= 63 &&
+            status_ec_code_from_tcc_offset((int)value) >= 0) {
+            *offset = (int)value;
+            return 0;
+        }
+        cached_path[0] = '\0';
+    }
+
+    DIR *dir = opendir("/sys/bus/pci/devices");
+    if (!dir) return -1;
+
+    struct dirent *entry;
+    char path[PATH_MAX];
+    int rc = -1;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        int n = snprintf(path, sizeof(path),
+                         "/sys/bus/pci/devices/%s/tcc_offset_degree_celsius",
+                         entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
+        long value = read_sysfs_long(path, -1);
+        if (value >= 0 && value <= 63 &&
+            status_ec_code_from_tcc_offset((int)value) >= 0) {
+            *offset = (int)value;
+            snprintf(cached_path, sizeof(cached_path), "%s", path);
+            rc = 0;
+            break;
+        }
+    }
+    closedir(dir);
+    return rc;
+}
+
+/* Read the active TCC offset from the DPTF sysfs attribute first. If it is
+ * absent or has an unrecognized value, fall back to IA32_TEMPERATURE_TARGET. */
+static int status_msr_tcc_offset(int *offset, int *prochot_c)
+{
+    status_ensure_msr_module();
+    uint64_t msr = 0;
+    int fd = open("/dev/cpu/0/msr", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t n = pread(fd, &msr, sizeof(msr), 0x1A2);
+    close(fd);
+    if (n != (ssize_t)sizeof(msr)) return -1;
+
+    int target = (int)((msr >> 16) & 0xff);
+    int value = (int)((msr >> 24) & 0x3f);
+    if (target <= 0 || target > 125 || value >= target) return -1;
+    *offset = value;
+    if (prochot_c) *prochot_c = target - value;
+    return 0;
+}
+
+int cctl_live_ec_state(int *tcc_offset, int *prochot_c)
+{
+    int offset = -1;
+    if (status_sysfs_tcc_offset(&offset) == 0) {
+        if (tcc_offset) *tcc_offset = offset;
+        if (prochot_c) *prochot_c = status_tcc_temp_from_offset(offset);
+        return status_ec_code_from_tcc_offset(offset);
+    }
+    if (status_msr_tcc_offset(&offset, prochot_c) != 0) return -1;
+    if (tcc_offset) *tcc_offset = offset;
+    return status_ec_code_from_tcc_offset(offset);
+}
+
+static const char *status_inferred_mode(int ec_code,
+                                        const struct cpu_profile_state *cpu)
+{
+    if (ec_code == 2) return "max (high performance)";
+    if (ec_code == 1) return "powersave";
+    if (ec_code == 0) return "silent";
+    if (ec_code == 3 && cpu->have_governor && cpu->have_epp &&
+        strcmp(cpu->governor, "performance") == 0 &&
+        strcmp(cpu->epp, "performance") == 0)
+        return "cpuperf (aggressive)";
+    if (ec_code == 3 && cpu->have_governor && cpu->have_epp &&
+        strcmp(cpu->governor, "powersave") == 0 &&
+        strcmp(cpu->epp, "performance") == 0)
+        return "cpuperf (non-aggressive)";
+    if (ec_code == 3 && cpu->have_governor && cpu->have_epp &&
+        strcmp(cpu->governor, "powersave") == 0 &&
+        (strcmp(cpu->epp, "balance_performance") == 0 ||
+         strcmp(cpu->epp, "balance_power") == 0))
+        return "balanced";
+    return "standard mode (profile unclear)";
+}
 
 static void row(const char *label, const char *fmt, ...)
 {
@@ -684,23 +846,22 @@ static void status_system(void)
 {
     char buf[128] = {0};
 
-    /* Mode and GPU settings are read together from cctl's runtime record. */
+    /* Prefer live EC code from the CPU's TCC offset sysfs attribute. */
     struct mode_runtime_data mode_state;
     int have_mode_state = mode_runtime_read(&mode_state) == 0;
-    if (have_mode_state && mode_state.profile[0])
-        row("Mode*:", "%s%s%s %s(%s; self-recorded, not live)%s",
-            C_CYN, mode_state.profile, C_RST, C_DIM,
-            mode_state.method[0] ? mode_state.method : "method unknown", C_RST);
-    else
-        row("Mode*:", "%sEC default%s %s(no cctl mode state)%s",
-            C_DIM, C_RST, C_DIM, C_RST);
-
-    if (have_mode_state && mode_state.ec_profile_code >= 0)
-        row("EC Code*:", "%s%s%s (%d) %s(self-recorded, not live)%s",
-            C_CYN, gpu_profile_name(mode_state.ec_profile_code), C_RST,
-            mode_state.ec_profile_code, C_DIM, C_RST);
-    else
-        row("EC Code:", "%sstandard (3; default)%s", C_CYN, C_RST);
+    int live_tcc_offset = -1;
+    int live_ec_code = cctl_live_ec_state(&live_tcc_offset, NULL);
+    struct cpu_profile_state cpu_profile;
+    read_cpu_profile(&cpu_profile);
+    if (live_ec_code >= 0) {
+        row("Mode:", "%s%s%s",
+            C_CYN, status_inferred_mode(live_ec_code, &cpu_profile), C_RST);
+        row("EC Code:", "%s%s%s (%d; live, TCC offset %d°C)", C_CYN,
+            gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
+    } else {
+        row("Mode:", "%sunknown (live TCC offset unavailable)%s", C_DIM, C_RST);
+        row("EC Code:", "%sunknown (live TCC offset unavailable)%s", C_DIM, C_RST);
+    }
 
     char core_clock[64], mem_clock[64];
     if (have_mode_state && mode_state.core_clock_known) {
@@ -725,9 +886,6 @@ static void status_system(void)
     int turbo_val = -1;
     if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0)
         turbo_val = atoi(buf);
-
-    struct cpu_profile_state cpu_profile;
-    read_cpu_profile(&cpu_profile);
 
     row("CPU Profile:", "Turbo %s%s%s, gov: %s%s%s, epp: %s%s%s",
         turbo_val == 0 ? C_GRN : (turbo_val == 1 ? C_RED : C_DIM),
@@ -789,19 +947,19 @@ static void status_system(void)
     mux_show();
 
     /* 7. Refresh Rate (only shown if xrandr is present) */
-    struct display_info disp_info;
-    if (is_x11_xrandr_available(&disp_info))
+    struct display_info disp_info = {0};
+    int have_disp_info = is_x11_xrandr_available(&disp_info);
+    if (have_disp_info)
         row("Refresh Rate:", "%s%s Hz%s", C_CYN, disp_info.current_rate, C_RST);
 
-    if (have_mode_state && mode_state.display_scale_known) {
-        if (mode_state.display_scale_set)
-            row("Display Scale*:", "%s%s%s %s(self-recorded, not live)%s",
-                C_CYN, mode_state.display_scale, C_RST, C_DIM, C_RST);
+    if (have_disp_info && disp_info.current_resolution[0] && disp_info.resolution[0]) {
+        if (strcmp(disp_info.current_resolution, disp_info.resolution) == 0)
+            row("Display Scale:", "%snative (1x1)%s", C_CYN, C_RST);
         else
-            row("Display Scale*:", "%snative (reset)%s %s(self-recorded, not live)%s",
-                C_CYN, C_RST, C_DIM, C_RST);
+            row("Display Scale:", "%s%s%s (from xrandr)", C_CYN,
+                disp_info.current_resolution, C_RST);
     } else {
-        row("Display Scale*:", "%s-- (not recorded by cctl)%s", C_DIM, C_RST);
+        row("Display Scale:", "%sN/A (live X11 dimensions unavailable)%s", C_DIM, C_RST);
     }
 }
 

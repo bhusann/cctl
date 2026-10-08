@@ -53,6 +53,9 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Shared live TCC/EC detector from cctl_platform.inc. */
+extern int cctl_live_ec_state(int *tcc_offset, int *prochot_c);
+
 #define PI 3.14159265358979323846
 
 /* ------------------------------------------------------------------ layout */
@@ -109,6 +112,10 @@ typedef struct {
     char    governor[24], epp[40];
     int     ec_code;
     double  prochot_c;
+    bool    prochot_ok;
+    bool    throttle_status_ok, thermal_throttling, power_limit_active;
+    bool    throttle_event_recent, throttle_count_ok;
+    unsigned long long package_throttle_count;
     bool    temp_ok;  double temp_c, tjmax_c;
     bool    power_ok; double pkg_w;
     bool    pl_ok;    double pl1_w, pl2_w, tau_s;
@@ -931,17 +938,18 @@ static void draw_power(const CpuSnapshot *s, const Ui *u, double t)
     const char *st = "--"; RGB sc = C_DIM;
     if (act) {
         bool pw = s->power_ok && s->pl_ok;
-        double prochot = s->prochot_c > 0 ? s->prochot_c : (s->ec_code == 2 ? 97.0 : 87.0);
-        if (s->temp_ok && (s->temp_c >= prochot || (s->tjmax_c > 0 && s->temp_c >= s->tjmax_c - 3)))
-            { st = "\xE2\x96\xB2 PROCHOT THROTTLE"; sc = C_RED; }
-        else if (pw && s->pkg_w >= s->pl2_w * 0.95)
+        if (s->throttle_status_ok && s->thermal_throttling)
+            { st = "\xE2\x96\xB2 THERMAL THROTTLE"; sc = C_RED; }
+        else if (s->throttle_event_recent)
+            { st = "\xE2\x96\xA0 RECENT THERMAL EVENT"; sc = C_RED; }
+        else if (s->throttle_status_ok && s->power_limit_active)
+            { st = "\xE2\x96\xB2 POWER LIMIT ACTIVE"; sc = C_MAG; }
+        else if (pw && s->pkg_w >= s->pl2_w * 0.98)
             { st = "\xE2\x96\xB2 PL2 LIMIT";        sc = C_MAG; }
         else if (pw && s->pkg_w > s->pl1_w * 1.02)
             { st = "\xE2\x96\xB2 BOOST";            sc = C_AMBER; }
         else if (pw && s->pkg_w >= s->pl1_w * 0.90 && s->util_total > 60)
             { st = "\xE2\x96\xA0 PL1 LIMIT";        sc = C_AMBER; }
-        else if (s->turbo_known && !s->turbo_on && s->util_total >= 50 && (!pw || s->pkg_w < s->pl1_w * 0.90))
-            { st = "\xE2\x96\xA0 SOFT THROTTLE";    sc = C_AMBER; }
         else if (s->util_total < 10)
             { st = "\xE2\x97\x8F IDLE";             sc = C_CYAN; }
         else
@@ -1119,24 +1127,60 @@ static bool read_ull(const char *path, unsigned long long *v)
     return true;
 }
 
-static int read_ec_profile_code(void)
+static bool read_msr(int cpu, off_t msr_offset, unsigned long long *value)
 {
-    int fd = open("/run/cctl/mode", O_RDONLY | O_NOFOLLOW);
-    if (fd < 0) return 3; /* EC default of code 3 if no /run/cctl/mode */
-    FILE *f = fdopen(fd, "r");
-    if (!f) { close(fd); return 3; }
-    char line[128];
-    int code = 3;
-    /* Line 1: profile, Line 2: method, Line 3: ec_profile_code */
-    if (fgets(line, sizeof line, f) &&
-        fgets(line, sizeof line, f) &&
-        fgets(line, sizeof line, f)) {
-        char *e = NULL;
-        long x = strtol(line, &e, 10);
-        if (e != line && x >= 0 && x <= 3) code = (int)x;
+    char path[64];
+    snprintf(path, sizeof path, "/dev/cpu/%d/msr", cpu);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    unsigned long long raw;
+    ssize_t n = pread(fd, &raw, sizeof raw, msr_offset);
+    close(fd);
+    if (n != (ssize_t)sizeof raw) return false;
+    *value = raw;
+    return true;
+}
+
+static void read_throttle_status(CpuSnapshot *s)
+{
+    s->throttle_status_ok = false;
+    s->thermal_throttling = false;
+    s->power_limit_active = false;
+    s->throttle_event_recent = false;
+    s->throttle_count_ok = false;
+    s->package_throttle_count = 0;
+    unsigned long long raw = 0;
+    /* IA32_PACKAGE_THERM_STATUS: live package flags. */
+    if (read_msr(0, 0x1b1, &raw)) {
+        s->throttle_status_ok = true;
+        s->thermal_throttling = (raw & (1ULL << 0)) != 0;
+        s->power_limit_active = (raw & (1ULL << 10)) != 0;
+    } else {
+        /* Fall back to readable per-core IA32_THERM_STATUS registers. */
+        for (int cpu = 0; cpu < s->ncpu; cpu++) {
+            if (!read_msr(cpu, 0x19c, &raw)) continue;
+            s->throttle_status_ok = true;
+            s->thermal_throttling |= (raw & (1ULL << 0)) != 0;
+            s->power_limit_active |= (raw & (1ULL << 10)) != 0;
+        }
     }
-    fclose(f);
-    return code;
+
+    static unsigned long long previous_count;
+    static bool have_previous_count;
+    static double last_event_time;
+    char path[160];
+    unsigned long long count = 0;
+    snprintf(path, sizeof path,
+             "/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count");
+    if (read_ull(path, &count)) {
+        s->throttle_count_ok = true;
+        s->package_throttle_count = count;
+        double now = now_s();
+        if (have_previous_count && count > previous_count) last_event_time = now;
+        previous_count = count;
+        have_previous_count = true;
+        s->throttle_event_recent = last_event_time > 0 && now - last_event_time < 2.0;
+    }
 }
 
 #define SYSCPU "/sys/devices/system/cpu"
@@ -1413,9 +1457,16 @@ static void live_poll(CpuSnapshot *s)
     for (int c = 0; c < s->ncore; c++) { int g = s->core_group[c]; if (s->core_mhz[c] > peak[g]) peak[g] = s->core_mhz[c]; }
     for (int g = 0; g < 2; g++) s->grp_max_mhz[g] = lim[g] > peak[g] ? lim[g] : peak[g];   /* never let a bar overflow */
 
-    /* EC profile code and PROCHOT limit (default: EC code 3 -> 87°C) */
-    s->ec_code = read_ec_profile_code();
-    s->prochot_c = (s->ec_code == 2) ? 97.0 : 87.0;
+    /* Shared detector reads TCC sysfs first and falls back to the MSR. */
+    int prochot_c = -1;
+    s->ec_code = cctl_live_ec_state(NULL, &prochot_c);
+    s->prochot_c = 0;
+    s->prochot_ok = false;
+    if (s->ec_code >= 0 && prochot_c > 0) {
+        s->prochot_c = prochot_c;
+        s->prochot_ok = true;
+    }
+    read_throttle_status(s);
 
     /* temperature */
     s->temp_ok = false;
@@ -1478,7 +1529,7 @@ static void init_snapshot(CpuSnapshot *s)
     memset(s, 0, sizeof *s);
     snprintf(s->name, sizeof s->name, "CPU");
     s->ncpu = s->ncore = 1; s->grp_ncore[0] = 1; s->grp_ncpu[0] = 1;
-    s->ec_code = 3; s->prochot_c = 87.0;
+    s->ec_code = -1; s->prochot_c = 0; s->prochot_ok = false;
 }
 
 static void *poller(void *arg)
@@ -1578,8 +1629,14 @@ static void print_json_snapshot(const CpuSnapshot *s)
     fputs("{\"cpu_model\":", stdout); json_string(s->name);
     fputs(",\"cpu_usage_pct\":", stdout); json_number(s->util_total, s->valid, 1);
     fputs(",\"cpu_temp_c\":", stdout); json_number(s->temp_c, s->temp_ok, 1);
-    fputs(",\"prochot_c\":", stdout); json_number(s->prochot_c, s->valid, 0);
-    fputs(",\"ec_profile_code\":", stdout); if (s->valid) printf("%d", s->ec_code); else fputs("null", stdout);
+    fputs(",\"prochot_c\":", stdout); json_number(s->prochot_c, s->prochot_ok, 0);
+    fputs(",\"ec_profile_code\":", stdout); if (s->ec_code >= 0) printf("%d", s->ec_code); else fputs("null", stdout);
+    fputs(",\"thermal_throttling_active\":", stdout);
+    if (s->throttle_status_ok) fputs(s->thermal_throttling ? "true" : "false", stdout); else fputs("null", stdout);
+    fputs(",\"power_limit_active\":", stdout);
+    if (s->throttle_status_ok) fputs(s->power_limit_active ? "true" : "false", stdout); else fputs("null", stdout);
+    fputs(",\"package_throttle_count\":", stdout);
+    if (s->throttle_count_ok) printf("%llu", s->package_throttle_count); else fputs("null", stdout);
     fputs(",\"package_power_w\":", stdout); json_number(s->pkg_w, s->power_ok, 2);
     fputs(",\"pl1_w\":", stdout); json_number(s->pl1_w, s->pl_ok, 1);
     fputs(",\"pl2_w\":", stdout); json_number(s->pl2_w, s->pl_ok, 1);

@@ -544,7 +544,7 @@ static const struct command commands[] = {
 
     /* Fan */
     { "fan",            0, cmd_fan,             SEC_FAN,       "auto|max",                          "Set both fans (EC-controlled / full)", NULL },
-    { "fan",            0, cmd_fan,             SEC_FAN,       "silent [--nosafe]",                 "Quiet mode (forces eco profile first; bypass with --nosafe)", NULL },
+    { "fan",            0, cmd_fan,             SEC_FAN,       "silent [--nosafe]",                 "Quiet mode (forces silent/eco profile first; bypass with --nosafe)", NULL },
     { "fan",            0, cmd_fan,             SEC_FAN,       "<pct> --nosafe",                    "Set both fans to duty (25-100%)", NULL },
     { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu <pct> --nosafe",             "Set individual fan duty (25-100%)", NULL },
     { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu auto",                      "Restore individual fan to auto (independent)", NULL },
@@ -788,6 +788,13 @@ int main(int argc, char **argv)
     for (char *p = argv[1]; *p; p++)
         *p = (char)tolower((unsigned char)*p);
 
+    if (strcmp(argv[1], "monitor") == 0) {
+        fprintf(stderr,
+                "Deprecated: 'cctl monitor' has been removed. Use 'cctl cpumon' for CPU readings or 'cctl gpumon' for GPU readings.\n"
+                "            Both commands support --json.\n");
+        return 1;
+    }
+
     if (dry_run && strcmp(argv[1], "set") != 0 && strcmp(argv[1], "fan") != 0 &&
         strcmp(argv[1], "turbo") != 0 &&
         strcmp(argv[1], "gov") != 0 && strcmp(argv[1], "epp") != 0 &&
@@ -807,14 +814,6 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "--microversion") == 0) {
         printf("%d\n", CCTL_MICROVERSION);
         return 0;
-    }
-
-    /* Private helper used by the unprivileged X11 scale command to update
-     * root-owned runtime metadata after xrandr succeeds. */
-    if (strcmp(argv[1], "--cctl-record-display-scale") == 0) {
-        if (geteuid() != 0 || argc != 3)
-            return fail("Invalid internal display scale record request");
-        return mode_record_display_scale_root(strcmp(argv[2], "none") == 0 ? NULL : argv[2]);
     }
 
     /* Hidden diagnostic (like --microversion: no help, no README) —
