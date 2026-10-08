@@ -60,7 +60,7 @@ extern int cctl_live_ec_state(int *tcc_offset, int *prochot_c);
 
 /* ------------------------------------------------------------------ layout */
 #define W 118                     /* canvas size in cells */
-#define H 36
+#define H 30
 #define HIST 33                   /* usage history samples (= chart width) */
 #define PHIST 49                  /* power history samples (= power bar width) */
 #define MAX_CPU 128
@@ -75,18 +75,18 @@ extern int cctl_live_ec_state(int *tcc_offset, int *prochot_c);
 #define X_THM   0
 #define X_CPU   11
 #define W_CPU   39
-#define Y_CPU   3
-#define H_CPU   19
+#define Y_CPU   2
+#define H_CPU   17
 #define X_RAM   53
 #define W_RAM   11
-#define H_RAM   18
-#define Y_FAN   22
+#define H_RAM   16
+#define Y_FAN   19
 #define W_FAN   64
-#define H_FAN   13
+#define H_FAN   11
 #define X_R     65
 #define W_R     53
-#define Y_PW    19
-#define H_PW    16
+#define Y_PW    17
+#define H_PW    13
 
 /* ------------------------------------------------------------------- types */
 typedef struct { uint8_t r, g, b; } RGB;
@@ -499,8 +499,11 @@ static void draw_title(const CpuSnapshot *s, double t)
 
     int off = 0;
     if (s->valid) {
-        char b[80];
-        snprintf(b, sizeof b, "%s \xC2\xB7 %s", s->governor[0] ? s->governor : "?", s->epp[0] ? s->epp : "-");
+        char b[128], ec[16];
+        if (s->ec_code >= 0) snprintf(ec, sizeof ec, "%d", s->ec_code);
+        else                snprintf(ec, sizeof ec, "--");
+        snprintf(b, sizeof b, "%s \xC2\xB7 %s \xC2\xB7 EC code %s",
+                 s->governor[0] ? s->governor : "?", s->epp[0] ? s->epp : "-", ec);
         off = text_r(W - 1, 0, C_DIM, 0, "%s", b) + 3;
         if (s->turbo_known) {
             double pl = 0.6 + 0.4 * sin(t * 4.0);
@@ -514,7 +517,7 @@ static void draw_title(const CpuSnapshot *s, double t)
 /* ------------------------------------------------------------- thermometer */
 static void draw_thermo(const CpuSnapshot *s, const Ui *u, double t)
 {
-    const int x0 = X_THM, TOP = 5, BOT = 18, N = BOT - TOP + 1;
+    const int x0 = X_THM, TOP = Y_CPU + 2, BOT = Y_CPU + 13, N = BOT - TOP + 1;
     bool ok = s->valid && s->temp_ok;
     RGB base = grad(G_TEMP, NSTOP(G_TEMP), u->f_temp);
     RGB sh[3] = { mix(base, C_WHITE, 0.30), base, mix(base, RGBc(0, 0, 0), 0.30) };
@@ -616,22 +619,19 @@ static void draw_cpu(const CpuSnapshot *s, const Ui *u, double t)
     }
     put(x0, y0, 0x25E4, C_GOLD, 1);                              /* pin-1 marker */
 
-    /* name + rule */
-    text_c(cx, by + 1, C_TEXT, 1, "%.33s", s->name);
-    for (int x = bx + 2; x < bx + bw - 2; x++) put(x, by + 2, 0x2500, grad(G_TITLE, NSTOP(G_TITLE), (double)(x - bx) / bw), 0);
-    text_c(cx, by + 3, C_LABEL, 0, "\xE2\x96\xAA  C P U   U S A G E  \xE2\x96\xAA");
+    text_c(cx, by + 1, C_LABEL, 0, "\xE2\x96\xAA  C P U   U S A G E  \xE2\x96\xAA");
 
     /* big usage number */
     char b[32];
     if (act) snprintf(b, sizeof b, "%d%%", (int)lround(clampd(u->util_disp, 0, 100)));
     else     snprintf(b, sizeof b, "--");
-    draw_big(cx - big_width(b) / 2, by + 4, b, G_LOAD, NSTOP(G_LOAD), u->f_util, t);
+    draw_big(cx - big_width(b) / 2, by + 2, b, G_LOAD, NSTOP(G_LOAD), u->f_util, t);
 
     /* info line */
     double avg = 0; int na = 0;
     for (int c = 0; c < s->ncore; c++) if (s->core_mhz[c] > 0) { avg += s->core_mhz[c]; na++; }
-    if (act && na) text_c(cx, by + 9, C_LABEL, 0, "%dC / %dT  \xC2\xB7  avg %.2f GHz", s->ncore, s->ncpu, avg / na / 1000.0);
-    else           text_c(cx, by + 9, C_DIM, 0, "-- / -- \xC2\xB7 avg --");
+    if (act && na) text_c(cx, by + 7, C_LABEL, 0, "%dC / %dT  \xC2\xB7  avg %.2f GHz", s->ncore, s->ncpu, avg / na / 1000.0);
+    else           text_c(cx, by + 7, C_DIM, 0, "-- / -- \xC2\xB7 avg --");
 
     /* usage history, 3 rows tall (24 levels) */
     int hx = cx - HIST / 2;
@@ -640,7 +640,7 @@ static void draw_cpu(const CpuSnapshot *s, const Ui *u, double t)
         RGB col = grad(G_LOAD, NSTOP(G_LOAD), v);
         double lvl = v * 24.0;
         for (int k = 0; k < 3; k++) {
-            int row = by + 12 - k;
+            int row = by + 10 - k;
             int e = (int)lround(clampd(lvl - k * 8, 0, 8));
             if (e <= 0) { if (k == 0) put(hx + i, row, 0x2581, C_DIM, 0); continue; }
             put(hx + i, row, (uint32_t)(0x2580 + e), mix(col, RGBc(40, 50, 70), 0.30 * (2 - k) / 2.0), 0);
@@ -653,7 +653,7 @@ static void draw_cpu(const CpuSnapshot *s, const Ui *u, double t)
     bool sep = n0 > 0 && n1 > 0;
     int total = s->ncpu + (sep ? 1 : 0), maxc = bw - 2;
     int cols = total < maxc ? total : maxc;
-    int ex = cx - cols / 2, ey = by + 15;
+    int ex = cx - cols / 2, ey = by + 11;
     int p0w = 0, p1w = 0;
     for (int c = 0; c < cols; c++) {
         double v; int g;
@@ -700,7 +700,7 @@ static void draw_ram(const CpuSnapshot *s, const Ui *u, double t)
     text_c(x0 + w / 2, y0 + 2, C_DIM, 0, "%s", b);
 
     /* vertical usage bar fills the remaining module area */
-    const int bh = 14, ybot = y0 + 3 + bh - 1, fx = x0 + 1;
+    const int bh = 12, ybot = y0 + 3 + bh - 1, fx = x0 + 1;
     double lvl = clamp01(u->f_ram) * bh * 8;
     for (int k = 0; k < bh; k++) {
         int row = ybot - k;
@@ -725,7 +725,7 @@ static void draw_ram(const CpuSnapshot *s, const Ui *u, double t)
 /* memory bus between package and RAM */
 static void draw_bus(const Ui *u)
 {
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 6; i++) {
         int y = Y_CPU + 3 + i * 2;
         int dir = (i & 1) ? -1 : 1;
         RGB c = (i & 1) ? C_MAG : C_CYAN;
@@ -762,25 +762,25 @@ static void draw_fan_panel(const CpuSnapshot *s, const Ui *u, double t)
     int x0 = 0, y0 = Y_FAN;
     module(x0, y0, W_FAN, H_FAN, "CPU FAN", C_FRAME);
 
-    draw_fan(x0 + 12, y0 + 6, 10, 5, u->fan_phase, stopped, t, clamp01(u->f_rpm * 1.3));
+    draw_fan(x0 + 12, y0 + 5, 8, 4, u->fan_phase, stopped, t, clamp01(u->f_rpm * 1.3));
 
     int mx = x0 + 34;
-    text_c(mx, y0 + 2, C_LABEL, 0, "FAN DUTY");
+    text_c(mx, y0 + 1, C_LABEL, 0, "FAN DUTY");
     if (act) snprintf(b, sizeof b, "%.0f %%", s->fan_duty_pct); else snprintf(b, sizeof b, "-- %%");
-    text_c(mx, y0 + 3, C_TEXT, 1, "%s", b);
-    hbar(mx - 7, y0 + 4, 14, u->f_duty, G_DUTY, NSTOP(G_DUTY));
-    text_c(mx, y0 + 6, C_LABEL, 0, "SPEED");
+    text_c(mx, y0 + 2, C_TEXT, 1, "%s", b);
+    hbar(mx - 7, y0 + 3, 14, u->f_duty, G_DUTY, NSTOP(G_DUTY));
+    text_c(mx, y0 + 5, C_LABEL, 0, "SPEED");
     if (act) snprintf(b, sizeof b, "%.0f", s->fan_rpm); else snprintf(b, sizeof b, "--");
-    text_c(mx, y0 + 7, C_TEXT, 1, "%s RPM", b);
-    hbar(mx - 7, y0 + 8, 14, u->f_rpm, G_LOAD, NSTOP(G_LOAD));
-    if (!act)         text_c(mx, y0 + 10, C_DIM, 0, "\xE2\x96\xA0 NO DATA");
-    else if (stopped) text_c(mx, y0 + 10, C_AMBER, 1, "\xE2\x96\xA0 STOP");
-    else              text_c(mx, y0 + 10, C_GREEN, 1, "\xE2\x97\x8F SPIN");
+    text_c(mx, y0 + 6, C_TEXT, 1, "%s RPM", b);
+    hbar(mx - 7, y0 + 7, 14, u->f_rpm, G_LOAD, NSTOP(G_LOAD));
+    if (!act)         text_c(mx, y0 + 9, C_DIM, 0, "\xE2\x96\xA0 NO DATA");
+    else if (stopped) text_c(mx, y0 + 9, C_AMBER, 1, "\xE2\x96\xA0 STOP");
+    else              text_c(mx, y0 + 9, C_GREEN, 1, "\xE2\x97\x8F SPIN");
 
     /* heatsink fins + airflow that warms as it passes through */
     text_l(x0 + 45, y0 + 1, C_DIM, 0, "AIRFLOW \xE2\x96\xB8");
     RGB hot = grad(G_TEMP, NSTOP(G_TEMP), clamp01(u->f_temp * 0.8 + 0.2));
-    for (int ri = 0; ri < 5; ri++) {
+    for (int ri = 0; ri < 4; ri++) {
         int y = y0 + 2 + ri * 2;
         for (int x = x0 + 45; x <= x0 + 61; x++) {
             bool fin = x >= x0 + 51 && x <= x0 + 57 && ((x - x0) % 2 == 1);
@@ -793,9 +793,9 @@ static void draw_fan_panel(const CpuSnapshot *s, const Ui *u, double t)
             else if (q < 2.0) put(x, y, 0x00B7, c, 0);
         }
     }
-    for (int y = y0 + 2; y <= y0 + 10; y++)
+    for (int y = y0 + 2; y <= y0 + 8; y++)
         for (int x = x0 + 51; x <= x0 + 57; x += 2) {
-            double k = (y - y0 - 2) / 8.0;
+            double k = (y - y0 - 2) / 6.0;
             RGB c = mix(mix(RGBc(120, 130, 150), RGBc(210, 215, 225), k), hot, 0.45 * u->f_temp + 0.1);
             put(x, y, 0x2588, c, 0);
         }
@@ -823,7 +823,7 @@ static void draw_group(const CpuSnapshot *s, const Ui *u, int y, int rows, int g
         title = show_threads ? "THREADS" : "CORES";
     }
     char lc = s->hybrid ? (g ? 'E' : 'P') : 'C';
-    int x = X_R, h = rows + 3;
+    int x = X_R, h = rows + 2;
     bool act = s->valid;
 
     module(x, y, W_R, h, title, grad(gr, 5, 0.45));
@@ -881,15 +881,18 @@ static void draw_group(const CpuSnapshot *s, const Ui *u, int y, int rows, int g
     for (int k = 0; k < n; k++) if (items[k].mhz > 0) { avg += items[k].mhz; navg++; }
     if (navg) avg /= navg;
 
-    /* header: current ceiling (flashes when it changes) */
-    text_l(x + 2, y + 1, C_LABEL, 0, "MAX");
-    if (act && mx > 0) text_l(x + 6, y + 1, mix(C_CYAN, C_WHITE, u->flash[g]), 1, "%.0f MHz", mx);
-    else               text_l(x + 6, y + 1, C_DIM, 0, "--");
-    text_l(x + 20, y + 1, C_LABEL, 0, "AVG");
-    if (act && navg > 0) text_l(x + 24, y + 1, C_TEXT, 1, "%.0f MHz", avg); else text_l(x + 24, y + 1, C_DIM, 0, "--");
+    /* Header shares the module's top border. */
+    int hx = x + 14;
+    hx += text_l(hx, y, C_LABEL, 0, " MAX ");
+    if (act && mx > 0) hx += text_l(hx, y, mix(C_CYAN, C_WHITE, u->flash[g]), 1, "%.0f", mx);
+    else               hx += text_l(hx, y, C_DIM, 0, "--");
+    hx += text_l(hx, y, C_LABEL, 0, "  AVG ");
+    if (act && navg > 0) hx += text_l(hx, y, C_TEXT, 1, "%.0f", avg);
+    else                 hx += text_l(hx, y, C_DIM, 0, "--");
+    text_l(hx, y, C_LABEL, 0, " MHz ");
     if (act && s->turbo_known) {
-        if (s->turbo_on) text_r(x + W_R - 3, y + 1, C_AMBER, 1, "\xE2\x96\xB2 TURBO");
-        else             text_r(x + W_R - 3, y + 1, C_LABEL, 0, "\xE2\x96\xBC NO TURBO");
+        if (s->turbo_on) text_r(x + W_R - 3, y, C_AMBER, 1, " \xE2\x96\xB2 TURBO ");
+        else             text_r(x + W_R - 3, y, C_LABEL, 0, " \xE2\x96\xBC NO TURBO ");
     }
 
     int shown = rows * 2;
@@ -897,7 +900,7 @@ static void draw_group(const CpuSnapshot *s, const Ui *u, int y, int rows, int g
         int k = c * rows + r;
         if (k >= n || k >= shown) continue;
         const CoreItem *it = &items[k];
-        int cx = x + 2 + c * 26, cy = y + 2 + r;
+        int cx = x + 2 + c * 26, cy = y + 1 + r;
         double f = it->f;
         text_l(cx, cy, mix(C_DIM, grad(gr, 5, 0.6), clamp01(f * 1.2)), 1, "%-3s", it->lbl);
         hbar(cx + 4, cy, 14, f, gr, 5);
@@ -909,12 +912,12 @@ static void draw_group(const CpuSnapshot *s, const Ui *u, int y, int rows, int g
 }
 
 /* ------------------------------------------------------------------- power */
-static void draw_power(const CpuSnapshot *s, const Ui *u, double t)
+static void draw_power(const CpuSnapshot *s, const Ui *u, double t, int y, int h)
 {
-    int x = X_R, y = Y_PW;
+    int x = X_R;
     bool act = s->valid && s->power_ok;
     char b[48];
-    module(x, y, W_R, H_PW, "POWER DELIVERY", C_FRAME);
+    module(x, y, W_R, h, "POWER DELIVERY", C_FRAME);
 
     text_l(x + 2, y + 1, C_LABEL, 0, "PACKAGE POWER");
     if (act) snprintf(b, sizeof b, "%d", (int)lround(clampd(u->pow_disp, 0, 999))); else snprintf(b, sizeof b, "--");
@@ -973,31 +976,37 @@ static void draw_power(const CpuSnapshot *s, const Ui *u, double t)
         put(bx + p1, y + 8, 0x2502, C_CYAN, 1);
         put(bx + p2, y + 8, 0x2502, C_MAG, 1);
     }
-    text_l(bx, y + 9, C_DIM, 0, "0 W");
-    text_r(bx + bw - 1, y + 9, C_DIM, 0, "%.0f W", sc_w);
+    /* spare rows -> scale text comes back, wires move down one */
+    int wy = y + 9;
+    if (h >= 16) {
+        text_l(bx, y + 9, C_DIM, 0, "0 W");
+        text_r(bx + bw - 1, y + 9, C_DIM, 0, "%.0f W", sc_w);
+        wy = y + 10;
+    }
 
     /* VRM -> package wires; pulses flow faster with draw */
     static const RGB wc[3] = {{235,190,40},{120,124,136},{235,190,40}};
-    text_l(bx, y + 11, C_AMBER, 1, "VRM");
+    text_l(bx, wy + 1, C_AMBER, 1, "VRM");
     for (int r = 0; r < 3; r++) {
         for (int xx = bx + 5; xx <= bx + bw - 7; xx++) {
-            if (!act) { put(xx, y + 10 + r, 0x2500, wc[r], 0); continue; }
+            if (!act) { put(xx, wy + r, 0x2500, wc[r], 0); continue; }
             double q = fmod(r == 1 ? xx + u->wire_phase : xx - u->wire_phase, 8.0);
             if (q < 0) q += 8.0;
-            if (q < 1.0)      put(xx, y + 10 + r, 0x25CF, mix(wc[r], C_WHITE, 0.7), 1);
-            else if (q < 2.0) put(xx, y + 10 + r, 0x2501, mix(wc[r], C_WHITE, 0.35), 0);
-            else              put(xx, y + 10 + r, 0x2501, wc[r], 0);
+            if (q < 1.0)      put(xx, wy + r, 0x25CF, mix(wc[r], C_WHITE, 0.7), 1);
+            else if (q < 2.0) put(xx, wy + r, 0x2501, mix(wc[r], C_WHITE, 0.35), 0);
+            else              put(xx, wy + r, 0x2501, wc[r], 0);
         }
     }
-    text_r(bx + bw - 1, y + 11, C_CYAN, 1, "\xE2\x96\xB6 CPU");
+    text_r(bx + bw - 1, wy + 1, C_CYAN, 1, "\xE2\x96\xB6 CPU");
 
-    /* power history, 2 rows tall */
-    for (int i = 0; i < PHIST; i++) {
+    /* power history in whatever rows are left under the wires (0 to 4 rows) */
+    int hr = h - 13 - (h >= 16 ? 1 : 0); if (hr > 4) hr = 4;
+    for (int i = 0; i < PHIST && hr > 0; i++) {
         double v = u->phist[i];
         RGB col = grad(G_POW, NSTOP(G_POW), v / 0.87);
-        double lvl = v * 16.0;
-        for (int k = 0; k < 2; k++) {
-            int row = y + 14 - k;
+        double lvl = v * 8.0 * hr;
+        for (int k = 0; k < hr; k++) {
+            int row = y + h - 2 - k;
             int e = (int)lround(clampd(lvl - k * 8, 0, 8));
             if (e <= 0) { if (k == 0) put(bx + i, row, 0x2581, C_DIM, 0); continue; }
             put(bx + i, row, (uint32_t)(0x2580 + e), col, 0);
@@ -1021,23 +1030,29 @@ static void render(const CpuSnapshot *s, const Ui *u, double t)
     bool show_threads = atomic_load(&g_show_threads) != 0;
     int n0 = show_threads ? s->grp_ncpu[0] : s->grp_ncore[0];
     int n1 = show_threads ? s->grp_ncpu[1] : s->grp_ncore[1];
+    int gend;
     if (n0 > 0 && n1 > 0) {
-        int r0 = (n0 + 1) / 2, r1 = (n1 + 1) / 2, avail = (Y_PW - Y_CPU) - 6;
-        if (r0 + r1 > avail) { r0 = (int)fmax(1, avail * r0 / (double)(r0 + r1)); r1 = avail - r0; }
+        int r0 = (n0 + 1) / 2, r1 = (n1 + 1) / 2, avail = (Y_PW - Y_CPU) - 4;
+        if (r0 + r1 > avail) { r0 = (int)lround(fmax(1, avail * r0 / (double)(r0 + r1))); r1 = avail - r0; }
         draw_group(s, u, Y_CPU, r0, 0, show_threads, t);
-        draw_group(s, u, Y_CPU + r0 + 3, r1, 1, show_threads, t);
+        draw_group(s, u, Y_CPU + r0 + 2, r1, 1, show_threads, t);
+        gend = Y_CPU + r0 + r1 + 4;
     } else {
-        int r = (n0 + n1 + 1) / 2, avail = (Y_PW - Y_CPU) - 3;
+        int r = (n0 + n1 + 1) / 2, avail = (Y_PW - Y_CPU) - 2;
         if (r > avail) r = avail;
         if (r < 1) r = 1;
         draw_group(s, u, Y_CPU, r, n0 > 0 ? 0 : 1, show_threads, t);
+        gend = Y_CPU + r + 2;
     }
-    draw_power(s, u, t);
+    int ph = H - gend;                          /* power panel takes every spare row, 13..18 */
+    if (ph > 18) ph = 18;
+    if (ph < H_PW) ph = H_PW;
+    draw_power(s, u, t, H - ph, ph);
 
-    text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 t toggle %s \xC2\xB7 poll %.1fs%s",
-           show_threads ? "cores" : "threads",
-           g_cfg.interval,
-           (s->valid && !s->power_ok) ? " \xC2\xB7 package watts need root (RAPL energy_uj)" : "");
+    text_l(3, Y_FAN + H_FAN - 1, C_DIM, 0, " q quit \xC2\xB7 t toggle %s \xC2\xB7 poll %.1fs ",
+           show_threads ? "cores" : "threads", g_cfg.interval);
+    if (s->valid && !s->power_ok)
+        text_r(X_R + W_R - 3, H - 1, C_AMBER, 0, " watts need root (RAPL) ");
 }
 
 /* ----------------------------------------------------------- frame emission */
