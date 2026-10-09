@@ -70,6 +70,14 @@ cctl status                # view all current settings
 
 ![cctl status](docs/screenshots/status.png)
 
+**`cctl cpumon` — live CPU, memory, fan, and power readings**
+
+![cctl CPU monitor](docs/screenshots/cpumon.png)
+
+**`cctl gpumon` — live NVIDIA GPU readings**
+
+![cctl GPU monitor](docs/screenshots/gpumon.png)
+
 **`cctl kbe` — keyboard backlight effects**
 
 ![cctl keyboard effects](docs/screenshots/kbe-effects.png)
@@ -98,7 +106,7 @@ silent/eco  0               OFF    powersave    power              15/30W  + GPU
 ```
 
 > [!CAUTION]
-> Silent mode and manual fan duty may keep fans quiet or fixed regardless of
+> Silent fan mode and manual fan duty may keep fans quiet or fixed regardless of
 > CPU temperature, even under heavy load. To protect the hardware, applying EC
 > profile code `2` or `3`, or enabling Turbo while EC code `2` or `3` is
 > active, sets fans to **AUTO** by default.
@@ -250,52 +258,7 @@ the cctl binary.
 
 ### Manual Uninstallation
 
-Same order — unload and remove the drivers first, then the cctl binary itself.
-
-Run the mirror's script directly (works without cctl):
-
-```bash
-git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
-sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --uninstall
-```
-
-Or do it step by step:
-
-1. **Unload active kernel modules** (in reverse dependency order):
-   ```bash
-   sudo modprobe -r clevo_acpi
-   sudo modprobe -r tuxedo_io
-   sudo modprobe -r tuxedo_keyboard
-   ```
-
-2. **Unregister and remove DKMS module**:
-   ```bash
-   sudo dkms remove tuxedo-drivers/1.0 --all
-   sudo rm -rf /var/lib/dkms/tuxedo-drivers
-   ```
-
-3. **Remove driver source files and modprobe options**:
-   ```bash
-   sudo rm -rf /usr/src/tuxedo-drivers-1.0
-   sudo rm -f /etc/modprobe.d/tuxedo_keyboard.conf
-   ```
-
-4. **Update module dependency cache**:
-   ```bash
-   sudo depmod -a
-   ```
-
-5. **cctl binary & sudoers**:
-   ```bash
-   # Remove installed binary
-   sudo rm -f /usr/local/bin/cctl
-
-   # Remove passwordless sudo rule (+ backup)
-   sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak
-
-   # Optional: remove the persistent driver cache
-   sudo rm -rf /var/lib/cctl
-   ```
+For manual driver and cctl cleanup, follow the [manual uninstallation guide](manual_uninstall.md).
 
 ---
 
