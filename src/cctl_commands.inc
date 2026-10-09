@@ -132,29 +132,58 @@ static int cmd_options(int argc, char **argv)
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
         printf("%sCCTL-specific settings:%s\n", C_YLW, C_RST);
-        printf("  streamtext  %s  Character/line streamed terminal output\n",
-               settings.streamtext_enabled ? "on " : "off");
+        printf("  streamtext  %-6s  Character/line streamed terminal output\n",
+               settings.streamtext_enabled ? "on" : "off");
+        printf("  default     %-6s  Action on bare 'cctl' (help, status)\n",
+               settings.default_is_status ? "status" : "help");
         printf("\nUsage: cctl options streamtext <on|off>\n");
+        printf("       cctl options default <help|status>\n");
         g_stream_mode = prev_mode;
         g_stream_line = prev_line;
         return 0;
     }
 
-    if (argc != 4 || strcmp(argv[2], "streamtext") != 0 ||
-        (strcmp(argv[3], "on") != 0 && strcmp(argv[3], "off") != 0))
-        return fail("Usage: cctl options streamtext <on|off>");
+    const char *opt_name = NULL;
+    const char *opt_val = NULL;
+    if (argc == 4) {
+        opt_name = argv[2];
+        opt_val = argv[3];
+    } else if (argc == 3 && (strcmp(argv[2], "status") == 0 || strcmp(argv[2], "help") == 0)) {
+        opt_name = "default";
+        opt_val = argv[2];
+    } else {
+        return fail("Usage: cctl options streamtext <on|off>\n       cctl options default <help|status>");
+    }
 
     require_root(argc, argv);
 
     struct cctl_settings settings;
     (void)cctl_settings_read(&settings);
-    settings.streamtext_enabled = strcmp(argv[3], "on") == 0;
-    if (cctl_settings_write(&settings) != 0)
-        return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
 
-    g_stream_text_enabled = settings.streamtext_enabled;
-    printf("Text streaming %s.\n", settings.streamtext_enabled ? "enabled" : "disabled");
-    return 0;
+    if (strcmp(opt_name, "streamtext") == 0) {
+        if (strcmp(opt_val, "on") != 0 && strcmp(opt_val, "off") != 0)
+            return fail("Usage: cctl options streamtext <on|off>");
+        settings.streamtext_enabled = (strcmp(opt_val, "on") == 0);
+        if (cctl_settings_write(&settings) != 0)
+            return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
+        g_stream_text_enabled = settings.streamtext_enabled;
+        printf("Text streaming %s.\n", settings.streamtext_enabled ? "enabled" : "disabled");
+        return 0;
+    }
+
+    if (strcmp(opt_name, "default") == 0 || strcmp(opt_name, "default_action") == 0 ||
+        strcmp(opt_name, "default_cmd") == 0 || strcmp(opt_name, "action") == 0) {
+        if (strcmp(opt_val, "help") != 0 && strcmp(opt_val, "status") != 0)
+            return fail("Usage: cctl options default <help|status>");
+        settings.default_is_status = (strcmp(opt_val, "status") == 0);
+        if (cctl_settings_write(&settings) != 0)
+            return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
+        printf("Default action on bare 'cctl' set to %s.\n",
+               settings.default_is_status ? "status" : "help");
+        return 0;
+    }
+
+    return fail("Unknown setting '%s'. Available: streamtext, default", opt_name);
 }
 
 static int cmd_mic(int argc, char **argv)
@@ -892,7 +921,12 @@ static int cmd_bat(int argc, char **argv)
             return 1;
         }
         printf("%sCurrent Thresholds:%s\n", C_YLW, C_RST);
-        printf("  %sCharge thresholds:%s      start %d%% → stop %d%%\n", C_CYN, C_RST, start, end);
+        if (strcasecmp(charge_type, "Standard") == 0) {
+            printf("  %sCharge thresholds:%s      start %d%% → stop %d%% %s(disabled)%s\n",
+                   C_CYN, C_RST, start, end, C_RED, C_RST);
+        } else {
+            printf("  %sCharge thresholds:%s      start %d%% → stop %d%%\n", C_CYN, C_RST, start, end);
+        }
 
         /* Show available values */
         int avail[16], cnt;

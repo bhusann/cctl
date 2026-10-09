@@ -190,6 +190,7 @@ Command names:
 - Display: `rr`, `scale`
 - CPU controls: `turbo`, `gov`, `epp`, `rapl`
 - Snapshots: `snap` (alias `snapshot`), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del`
+- Application settings: `options`
 - Help: `--help`
 
 Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).

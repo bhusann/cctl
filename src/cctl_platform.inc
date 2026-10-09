@@ -919,7 +919,7 @@ static void status_system(void)
     else
         row("CPU Max Freq:", "%sN/A%s", C_DIM, C_RST);
 
-    row("GPU Clocks*:", "Core %s, memory %s %s(self-recorded, not live)%s",
+    row("GPU Clocks:", "Core %s, memory %s %s(self-recorded, not live)**%s",
         core_clock, mem_clock, C_DIM, C_RST);
 
     /* 5. dGPU Power State */
@@ -946,20 +946,21 @@ static void status_system(void)
     /* 6. GPU MUX */
     mux_show();
 
-    /* 7. Refresh Rate (only shown if xrandr is present) */
+    /* 7. Refresh Rate & Display Scale (only shown if xrandr is present) */
     struct display_info disp_info = {0};
     int have_disp_info = is_x11_xrandr_available(&disp_info);
-    if (have_disp_info)
+    if (have_disp_info) {
         row("Refresh Rate:", "%s%s Hz%s", C_CYN, disp_info.current_rate, C_RST);
 
-    if (have_disp_info && disp_info.current_resolution[0] && disp_info.resolution[0]) {
-        if (strcmp(disp_info.current_resolution, disp_info.resolution) == 0)
-            row("Display Scale:", "%snative (1x1)%s", C_CYN, C_RST);
-        else
-            row("Display Scale:", "%s%s%s (from xrandr)", C_CYN,
-                disp_info.current_resolution, C_RST);
-    } else {
-        row("Display Scale:", "%sN/A (live X11 dimensions unavailable)%s", C_DIM, C_RST);
+        if (disp_info.current_resolution[0] && disp_info.resolution[0]) {
+            if (strcmp(disp_info.current_resolution, disp_info.resolution) == 0)
+                row("Display Scale:", "%snative (1x1)%s", C_CYN, C_RST);
+            else
+                row("Display Scale:", "%s%s%s (from xrandr)", C_CYN,
+                    disp_info.current_resolution, C_RST);
+        } else {
+            row("Display Scale:", "%sN/A (live X11 dimensions unavailable)%s", C_DIM, C_RST);
+        }
     }
 }
 
@@ -1057,14 +1058,28 @@ static void status_battery(void)
     long volt     = bat_read_long("voltage_now", -1);
     int bat_start = bat_read_start();
     int bat_end   = bat_read_end();
+    char charge_type[32] = {0};
+    int have_charge_type = (bat_read_charge_type(charge_type, sizeof(charge_type)) >= 0 && charge_type[0]);
+    int is_standard = (have_charge_type && strcasecmp(charge_type, "Standard") == 0);
 
     if (cap < 0) {
         row("Battery:", "%sN/A (no battery)%s", C_DIM, C_RST);
     } else {
-        if (bat_start > 0 && bat_end > 0)
-            row("Battery:", "%ld%% %s  [threshold: %d%%→%d%%]", cap, bat_status, bat_start, bat_end);
-        else
-            row("Battery:", "%ld%% %s", cap, bat_status);
+        const char *tcol = is_standard ? C_RED : "";
+        const char *trst = is_standard ? C_RST : "";
+        if (bat_start > 0 && bat_end > 0) {
+            if (have_charge_type)
+                row("Battery:", "%ld%% %s (%s) %s[threshold: %d%%→%d%%]%s",
+                    cap, bat_status, charge_type, tcol, bat_start, bat_end, trst);
+            else
+                row("Battery:", "%ld%% %s  [threshold: %d%%→%d%%]",
+                    cap, bat_status, bat_start, bat_end);
+        } else {
+            if (have_charge_type)
+                row("Battery:", "%ld%% %s (%s)", cap, bat_status, charge_type);
+            else
+                row("Battery:", "%ld%% %s", cap, bat_status);
+        }
     }
 
     if (full > 0 && full_dsn > 0) {
@@ -1099,7 +1114,7 @@ static void show_status(void)
     status_battery();
     if (json_output) puts("}");
     else {
-        printf("\n%s* cctl records only changes made through cctl; these saved values may not reflect current hardware state.%s\n\n",
+        printf("\n%s** NVIDIA GPU clocks are not read live; cctl records only changes made through cctl, so these saved values may not reflect current hardware state.%s\n\n",
                C_DIM, C_RST);
     }
 }

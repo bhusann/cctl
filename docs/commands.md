@@ -122,3 +122,15 @@ cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 ```
 >
 > **RAPL limits:** PL2 ≤ 115 W always. PL1 ≤ 45 W normally, up to **90 W while EC profile code 2 is active**.
+
+### Application Settings (Options)
+Application settings persist across reboots in `/var/lib/cctl/settings`:
+
+```bash
+cctl options                            # Show current cctl settings
+cctl options streamtext <on|off>        # Enable or disable character/line-streamed terminal output
+cctl options default <help|status>      # Action when running bare 'cctl' without arguments (default: help)
+```
+
+- **`streamtext`**: When `on`, cctl animates terminal text with character- or line-by-line streaming. Set to `off` for instantaneous plain output.
+- **`default`**: By default (`help`), typing bare `cctl` prints the full help menu. Setting this to `status` makes typing bare `cctl` execute `cctl status` directly. The full help menu can always still be accessed via `cctl --help` or `cctl help`.

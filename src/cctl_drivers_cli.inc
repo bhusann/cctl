@@ -787,8 +787,19 @@ int main(int argc, char **argv)
     atexit(ec_release_ports);
 
     if (argc < 2) {
+        if (settings.default_is_status) {
+            char *status_argv[] = { argv[0], "status", NULL };
+            require_root(2, status_argv);
+            return cmd_status(2, status_argv);
+        }
         print_usage(argv[0]);
         return 1;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "--json") == 0 && settings.default_is_status) {
+        char *status_argv[] = { argv[0], "status", "--json", NULL };
+        require_root(3, status_argv);
+        return cmd_status(3, status_argv);
     }
 
     /* Normalize the command verb to lowercase. */
@@ -808,7 +819,7 @@ int main(int argc, char **argv)
         strcmp(argv[1], "rapl") != 0 && strcmp(argv[1], "bat") != 0)
         return fail("--dry-run is supported for set, fan, turbo, gov, epp, rapl, and bat");
 
-    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "help") == 0) {
         print_usage(argv[0]);
         return 0;
     }
