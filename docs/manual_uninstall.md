@@ -40,18 +40,19 @@ sudo depmod -a
 
 ## Remove cctl
 
-Remove the installed binary, sudo rule and its backup or temporary file, and
-your optional custom profile:
+Remove the installed binary, sudo rule and its backup or temporary file, your
+optional custom profile, and cctl's saved settings:
 
 ```bash
 sudo rm -f /usr/local/bin/cctl
 sudo rm -f /etc/sudoers.d/cctl /etc/sudoers.d/cctl.bak /etc/sudoers.d/.cctl.tmp
-sudo rm -f /etc/cctl/profiles.conf
-sudo rmdir /etc/cctl
+sudo rm -f /var/lib/cctl/profiles.conf /var/lib/cctl/settings
+sudo rm -f /etc/cctl/profiles.conf   # only if left from an older cctl version
+sudo rmdir /etc/cctl                 # removes it only if empty
 ```
 
-The `rmdir` only removes `/etc/cctl` if it is empty, leaving any other files in
-that folder untouched.
+The settings file stores cctl-specific preferences such as streamed terminal
+output. These commands leave snapshots and the cached driver archive in place.
 
 Optionally remove cctl's persistent data:
 

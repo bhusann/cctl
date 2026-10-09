@@ -593,7 +593,8 @@ static const struct command commands[] = {
     { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force]",                       "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
     { "uninstall",      1, cmd_uninstall,       SEC_SYSTEM,    "",                                "Remove cctl, its profiles, sudo rule, and saved data", is_installed_systemwide },
     { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (auto-fetch or offline; sha256-verified)", NULL },
-    { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [number] [--mask fields]", "Save, restore, view, delete, or list snapshots", NULL },
+    { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [name] [--mask fields]", "Save, restore, view, or delete snapshots (alias: snap)", NULL },
+    { "options",        0, cmd_options,          SEC_SYSTEM,    "[setting [value]]",               "Show or change cctl-specific settings", NULL },
 };
 
 struct section_def {
@@ -747,7 +748,8 @@ int main(int argc, char **argv)
 {
     /* Snapshot restore handles --dry-run itself so it can retain the flag
      * across sudo re-execution while reading the root-only snapshot file. */
-    int snapshot_command = argc >= 2 && strcasecmp(argv[1], "snapshot") == 0;
+    int snapshot_command = argc >= 2 &&
+        (strcasecmp(argv[1], "snapshot") == 0 || strcasecmp(argv[1], "snap") == 0);
     if (!snapshot_command) {
         for (int i = 2; i < argc; ) {
             if (strcmp(argv[i], "--dry-run") == 0) {
@@ -769,6 +771,11 @@ int main(int argc, char **argv)
     }
     use_color = isatty(STDOUT_FILENO) && !json_output;
     init_colors();
+
+    /* User-facing cctl output preference persists across reboots. */
+    struct cctl_settings settings;
+    if (cctl_settings_read(&settings) == 0)
+        g_stream_text_enabled = settings.streamtext_enabled;
 
     /* Root runs get a pinned PATH: helper tools invoked later (amixer, tar,
      * sha256sum, chattr, install, ...) must resolve to the real system
@@ -827,7 +834,8 @@ int main(int argc, char **argv)
     int rc = 0;
     size_t num_cmds = sizeof(commands) / sizeof(commands[0]);
     for (size_t i = 0; i < num_cmds; i++) {
-        if (strcmp(commands[i].name, argv[1]) == 0) {
+        const char *dispatch_name = strcmp(argv[1], "snap") == 0 ? "snapshot" : argv[1];
+        if (strcmp(commands[i].name, dispatch_name) == 0) {
             cmd_found = 1;
             if (commands[i].needs_root && !dry_run)
                 require_root(argc, argv);

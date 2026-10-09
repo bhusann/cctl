@@ -63,20 +63,22 @@ cctl --version                  # Print version and exit (also -V)
 
 ### Snapshots
 ```bash
-cctl snapshot list               # List saved snapshot numbers on one line
-cctl snapshot save <number> [--mask fields]    # Save current settings
-cctl snapshot view <number>    # Show a saved snapshot
-cctl snapshot restore <number> [--mask fields] [--dry-run] # Apply or preview
-cctl snapshot delete <number>  # Delete a saved snapshot
+cctl snap view                   # List saved snapshot names
+cctl snap save <name> [--mask fields]      # Save current settings (alias: s)
+cctl snap view <name>            # Show a saved snapshot (alias: v)
+cctl snap restore <name> [--mask fields] [--dry-run] # Apply or preview (alias: r)
+cctl snap delete <name>          # Delete a saved snapshot (alias: del)
 ```
 
 Use `--mask` to omit fields while saving or skip them while restoring. Separate
-field names with commas. For example: `cctl snapshot save 2 --mask epp,pl1,turbo`.
-Add `--dry-run` to `snapshot restore` to preview the settings and skipped
+field names with commas. For example: `cctl snap s mypcwork --mask epp,pl1,turbo`.
+Snapshot names can contain letters, numbers, hyphens, and underscores, but no
+spaces or other symbols. `snap` is a shorter alias for `snapshot`.
+Add `--dry-run` to `snap restore` to preview the settings and skipped
 fields without applying changes. Restoring EC code `2`/`3` sets fans to AUTO;
 restoring Turbo ON does so only when the active EC code is `2`/`3`. Add
 `nosafe` to the restore mask to bypass the automatic fan change (for example,
-`cctl snapshot restore 2 --mask nosafe`).
+`cctl snap r mypcwork --mask nosafe`).
 Available names are `nvidia_clock`, `nvidia_memclock`,
 `ec_code`, `turbo`, `gov`, `epp`, `pl1`, `pl2`, `kbe`, `kbc`, `kbb`,
 `fn_lock`, `webcam`, `mic`, `bat`, `rr`, and `scale`; `nosafe` is restore-only.

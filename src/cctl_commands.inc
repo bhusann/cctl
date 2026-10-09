@@ -122,6 +122,41 @@ static int cmd_scale(int argc, char **argv)
     return rc;
 }
 
+static int cmd_options(int argc, char **argv)
+{
+    if (argc == 2) {
+        struct cctl_settings settings;
+        (void)cctl_settings_read(&settings);
+        int prev_mode = g_stream_mode;
+        int prev_line = g_stream_line;
+        g_stream_mode = STREAM_MODE_LINE;
+        g_stream_line = 0;
+        printf("%sCCTL-specific settings:%s\n", C_YLW, C_RST);
+        printf("  streamtext  %s  Character/line streamed terminal output\n",
+               settings.streamtext_enabled ? "on " : "off");
+        printf("\nUsage: cctl options streamtext <on|off>\n");
+        g_stream_mode = prev_mode;
+        g_stream_line = prev_line;
+        return 0;
+    }
+
+    if (argc != 4 || strcmp(argv[2], "streamtext") != 0 ||
+        (strcmp(argv[3], "on") != 0 && strcmp(argv[3], "off") != 0))
+        return fail("Usage: cctl options streamtext <on|off>");
+
+    require_root(argc, argv);
+
+    struct cctl_settings settings;
+    (void)cctl_settings_read(&settings);
+    settings.streamtext_enabled = strcmp(argv[3], "on") == 0;
+    if (cctl_settings_write(&settings) != 0)
+        return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
+
+    g_stream_text_enabled = settings.streamtext_enabled;
+    printf("Text streaming %s.\n", settings.streamtext_enabled ? "enabled" : "disabled");
+    return 0;
+}
+
 static int cmd_mic(int argc, char **argv)
 {
     int rc;
@@ -191,7 +226,8 @@ static int create_profile_conf(void)
 
     static const char header[] =
         "# Custom profiles: one profile per line; use 'skip' to leave a setting unchanged.\n"
-        "# name ec_profile_code turbo governor epp pl1_watts pl2_watts\n";
+        "# name ec_profile_code turbo governor epp pl1_watts pl2_watts\n"
+        "# example 3 1 powersave performance 40 60\n";
     size_t offset = 0;
     while (offset < sizeof(header) - 1) {
         ssize_t n = write(fd, header + offset, sizeof(header) - 1 - offset);
@@ -433,9 +469,9 @@ static int cmd_fan(int argc, char **argv)
             if (safe_atoi(val_str, &pct) < 0)
                 return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
             if (!nosafe)
-                return fail("Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n"
-                            "       Fixed duty ignores temperature and may cause overheating or damage.\n"
-                            "       Use manual fan duty for experimental purposes only.", pct);
+                return fail_line("Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n"
+                                 "       Fixed duty ignores temperature and may cause overheating or damage.\n"
+                                 "       Use manual fan duty for experimental purposes only.", pct);
             rc = fan_set_duty(FAN_CPU, pct);
         }
     } else if (strcmp(mode, "gpu") == 0) {
@@ -449,9 +485,9 @@ static int cmd_fan(int argc, char **argv)
             if (safe_atoi(val_str, &pct) < 0)
                 return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
             if (!nosafe)
-                return fail("Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n"
-                            "       Fixed duty ignores temperature and may cause overheating or damage.\n"
-                            "       Use manual fan duty for experimental purposes only.", pct);
+                return fail_line("Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n"
+                                 "       Fixed duty ignores temperature and may cause overheating or damage.\n"
+                                 "       Use manual fan duty for experimental purposes only.", pct);
             rc = fan_set_duty(FAN_GPU, pct);
         }
     } else {
@@ -459,9 +495,9 @@ static int cmd_fan(int argc, char **argv)
         int pct;
         if (safe_atoi(mode, &pct) >= 0 && pct >= 25 && pct <= 100) {
             if (!nosafe)
-                return fail("Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n"
-                            "       Fixed duty ignores temperature and may cause overheating or damage.\n"
-                            "       Use manual fan duty for experimental purposes only.", pct);
+                return fail_line("Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n"
+                                 "       Fixed duty ignores temperature and may cause overheating or damage.\n"
+                                 "       Use manual fan duty for experimental purposes only.", pct);
             stream_printf(STREAM_DELAY_US, "Setting both fans to %d%%...\n", pct);
             rc = fan_set_duty(0, pct);
         } else {
@@ -1082,6 +1118,8 @@ static int cmd_uninstall(int argc, char **argv)
 
     static const char *const files[] = {
         USER_PROFILE_FILE,
+        CCTL_SETTINGS_FILE,
+        LEGACY_USER_PROFILE_FILE,
         "/etc/sudoers.d/cctl",
         "/etc/sudoers.d/cctl.bak",
         "/etc/sudoers.d/.cctl.tmp",
@@ -1126,9 +1164,11 @@ static int cmd_uninstall(int argc, char **argv)
         return 0;
     }
 
-    if (cctl_uninstall_remove_file(USER_PROFILE_FILE) != 0) {
-        perror("Error removing custom profiles");
-        return 1;
+    for (size_t i = 0; i < 3; i++) {
+        if (cctl_uninstall_remove_file(files[i]) != 0) {
+            perror("Error removing cctl profiles or settings");
+            return 1;
+        }
     }
     if (have_etc_cctl) {
         if (rmdir("/etc/cctl") != 0) {
@@ -1141,13 +1181,13 @@ static int cmd_uninstall(int argc, char **argv)
         }
     }
 
-    for (size_t i = 1; i < 4; i++) {
+    for (size_t i = 3; i < 6; i++) {
         if (cctl_uninstall_remove_file(files[i]) != 0) {
             perror("Error removing cctl sudoers files");
             return 1;
         }
     }
-    if (cctl_uninstall_remove_file("/usr/local/bin/cctl") != 0) {
+    if (cctl_uninstall_remove_file(files[6]) != 0) {
         perror("Error removing /usr/local/bin/cctl");
         return 1;
     }

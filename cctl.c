@@ -44,18 +44,18 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100073
+#define CCTL_MICROVERSION 100074
 #endif
 
 
 /* Subsystems stay in one translation unit to share the private hardware helpers. */
-#include "cctl_core.inc"
-#include "cctl_controls.inc"
-#include "cctl_platform.inc"
-#include "cctl_keyboard.inc"
-#include "cctl_telemetry.inc"
-#include "cctl_runtime.inc"
-#include "cctl_nvidia.inc"
-#include "cctl_snapshot.inc"
-#include "cctl_commands.inc"
-#include "cctl_drivers_cli.inc"
+#include "src/cctl_core.inc"
+#include "src/cctl_controls.inc"
+#include "src/cctl_platform.inc"
+#include "src/cctl_keyboard.inc"
+#include "src/cctl_telemetry.inc"
+#include "src/cctl_runtime.inc"
+#include "src/cctl_nvidia.inc"
+#include "src/cctl_snapshot.inc"
+#include "src/cctl_commands.inc"
+#include "src/cctl_drivers_cli.inc"

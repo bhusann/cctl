@@ -30,8 +30,11 @@ enum stream_mode {
 #define STREAM_DELAY_US 5000
 
 static int g_stream_output = 1;
+static int g_stream_text_enabled = 1;
 static int g_stream_mode = STREAM_MODE_CHAR;
 static int g_stream_line = 0;
+static int g_stream_error_mode = STREAM_MODE_CHAR;
+static int g_stream_error_line = 0;
 static int g_snapshot_restoring = 0;
 
 static const char *snapshot_applied_tag(void)
@@ -75,13 +78,14 @@ static void stream_write_file(FILE *stream, const char *text, int delay_us)
 
     int is_out = (stream == stdout);
     int fd = is_out ? STDOUT_FILENO : STDERR_FILENO;
-    if (!g_stream_output || json_output || !isatty(fd) || delay_us <= 0) {
+    if (!g_stream_output || !g_stream_text_enabled || json_output || !isatty(fd) || delay_us <= 0) {
         fputs(text, stream);
         fflush(stream);
         return;
     }
 
-    int mode = is_out ? g_stream_mode : STREAM_MODE_CHAR;
+    int mode = is_out ? g_stream_mode : g_stream_error_mode;
+    int *line_counter = is_out ? &g_stream_line : &g_stream_error_line;
 
     if (mode == STREAM_MODE_LINE) {
         size_t len = strlen(text);
@@ -119,10 +123,10 @@ static void stream_write_file(FILE *stream, const char *text, int delay_us)
             if (i < len && text[i] == '\n') {
                 fputc('\n', stream);
                 fflush(stream);
-                long delay = 20 - (g_stream_line * 1);
+                long delay = 20 - (*line_counter * 1);
                 if (delay < 10) delay = 10;
                 sleep_ms(delay);
-                g_stream_line++;
+                (*line_counter)++;
                 i++;
             } else {
                 fflush(stream);
@@ -418,6 +422,27 @@ static int fail(const char *fmt, ...)
     va_end(ap2);
     va_end(ap);
     return 1;
+}
+
+static int fail_line(const char *fmt, ...)
+    __attribute__((format(__printf__, 1, 2)));
+
+static int fail_line(const char *fmt, ...)
+{
+    char buf[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    int prev_mode = g_stream_error_mode;
+    int prev_line = g_stream_error_line;
+    g_stream_error_mode = STREAM_MODE_LINE;
+    g_stream_error_line = 0;
+    int rc = fail("%s", buf);
+    g_stream_error_mode = prev_mode;
+    g_stream_error_line = prev_line;
+    return rc;
 }
 
 static void print_done(void)
@@ -824,6 +849,96 @@ static int mode_runtime_write(const struct mode_runtime_data *data)
     if (close(fd) != 0 || rename(tmp_path, MODE_FILE) != 0) {
         saved_errno = errno;
         unlink(tmp_path);
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
+}
+
+#define CCTL_SETTINGS_DIR  "/var/lib/cctl"
+#define CCTL_SETTINGS_FILE CCTL_SETTINGS_DIR "/settings"
+
+struct cctl_settings {
+    int streamtext_enabled;
+};
+
+static void cctl_settings_init(struct cctl_settings *settings)
+{
+    settings->streamtext_enabled = 1;
+}
+
+static int cctl_settings_read(struct cctl_settings *settings)
+{
+    cctl_settings_init(settings);
+    int fd = open(CCTL_SETTINGS_FILE, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) return -1;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 ||
+        (st.st_mode & 0022) != 0) {
+        close(fd);
+        errno = EPERM;
+        return -1;
+    }
+    FILE *fp = fdopen(fd, "r");
+    if (!fp) { close(fd); return -1; }
+
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strcmp(line, "streamtext=on") == 0)
+            settings->streamtext_enabled = 1;
+        else if (strcmp(line, "streamtext=off") == 0)
+            settings->streamtext_enabled = 0;
+    }
+    fclose(fp);
+    return 0;
+}
+
+static int cctl_settings_write(const struct cctl_settings *settings)
+{
+    if (mkdir(CCTL_SETTINGS_DIR, 0755) != 0 && errno != EEXIST)
+        return -1;
+    struct stat dir_st;
+    if (lstat(CCTL_SETTINGS_DIR, &dir_st) != 0 || !S_ISDIR(dir_st.st_mode) ||
+        dir_st.st_uid != 0 || (dir_st.st_mode & 0022) != 0) {
+        errno = EPERM;
+        return -1;
+    }
+
+    char temp_path[sizeof(CCTL_SETTINGS_FILE) + 16];
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp.XXXXXX", CCTL_SETTINGS_FILE);
+    int fd = mkstemp(temp_path);
+    if (fd < 0) return -1;
+    if (fchmod(fd, 0644) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        unlink(temp_path);
+        errno = saved_errno;
+        return -1;
+    }
+
+    const char *value = settings->streamtext_enabled ? "on" : "off";
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "streamtext=%s\n", value);
+    size_t offset = 0;
+    while (len > 0 && offset < (size_t)len) {
+        ssize_t written = write(fd, buf + offset, (size_t)len - offset);
+        if (written > 0) offset += (size_t)written;
+        else if (written < 0 && errno == EINTR) continue;
+        else break;
+    }
+    int saved_errno = errno;
+    if (offset != (size_t)len || fsync(fd) != 0) {
+        if (offset == (size_t)len) saved_errno = errno;
+        close(fd);
+        unlink(temp_path);
+        errno = saved_errno;
+        return -1;
+    }
+    if (close(fd) != 0 || rename(temp_path, CCTL_SETTINGS_FILE) != 0) {
+        saved_errno = errno;
+        unlink(temp_path);
         errno = saved_errno;
         return -1;
     }

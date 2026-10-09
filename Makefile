@@ -24,10 +24,10 @@ ifeq ($(STRIP),1)
 override LDFLAGS += -s
 endif
 
-SOURCES  = cctl.c cctl_gpumon.c cctl_cpumon.c
-INCLUDES = cctl_core.inc cctl_controls.inc cctl_platform.inc cctl_keyboard.inc \
-           cctl_telemetry.inc cctl_runtime.inc cctl_nvidia.inc \
-           cctl_snapshot.inc cctl_commands.inc cctl_drivers_cli.inc
+SOURCES  = cctl.c src/cctl_gpumon.c src/cctl_cpumon.c
+INCLUDES = src/cctl_core.inc src/cctl_controls.inc src/cctl_platform.inc src/cctl_keyboard.inc \
+           src/cctl_telemetry.inc src/cctl_runtime.inc src/cctl_nvidia.inc \
+           src/cctl_snapshot.inc src/cctl_commands.inc src/cctl_drivers_cli.inc
 
 # ── Default: only cctl binary (no NVIDIA support) ────────────────────────────
 cctl: $(SOURCES) $(INCLUDES)

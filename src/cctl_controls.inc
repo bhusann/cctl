@@ -531,7 +531,8 @@ static const struct profile_def PROFILES[] = {
     { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                 80, 180, 255, "15/30W  + GPU 70W", 0, 0 },
 };
 
-#define USER_PROFILE_FILE "/etc/cctl/profiles.conf"
+#define USER_PROFILE_FILE "/var/lib/cctl/profiles.conf"
+#define LEGACY_USER_PROFILE_FILE "/etc/cctl/profiles.conf"
 #define MAX_USER_PROFILES 32
 static struct profile_def user_profiles[MAX_USER_PROFILES];
 static char user_profile_names[MAX_USER_PROFILES][32];

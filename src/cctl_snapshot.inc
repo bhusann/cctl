@@ -1,8 +1,9 @@
 /* ========================================================================
- * NUMBERED SNAPSHOTS
+ * NAMED SNAPSHOTS
  * ======================================================================== */
 
 #define CCTL_SNAPSHOT_DIR "/var/lib/cctl/snapshots"
+#define CCTL_SNAPSHOT_NAME_MAX 64
 
 struct cctl_snapshot_data {
     int ec_profile_code;
@@ -140,21 +141,20 @@ static void cctl_snapshot_init(struct cctl_snapshot_data *st)
     snprintf(st->display_scale, sizeof(st->display_scale), "skip");
 }
 
-static int cctl_snapshot_number(const char *arg, int *number)
+static int cctl_snapshot_name_valid(const char *name)
 {
-    if (!arg || !*arg) return -1;
-    for (const char *p = arg; *p; p++)
-        if (!isdigit((unsigned char)*p)) return -1;
-    errno = 0;
-    long value = strtol(arg, NULL, 10);
-    if (errno || value < 0 || value > 999999999L) return -1;
-    *number = (int)value;
-    return 0;
+    if (!name || !*name || strlen(name) > CCTL_SNAPSHOT_NAME_MAX) return 0;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || *p == '-' || *p == '_'))
+            return 0;
+    }
+    return 1;
 }
 
-static void cctl_snapshot_path(int number, char *path, size_t size)
+static void cctl_snapshot_path(const char *name, char *path, size_t size)
 {
-    snprintf(path, size, CCTL_SNAPSHOT_DIR "/%d.conf", number);
+    snprintf(path, size, CCTL_SNAPSHOT_DIR "/%s.conf", name);
 }
 
 static int cctl_snapshot_validate_path(const char *path, int *exists)
@@ -173,11 +173,11 @@ static int cctl_snapshot_validate_path(const char *path, int *exists)
 }
 
 /* Returns 1 if found, 0 if absent, and -1 for an unsafe or inaccessible file. */
-static int cctl_snapshot_find_existing(int number, char *path, size_t size)
+static int cctl_snapshot_find_existing(const char *name, char *path, size_t size)
 {
     char candidate[128];
     int exists = 0;
-    cctl_snapshot_path(number, candidate, sizeof(candidate));
+    cctl_snapshot_path(name, candidate, sizeof(candidate));
     if (strlen(candidate) >= size) { errno = ENAMETOOLONG; return -1; }
     if (cctl_snapshot_validate_path(candidate, &exists) != 0) return -1;
     if (!exists) return 0;
@@ -203,27 +203,31 @@ static int cctl_snapshot_ensure_dirs(void)
     return 0;
 }
 
-static int cctl_snapshot_add_number(int number, int **numbers,
-                                   size_t *count, size_t *capacity)
+static int cctl_snapshot_add_name(const char *name, char ***names,
+                                 size_t *count, size_t *capacity)
 {
     for (size_t i = 0; i < *count; i++)
-        if ((*numbers)[i] == number) return 0;
+        if (strcmp((*names)[i], name) == 0) return 0;
     if (*count == *capacity) {
         size_t next_capacity = *capacity ? *capacity * 2 : 16;
-        if (next_capacity < *capacity || next_capacity > SIZE_MAX / sizeof(**numbers)) {
+        if (next_capacity < *capacity || next_capacity > SIZE_MAX / sizeof(**names)) {
             errno = EOVERFLOW;
             return -1;
         }
-        int *next = realloc(*numbers, next_capacity * sizeof(**numbers));
+        char **next = realloc(*names, next_capacity * sizeof(**names));
         if (!next) return -1;
-        *numbers = next;
+        *names = next;
         *capacity = next_capacity;
     }
-    (*numbers)[(*count)++] = number;
+    size_t len = strlen(name);
+    (*names)[*count] = malloc(len + 1);
+    if (!(*names)[*count]) return -1;
+    memcpy((*names)[*count], name, len + 1);
+    (*count)++;
     return 0;
 }
 
-static int cctl_snapshot_collect_dir(const char *path, int **numbers,
+static int cctl_snapshot_collect_dir(const char *path, char ***names,
                                      size_t *count, size_t *capacity)
 {
     struct stat dir_stat;
@@ -247,15 +251,14 @@ static int cctl_snapshot_collect_dir(const char *path, int **numbers,
             break;
         }
         size_t len = strlen(entry->d_name);
-        if (len < 6 || len > 14 || strcmp(entry->d_name + len - 5, ".conf") != 0)
+        if (len < 6 || len > CCTL_SNAPSHOT_NAME_MAX + 5 ||
+            strcmp(entry->d_name + len - 5, ".conf") != 0)
             continue;
-        size_t digits = len - 5;
-        if (digits > 9) continue;
-        char number_text[10];
-        memcpy(number_text, entry->d_name, digits);
-        number_text[digits] = '\0';
-        int number;
-        if (cctl_snapshot_number(number_text, &number) != 0) continue;
+        size_t name_len = len - 5;
+        char name[CCTL_SNAPSHOT_NAME_MAX + 1];
+        memcpy(name, entry->d_name, name_len);
+        name[name_len] = '\0';
+        if (!cctl_snapshot_name_valid(name)) continue;
 
         char file_path[256];
         int written = snprintf(file_path, sizeof(file_path), "%s/%s", path, entry->d_name);
@@ -263,7 +266,7 @@ static int cctl_snapshot_collect_dir(const char *path, int **numbers,
         int exists;
         if (cctl_snapshot_validate_path(file_path, &exists) != 0 || !exists)
             continue;
-        if (cctl_snapshot_add_number(number, numbers, count, capacity) != 0) {
+        if (cctl_snapshot_add_name(name, names, count, capacity) != 0) {
             failed = 1;
             break;
         }
@@ -272,30 +275,32 @@ static int cctl_snapshot_collect_dir(const char *path, int **numbers,
     return failed ? -1 : 0;
 }
 
-static int cctl_snapshot_compare_numbers(const void *left, const void *right)
+static int cctl_snapshot_compare_names(const void *left, const void *right)
 {
-    int a = *(const int *)left;
-    int b = *(const int *)right;
-    return (a > b) - (a < b);
+    const char *const *a = left;
+    const char *const *b = right;
+    return strcmp(*a, *b);
 }
 
 static int cctl_snapshot_list(void)
 {
-    int *numbers = NULL;
+    char **names = NULL;
     size_t count = 0, capacity = 0;
-    if (cctl_snapshot_collect_dir(CCTL_SNAPSHOT_DIR, &numbers, &count, &capacity) != 0) {
-        free(numbers);
+    if (cctl_snapshot_collect_dir(CCTL_SNAPSHOT_DIR, &names, &count, &capacity) != 0) {
+        for (size_t i = 0; i < count; i++) free(names[i]);
+        free(names);
         return fail("Cannot list saved snapshots");
     }
     if (count > 1)
-        qsort(numbers, count, sizeof(*numbers), cctl_snapshot_compare_numbers);
+        qsort(names, count, sizeof(*names), cctl_snapshot_compare_names);
 
     printf("Saved snapshots: ");
     if (count == 0) printf("none");
     for (size_t i = 0; i < count; i++)
-        printf("%s%d", i == 0 ? "" : ", ", numbers[i]);
+        printf("%s%s", i == 0 ? "" : ", ", names[i]);
     putchar('\n');
-    free(numbers);
+    for (size_t i = 0; i < count; i++) free(names[i]);
+    free(names);
     return 0;
 }
 
@@ -388,13 +393,13 @@ static int cctl_snapshot_write_clock(FILE *fp, const char *key, int known, int i
     return fprintf(fp, "%s=%d,%d\n", key, min, max) < 0 ? -1 : 0;
 }
 
-static int cctl_snapshot_write_file(int number, const struct cctl_snapshot_data *st)
+static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot_data *st)
 {
     if (cctl_snapshot_ensure_dirs() != 0) return -1;
 
-    char final_path[128], temp_path[160];
-    cctl_snapshot_path(number, final_path, sizeof(final_path));
-    snprintf(temp_path, sizeof(temp_path), "%s/.%d.tmp.XXXXXX", CCTL_SNAPSHOT_DIR, number);
+    char final_path[160], temp_path[192];
+    cctl_snapshot_path(name, final_path, sizeof(final_path));
+    snprintf(temp_path, sizeof(temp_path), "%s/.%s.tmp.XXXXXX", CCTL_SNAPSHOT_DIR, name);
     int fd = mkstemp(temp_path);
     if (fd < 0) return -1;
     if (fchmod(fd, 0600) != 0) {
@@ -565,10 +570,10 @@ static int cctl_snapshot_parse_field(struct cctl_snapshot_data *st, const char *
     return 0;
 }
 
-static int cctl_snapshot_read_file(int number, struct cctl_snapshot_data *st)
+static int cctl_snapshot_read_file(const char *name, struct cctl_snapshot_data *st)
 {
-    char path[128], line[256];
-    cctl_snapshot_path(number, path, sizeof(path));
+    char path[160], line[256];
+    cctl_snapshot_path(name, path, sizeof(path));
     int fd = open(path, O_RDONLY | O_NOFOLLOW);
     if (fd < 0) return -1;
     struct stat stbuf;
@@ -617,13 +622,13 @@ static int cctl_snapshot_restore_needs_fan_auto(const struct cctl_snapshot_data 
     return cctl_snapshot_ec_needs_fan_auto(ec_code);
 }
 
-static void cctl_snapshot_preview_restore(int number,
+static void cctl_snapshot_preview_restore(const char *name,
                                           const struct cctl_snapshot_data *st,
                                           int nosafe)
 {
     char value[96];
-    printf("Dry run: snapshot %d would restore these settings; nothing was changed.\n",
-           number);
+    printf("Dry run: snapshot '%s' would restore these settings; nothing was changed.\n",
+           name);
 #define SNAPSHOT_PREVIEW(label, expression) do { \
     snprintf(value, sizeof(value), "%s", (expression)); \
     printf("  %-22s %s\n", label, value); \
@@ -721,13 +726,13 @@ static const char *cctl_snapshot_value(int value, char *buf, size_t size)
     return buf;
 }
 
-static void cctl_snapshot_view(int number, const struct cctl_snapshot_data *st)
+static void cctl_snapshot_view(const char *name, const struct cctl_snapshot_data *st)
 {
     int prev = g_stream_mode;
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
     char buf[64];
-    printf("Snapshot %d:\n", number);
+    printf("Snapshot '%s':\n", name);
     if (st->ec_profile_code < 0)
         printf("  EC profile code: --\n");
     else
@@ -764,14 +769,14 @@ static void cctl_snapshot_view(int number, const struct cctl_snapshot_data *st)
     g_stream_mode = prev;
 }
 
-static int cctl_snapshot_save(int number, unsigned long long mask)
+static int cctl_snapshot_save(const char *name, unsigned long long mask)
 {
     char existing[128];
-    int found = cctl_snapshot_find_existing(number, existing, sizeof(existing));
+    int found = cctl_snapshot_find_existing(name, existing, sizeof(existing));
     if (found < 0)
-        return fail("Cannot inspect existing snapshot %d", number);
+        return fail("Cannot inspect existing snapshot '%s'", name);
     if (found) {
-        fprintf(stderr, "Warning: snapshot %d already exists. Replace it? [y/N] ", number);
+        fprintf(stderr, "Warning: snapshot '%s' already exists. Replace it? [y/N] ", name);
         fflush(stderr);
         if (!isatty(STDIN_FILENO)) {
             fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm replacement.\n");
@@ -792,28 +797,29 @@ static int cctl_snapshot_save(int number, unsigned long long mask)
     struct cctl_snapshot_data st;
     cctl_snapshot_read_current(&st);
     cctl_snapshot_apply_mask(&st, mask);
-    if (cctl_snapshot_write_file(number, &st) != 0) {
+    if (cctl_snapshot_write_file(name, &st) != 0) {
         perror("Error: could not save snapshot");
         return 1;
     }
-    stream_printf(STREAM_DELAY_US, "Saved snapshot %d to %s/%d.conf\n", number, CCTL_SNAPSHOT_DIR, number);
+    stream_printf(STREAM_DELAY_US, "Saved snapshot '%s' to %s/%s.conf\n", name,
+                  CCTL_SNAPSHOT_DIR, name);
     return 0;
 }
 
-static int cctl_snapshot_delete(int number)
+static int cctl_snapshot_delete(const char *name)
 {
-    char path[128];
+    char path[160];
     int exists = 0;
-    cctl_snapshot_path(number, path, sizeof(path));
+    cctl_snapshot_path(name, path, sizeof(path));
     if (cctl_snapshot_validate_path(path, &exists) != 0)
-        return fail("Cannot safely delete snapshot %d", number);
+        return fail("Cannot safely delete snapshot '%s'", name);
     if (!exists)
-        return fail("Snapshot %d does not exist", number);
+        return fail("Snapshot '%s' does not exist", name);
     if (unlink(path) != 0) {
         perror("Error: could not delete snapshot");
         return 1;
     }
-    stream_printf(STREAM_DELAY_US, "Deleted snapshot %d.\n", number);
+    stream_printf(STREAM_DELAY_US, "Deleted snapshot '%s'.\n", name);
     return 0;
 }
 
@@ -837,7 +843,7 @@ static int cctl_snapshot_apply_step(const char *name, int rc, int *errors)
     return 0;
 }
 
-static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st, int nosafe)
+static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_data *st, int nosafe)
 {
     int prev = g_stream_mode;
     g_stream_mode = STREAM_MODE_LINE;
@@ -846,7 +852,7 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
     int errors = 0;
     int fans_auto_applied = 0;
     int fan_safety_bypassed = 0;
-    printf("Restoring snapshot %d one setting at a time...\n", number);
+    printf("Restoring snapshot '%s' one setting at a time...\n", name);
 
     /* 1. EC profile code: apply the saved code when present. */
     cctl_snapshot_divider();
@@ -1240,12 +1246,12 @@ static int cctl_snapshot_restore(int number, const struct cctl_snapshot_data *st
     g_snapshot_restoring = 0;
 
     if (errors) {
-        fprintf(stderr, "%sSnapshot %d restored with %d error(s).%s\n",
-                C_RED, number, errors, C_RST);
+        fprintf(stderr, "%sSnapshot '%s' restored with %d error(s).%s\n",
+                C_RED, name, errors, C_RST);
         g_stream_mode = prev;
         return 1;
     }
-    printf("%sSnapshot %d restored.%s\n", C_GRN, number, C_RST);
+    printf("%sSnapshot '%s' restored.%s\n", C_GRN, name, C_RST);
     g_stream_mode = prev;
     return 0;
 }
@@ -1256,17 +1262,16 @@ static int cmd_snapshot(int argc, char **argv)
         int prev = g_stream_mode;
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
-        printf("%sUsage:%s %scctl snapshot <save|restore|view|delete> <number> [--mask fields]%s\n",
+        printf("%sUsage:%s %scctl snap <save|s|restore|r|view|v|delete|del> [name] [options]%s\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
-        printf("       %scctl snapshot restore <number> [--mask fields] [--dry-run]%s\n",
-               C_CYN_BLD, C_RST);
-        printf("       %scctl snapshot list%s\n\n", C_CYN_BLD, C_RST);
+        printf("       %scctl snapshot <action> [name] [options]%s\n\n", C_CYN_BLD, C_RST);
         printf("%sActions:%s\n", C_YLW, C_RST);
-        printf("  list              Show saved snapshot numbers on one line\n");
-        printf("  save <number> [--mask fields]     Save current settings, omitting masked fields\n");
-        printf("  restore <number> [--mask fields] [--dry-run]  Apply; preview with --dry-run\n");
-        printf("  view <number>     Show a saved snapshot\n");
-        printf("  delete <number>   Delete a saved snapshot\n");
+        printf("  save/s <name> [--mask fields]       Save current settings\n");
+        printf("  restore/r <name> [--mask fields] [--dry-run]  Apply or preview settings\n");
+        printf("  view/v [name]                       List snapshots or show one snapshot\n");
+        printf("  delete/del <name>                   Delete a snapshot\n");
+        printf("  Names: letters, numbers, '-' and '_' only; no spaces (max %d characters).\n",
+               CCTL_SNAPSHOT_NAME_MAX);
         printf("\n%sMask fields:%s\n", C_YLW, C_RST);
         printf("  nvidia_clock,nvidia_memclock,ec_code,turbo,gov,epp,pl1,pl2,\n");
         printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,nosafe\n");
@@ -1278,16 +1283,23 @@ static int cmd_snapshot(int argc, char **argv)
         g_stream_mode = prev;
         return 0;
     }
-    if (strcmp(argv[2], "list") == 0) {
-        if (argc != 3) return fail("Usage: cctl snapshot list");
+
+    const char *action = argv[2];
+    if (strcmp(action, "s") == 0) action = "save";
+    else if (strcmp(action, "r") == 0) action = "restore";
+    else if (strcmp(action, "v") == 0) action = "view";
+    else if (strcmp(action, "del") == 0) action = "delete";
+
+    if (strcmp(action, "view") == 0 && argc == 3) {
         require_root(argc, argv);
         return cctl_snapshot_list();
     }
     if (argc < 4 || argc > 7)
-        return fail("Usage: cctl snapshot <save|restore|view|delete> <number> [--mask fields]; restore also accepts --dry-run");
-    int number;
-    if (cctl_snapshot_number(argv[3], &number) != 0)
-        return fail("Snapshot number must be an integer from 0 to 999999999");
+        return fail("Usage: cctl snap <save|s|restore|r|view|v|delete|del> [name] [--mask fields] [--dry-run]");
+    const char *name = argv[3];
+    if (!cctl_snapshot_name_valid(name))
+        return fail("Snapshot names must be 1-%d characters using only letters, numbers, '-' or '_'",
+                    CCTL_SNAPSHOT_NAME_MAX);
 
     unsigned long long mask = 0;
     int have_mask = 0, snapshot_dry_run = 0;
@@ -1295,7 +1307,7 @@ static int cmd_snapshot(int argc, char **argv)
         if (strcmp(argv[i], "--mask") == 0) {
             if (have_mask || i + 1 >= argc ||
                 cctl_snapshot_parse_mask(argv[++i], &mask) != 0)
-                return fail("Invalid mask list (see 'cctl snapshot' for available fields)");
+                return fail("Invalid mask list (see 'cctl snap' for available fields)");
             have_mask = 1;
         } else if (strcmp(argv[i], "--dry-run") == 0) {
             if (snapshot_dry_run) return fail("--dry-run was specified more than once");
@@ -1304,36 +1316,36 @@ static int cmd_snapshot(int argc, char **argv)
             return fail("Unknown snapshot option '%s'", argv[i]);
         }
     }
-    if (mask && strcmp(argv[2], "save") != 0 && strcmp(argv[2], "restore") != 0)
+    if (mask && strcmp(action, "save") != 0 && strcmp(action, "restore") != 0)
         return fail("--mask is supported only for snapshot save and restore");
-    if ((mask & MASK_NOSAFE) && strcmp(argv[2], "restore") != 0)
+    if ((mask & MASK_NOSAFE) && strcmp(action, "restore") != 0)
         return fail("--mask nosafe is supported only for snapshot restore");
-    if (snapshot_dry_run && strcmp(argv[2], "restore") != 0)
+    if (snapshot_dry_run && strcmp(action, "restore") != 0)
         return fail("--dry-run is supported only for snapshot restore");
 
-    if (strcmp(argv[2], "save") == 0) {
+    if (strcmp(action, "save") == 0) {
         require_root(argc, argv);
-        return cctl_snapshot_save(number, mask);
+        return cctl_snapshot_save(name, mask);
     }
-    if (strcmp(argv[2], "delete") == 0) {
+    if (strcmp(action, "delete") == 0) {
         require_root(argc, argv);
-        return cctl_snapshot_delete(number);
+        return cctl_snapshot_delete(name);
     }
-    if (strcmp(argv[2], "view") == 0 || strcmp(argv[2], "restore") == 0) {
+    if (strcmp(action, "view") == 0 || strcmp(action, "restore") == 0) {
         require_root(argc, argv);
         struct cctl_snapshot_data st;
-        if (cctl_snapshot_read_file(number, &st) != 0)
-            return fail("Cannot read snapshot %d (missing or invalid file)", number);
-        if (strcmp(argv[2], "view") == 0) {
-            cctl_snapshot_view(number, &st);
+        if (cctl_snapshot_read_file(name, &st) != 0)
+            return fail("Cannot read snapshot '%s' (missing or invalid file)", name);
+        if (strcmp(action, "view") == 0) {
+            cctl_snapshot_view(name, &st);
             return 0;
         }
         cctl_snapshot_apply_mask(&st, mask);
         if (snapshot_dry_run) {
-            cctl_snapshot_preview_restore(number, &st, (mask & MASK_NOSAFE) != 0);
+            cctl_snapshot_preview_restore(name, &st, (mask & MASK_NOSAFE) != 0);
             return 0;
         }
-        return cctl_snapshot_restore(number, &st, (mask & MASK_NOSAFE) != 0);
+        return cctl_snapshot_restore(name, &st, (mask & MASK_NOSAFE) != 0);
     }
-    return fail("Unknown snapshot action '%s' (use list, save, restore, view, or delete)", argv[2]);
+    return fail("Unknown snapshot action '%s' (use save, restore, view, or delete)", argv[2]);
 }

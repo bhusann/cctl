@@ -119,7 +119,7 @@ Full-load measurements and comparisons are documented in the [EC profile test re
 
 ### Custom Profiles
 
-You can add your own power profiles in `/etc/cctl/profiles.conf`. To open or
+You can add your own power profiles in `/var/lib/cctl/profiles.conf`. To open or
 create the file, run:
 
 ```bash
@@ -129,6 +129,14 @@ cctl editconf
 This opens the file with your configured editor (`SUDO_EDITOR`, `VISUAL`, or
 `EDITOR`). If none is set, cctl tries `nano`, then `micro`. A new file includes
 a commented line showing the fields.
+
+If you are upgrading from an older cctl version, copy an existing
+`/etc/cctl/profiles.conf` to `/var/lib/cctl/profiles.conf` to keep using those
+profiles:
+
+```bash
+sudo install -D -m 0644 /etc/cctl/profiles.conf /var/lib/cctl/profiles.conf
+```
 
 Add one profile per line, with fields in this order:
 
@@ -181,10 +189,27 @@ Command names:
 - Monitors: `cpumon`, `gpumon`; `monitor` is deprecated
 - Display: `rr`, `scale`
 - CPU controls: `turbo`, `gov`, `epp`, `rapl`
-- Snapshots: `snapshot list`, `save`, `view`, `restore`, `delete`
+- Snapshots: `snap` (alias `snapshot`), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del`
 - Help: `--help`
 
-Full usage, options, and hardware quirk notes: [commands.md](commands.md).
+Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).
+---
+
+## Persistence and Services
+
+cctl is designed for immediate, one-shot changes: apply a setting, then let
+the command exit. It does not include a tray app, automatic startup, or a
+background service to keep settings reapplied. If you want that behavior, you
+can use an AI assistant to help create a small app or service around cctl.
+
+For startup restoration, save a setup with `cctl snap save <name>` and have
+your preferred service manager, such as systemd or runit, run
+`cctl snap restore <name>` when the system starts. For custom fan curves, your
+own script or app can read temperatures and call `cctl fan <pct> --nosafe` as
+needed. Manual fan duty stays fixed regardless of temperature, so only use it
+with a controller that actively adjusts it; fan settings are not part of
+snapshots.
+
 ---
 
 ## Build
@@ -258,13 +283,13 @@ the cctl binary.
 
 ### Manual Uninstallation
 
-For manual driver and cctl cleanup, follow the [manual uninstallation guide](manual_uninstall.md).
+For manual driver and cctl cleanup, follow the [manual uninstallation guide](docs/manual_uninstall.md).
 
 ---
 
 ## Developer Notes
 
-See [docs/developer-notes.md](docs/developer-notes.md).
+- [Developer notes](docs/developer-notes.md)
 
 ---
 
@@ -272,9 +297,13 @@ See [docs/developer-notes.md](docs/developer-notes.md).
 
 `cctl` own code is licensed under the MIT License — see [LICENSE](LICENSE).
 
-The driver code (in the [mirror repo](https://github.com/bhusann/tuxedo-drivers-cctl-mirror)'s `drivers/` folder) is **not** MIT. It is derived from the TUXEDO Linux driver project and remains under **GPL-2.0-or-later** — see [drivers/LICENSE](https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/drivers/LICENSE) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
+The driver code (in the [mirror repo](https://github.com/bhusann/tuxedo-drivers-cctl-mirror)'s `drivers/` folder) is **not** MIT. It is derived from the TUXEDO Linux driver project and remains under **GPL-2.0-or-later** — see [drivers/LICENSE](https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/drivers/LICENSE) and [THIRD-PARTY-NOTICES](docs/THIRD-PARTY-NOTICES).
 
 ## Credits
+
+> [!IMPORTANT]
+> Created with AI assistance under human direction, and thoroughly tested and
+> evaluated by a human.
 
 `cctl` uses driver code from the TUXEDO Linux driver project:
 

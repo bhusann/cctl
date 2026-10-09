@@ -15,9 +15,10 @@ remove_test_sudoers.sh
 *.swp
 .DS_Store
 
-# Local research notes (not for upstream)
-progress_finding.md
-
 # Local test harness (not for upstream)
-cctl_units2.c
+src/cctl_units2.c
+
+# Local hardware research notes (not for upstream)
+docs/progress-findings.md
+
 prototypes/
