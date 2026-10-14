@@ -255,8 +255,8 @@ static int create_profile_conf(void)
 
     static const char header[] =
         "# Custom profiles: one profile per line; use 'skip' to leave a setting unchanged.\n"
-        "# name ec_profile_code turbo governor epp pl1_watts pl2_watts\n"
-        "# example 3 1 powersave performance 40 60\n";
+        "# name ec_profile_code turbo governor epp pl1_watts pl2_watts [refresh_rate]\n"
+        "# example 3 1 powersave performance 40 60 144\n";
     size_t offset = 0;
     while (offset < sizeof(header) - 1) {
         ssize_t n = write(fd, header + offset, sizeof(header) - 1 - offset);
@@ -391,9 +391,28 @@ static int cmd_set(int argc, char **argv)
         } else {
             stream_printf(STREAM_DELAY_US, "  RAPL limits: unchanged (use cctl rapl to change them)\n");
         }
+        if (p->rr && *p->rr && strcmp(p->rr, "skip") != 0 && has_display_support()) {
+            if (strcmp(p->rr, "lowest") == 0) {
+                struct display_info dinfo;
+                if (is_x11_xrandr_available(&dinfo) && dinfo.rate_count > 0) {
+                    int min_idx = 0;
+                    double min_val = strtod(dinfo.available_rates[0], NULL);
+                    for (int j = 1; j < dinfo.rate_count; j++) {
+                        double v = strtod(dinfo.available_rates[j], NULL);
+                        if (v > 0.0 && (min_val <= 0.0 || v < min_val)) { min_val = v; min_idx = j; }
+                    }
+                    if (strcmp(p->name, "powersave") == 0)
+                        stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (you can change refresh rate in this mode using cctl rr) (preview only)\n", dinfo.available_rates[min_idx]);
+                    else
+                        stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (preview only)\n", dinfo.available_rates[min_idx]);
+                }
+            } else {
+                stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (preview only)\n", p->rr);
+            }
+        }
         if (profile_requires_fan_auto(p) && !nosafe)
             stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
-        else if (strcmp(p->name, "silent") == 0)
+        else if (strcmp(p->name, "silent") == 0 || strcmp(p->name, "powersave") == 0)
             stream_printf(STREAM_DELAY_US, "  Fans: set both to SILENT\n");
         if (strcmp(p->name, "max") == 0) {
             int prev = g_stream_mode;
@@ -412,7 +431,7 @@ static int cmd_set(int argc, char **argv)
         fan_auto_all();
     }
     int rc = profile_apply(p);
-    if (rc == 0 && strcmp(p->name, "silent") == 0) {
+    if (rc == 0 && (strcmp(p->name, "silent") == 0 || strcmp(p->name, "powersave") == 0)) {
         printf("Setting both fans to SILENT...\n");
         if (fan_silent_all() < 0)
             rc = -1;

@@ -580,7 +580,7 @@ static const struct command commands[] = {
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "memclock [min] <max>|reset",      "Lock/unlock memory clocks (no arg: show max clock)", NULL },
 
     /* Display */
-    { "rr",             0, cmd_rr,              SEC_DISPLAY,   "[rate]",                          "List/set refresh rate (1=high, 2=low)", has_display_support },
+    { "rr",             0, cmd_rr,              SEC_DISPLAY,   "[rate|toggle]",                   "List/set refresh rate or toggle", has_display_support },
     { "scale",          0, cmd_scale,           SEC_DISPLAY,   "<factor|WxH|off>",                "GPU-side scaling (no arg: explain in detail)", has_display_support },
 
     /* Overrides */

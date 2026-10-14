@@ -1080,16 +1080,27 @@ static int cmd_rr(int argc, char **argv)
         return rc;
     }
 
-    /* Shortcuts: 1 → highest rate, 2 → lowest rate (e.g. 165Hz / 40Hz) */
+    if (argc > 3)
+        return fail("Unexpected extra argument '%s'", argv[3]);
+
     const char *rate = argv[2];
-    if (strcmp(rate, "1") == 0 || strcmp(rate, "2") == 0) {
+    if (strcmp(rate, "toggle") == 0 || strcmp(rate, "t") == 0) {
         struct display_info info;
         if (query_display_info(&info) < 0 || info.rate_count < 2) {
-            fprintf(stderr, "Error: cannot detect available rates\n");
+            fprintf(stderr, "Error: cannot toggle refresh rate (multiple rates unavailable)\n");
             return -1;
         }
-        int idx = (rate[0] == '1') ? 0 : (info.rate_count - 1);
-        rate = info.available_rates[idx];
+        int cur_idx = -1;
+        double cur_val = strtod(info.current_rate, NULL);
+        for (int i = 0; i < info.rate_count; i++) {
+            if (strcmp(info.current_rate, info.available_rates[i]) == 0 ||
+                (cur_val > 0.0 && fabs(cur_val - strtod(info.available_rates[i], NULL)) < 0.05)) {
+                cur_idx = i;
+                break;
+            }
+        }
+        int next_idx = (cur_idx >= 0) ? ((cur_idx + 1) % info.rate_count) : 0;
+        rate = info.available_rates[next_idx];
     }
 
     int rc = rr_set(rate);

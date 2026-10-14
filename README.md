@@ -105,6 +105,9 @@ powersave   1               OFF    powersave    balance_power      15/30W  + GPU
 silent/eco  0               OFF    powersave    power              15/30W  + GPU 70W
 ```
 
+> [!NOTE]
+> Applying the built-in `powersave` profile sets both fans to **SILENT** (just like `silent/eco` mode) and automatically switches the internal display to the lowest supported refresh rate when running under X11 (e.g. 40 Hz) to maximize battery runtime. You can adjust the refresh rate anytime using `cctl rr`.
+
 > [!CAUTION]
 > Silent fan mode and manual fan duty may keep fans quiet or fixed regardless of
 > CPU temperature, even under heavy load. To protect the hardware, applying EC
@@ -141,13 +144,14 @@ sudo install -D -m 0644 /etc/cctl/profiles.conf /var/lib/cctl/profiles.conf
 Add one profile per line, with fields in this order:
 
 ```text
-# name ec_profile_code turbo governor epp pl1_watts pl2_watts
-quietwork 1 0 powersave balance_power skip skip
-highcpu 2 1 performance performance 90 115
+# name ec_profile_code turbo governor epp pl1_watts pl2_watts [refresh_rate]
+quietwork 1 0 powersave balance_power skip skip 40
+highcpu 2 1 performance performance 90 115 165
 ```
 
-Fields: `name EC-code turbo governor epp pl1 pl2`. Use `skip` to leave a field
-unchanged; omit both limit fields for the five-field format. Unset RAPL limits
+Fields: `name EC-code turbo governor epp [pl1 pl2 [rr]]`. Use `skip` to leave a field
+unchanged; omit trailing fields for shorter formats (5, 7, or 8 fields). To set
+a refresh rate without changing RAPL limits, specify `skip` for pl1 and pl2 (for example, `myprof 3 1 powersave performance skip skip 60`). Unset RAPL limits
 stay unchanged; set them in the file or with `cctl rapl <pl1> <pl2>`.
 
 EC profile codes select modes; they are not a ranking:
@@ -164,6 +168,10 @@ to 100W. Codes `0`, `1`, and `3` allow PL1 up to 45W; code `3` defaults to
 Valid values: EC code `3`, `2`, `1`, or `0`; Turbo `1` (on) or `0` (off);
 governor `powersave` or `performance`; and EPP `performance`,
 `balance_performance`, `balance_power`, or `power`.
+
+When pairing performance profiles with EPP `performance`, cctl distinguishes between **aggressive** and **non-aggressive** behavior based on the CPU governor:
+- **Aggressive** (`gov: performance`): Locks CPU frequencies near maximum constantly for minimal latency, at the expense of higher idle heat and power consumption.
+- **Non-aggressive** (`gov: powersave`): Scales frequencies dynamically on demand, idling cool and quiet (around 800–1200 MHz) while boosting instantly to maximum clocks under load.
 
 > **Caution:** If a profile line contains a typo or unsupported value, cctl
 > skips it, so the profile will not appear in `cctl set` or `cctl --help`.

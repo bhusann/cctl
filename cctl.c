@@ -36,6 +36,7 @@
 #include <termios.h>
 #include <sys/file.h>
 #include <stdarg.h>
+#include <math.h>
 
 #define CCTL_VERSION      "4.6.3"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
@@ -44,7 +45,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100077
+#define CCTL_MICROVERSION 100087
 #endif
 
 

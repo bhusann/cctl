@@ -125,10 +125,18 @@ static int kbd_set_preset(const char *name)
         }
     }
 
+    int prev_mode = g_stream_error_mode;
+    int prev_line = g_stream_error_line;
+    g_stream_error_mode = STREAM_MODE_LINE;
+    g_stream_error_line = 0;
+
     fprintf(stderr, "Error: Unknown preset '%s'\n", name);
     fprintf(stderr, "Available presets:\n");
     for (const struct kbd_preset *p = kbd_presets; p->name; p++)
         fprintf(stderr, "  %-11s (%d, %d, %d)\n", p->name, p->r, p->g, p->b);
+
+    g_stream_error_mode = prev_mode;
+    g_stream_error_line = prev_line;
     return -1;
 }
 

@@ -521,14 +521,15 @@ struct profile_def {
     const char *ec_tdp;
     int rapl_pl1;
     int rapl_pl2;
+    const char *rr;
 };
 
 static const struct profile_def PROFILES[] = {
-    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         255,   0,   0, "90/115W + GPU 100W", 0, 0 },
-    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "powersave",   "performance",         255, 110,   0, "45/115W + GPU 70W",  0, 0 },
-    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 200,  50, 255, "45/115W + GPU 70W",  0, 0 },
-    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",         0, 255,   0, "15/30W  + GPU 70W", 0, 0 },
-    { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                 80, 180, 255, "15/30W  + GPU 70W", 0, 0 },
+    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         255,   0,   0, "90/115W + GPU 100W", 0, 0, NULL },
+    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "powersave",   "performance",         255, 110,   0, "45/115W + GPU 70W",  0, 0, NULL },
+    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 200,  50, 255, "45/115W + GPU 70W",  0, 0, NULL },
+    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",         0, 255,   0, "15/30W  + GPU 70W", 0, 0, "lowest" },
+    { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                 80, 180, 255, "15/30W  + GPU 70W", 0, 0, NULL },
 };
 
 #define USER_PROFILE_FILE "/var/lib/cctl/profiles.conf"
@@ -538,6 +539,7 @@ static struct profile_def user_profiles[MAX_USER_PROFILES];
 static char user_profile_names[MAX_USER_PROFILES][32];
 static char user_profile_governors[MAX_USER_PROFILES][32];
 static char user_profile_epps[MAX_USER_PROFILES][32];
+static char user_profile_rrs[MAX_USER_PROFILES][32];
 static int user_profile_count;
 static int user_profiles_loaded;
 
@@ -570,13 +572,13 @@ static void load_user_profiles(void)
     char line[256];
     while (user_profile_count < MAX_USER_PROFILES && fgets(line, sizeof(line), fp)) {
         char name[32], gpu_text[16], turbo_text[16], gov[32], epp[32];
-        char pl1_text[16] = "skip", pl2_text[16] = "skip", extra[2];
+        char pl1_text[16] = "skip", pl2_text[16] = "skip", rr_text[32] = "skip", extra[2];
         int gpu = -1, turbo = -1, pl1 = -1, pl2 = -1;
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
-        int fields = sscanf(line, "%31s %15s %15s %31s %31s %15s %15s %1s",
+        int fields = sscanf(line, "%31s %15s %15s %31s %31s %15s %15s %31s %1s",
                             name, gpu_text, turbo_text, gov, epp,
-                            pl1_text, pl2_text, extra);
-        if (fields != 5 && fields != 7)
+                            pl1_text, pl2_text, rr_text, extra);
+        if (fields != 5 && fields != 7 && fields != 8)
             continue;
         if (!profile_name_valid(name))
             continue;
@@ -586,7 +588,7 @@ static void load_user_profiles(void)
             (safe_atoi(turbo_text, &turbo) < 0 || (turbo != 0 && turbo != 1))) continue;
         if (strcmp(gov, "skip") != 0 && !profile_value_in(gov, governors)) continue;
         if (strcmp(epp, "skip") != 0 && !profile_value_in(epp, epps)) continue;
-        if (fields == 7) {
+        if (fields >= 7) {
             int pl1_max = gpu == 2 || gpu < 0 ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
             if ((strcmp(pl1_text, "skip") != 0 &&
                  (safe_atoi(pl1_text, &pl1) < 0 || pl1 < 1 || pl1 > pl1_max)) ||
@@ -595,6 +597,16 @@ static void load_user_profiles(void)
                 continue;
             if (pl1 > 0 && pl2 > 0 && pl2 <= pl1)
                 continue;
+        }
+        if (fields == 8 && strcmp(rr_text, "skip") != 0) {
+            int valid_rr = 1;
+            for (const char *p = rr_text; *p; p++) {
+                if (!isalnum((unsigned char)*p) && *p != '.') {
+                    valid_rr = 0;
+                    break;
+                }
+            }
+            if (!valid_rr) continue;
         }
         int duplicate = 0;
         if (strcmp(name, "eco") == 0) duplicate = 1; /* reserved alias for built-in silent */
@@ -610,13 +622,16 @@ static void load_user_profiles(void)
                  strcmp(gov, "skip") == 0 ? "skip" : gov);
         snprintf(user_profile_epps[i], sizeof(user_profile_epps[i]), "%s",
                  strcmp(epp, "skip") == 0 ? "skip" : epp);
+        snprintf(user_profile_rrs[i], sizeof(user_profile_rrs[i]), "%s",
+                 (fields == 8 && strcmp(rr_text, "skip") != 0) ? rr_text : "skip");
         user_profiles[i] = (struct profile_def) {
             .name = user_profile_names[i], .label = user_profile_names[i],
             .color = PROF_COL_BLU, .help_desc = "User-defined profile",
             .gpu_profile = gpu, .turbo = turbo,
             .gov = user_profile_governors[i], .epp = user_profile_epps[i],
             .pulse_r = 0, .pulse_g = 0, .pulse_b = 0, .ec_tdp = "custom",
-            .rapl_pl1 = pl1, .rapl_pl2 = pl2
+            .rapl_pl1 = pl1, .rapl_pl2 = pl2,
+            .rr = (strcmp(user_profile_rrs[i], "skip") == 0 ? NULL : user_profile_rrs[i])
         };
     }
     fclose(fp);
@@ -694,6 +709,8 @@ static const struct profile_def *find_profile(const char *name)
     return NULL;
 }
 
+static int profile_apply_refresh_rate(const struct profile_def *p);
+
 static int profile_apply(const struct profile_def *p)
 {
     int err = 0;
@@ -708,6 +725,8 @@ static int profile_apply(const struct profile_def *p)
                         p->gpu_profile >= 0
                             ? (p->gpu_profile == 2 ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS)
                             : rapl_pl1_ceiling()) < 0)
+        err++;
+    if (profile_apply_refresh_rate(p) < 0)
         err++;
     return err ? -1 : 0;
 }

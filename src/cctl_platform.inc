@@ -497,7 +497,7 @@ static int is_x11_xrandr_available(struct display_info *out_info)
     return 1;
 }
 
-static int rr_set(const char *rate)
+static int rr_set_ext(const char *rate, const char *extra_note)
 {
     /* Validate rate: must be digits and at most one dot */
     for (const char *p = rate; *p; p++) {
@@ -521,8 +521,50 @@ static int rr_set(const char *rate)
         fprintf(stderr, "Error: Failed to set refresh rate to %sHz\n", rate);
         return -1;
     }
-    printf("  Refresh rate: %sHz%s\n", rate, snapshot_applied_tag());
+    const char *live_rate = rate;
+    if (query_display_info(&info) == 0 && info.current_rate[0])
+        live_rate = info.current_rate;
+    if (extra_note && *extra_note)
+        printf("  Refresh rate: %sHz %s%s\n", live_rate, extra_note, snapshot_applied_tag());
+    else
+        printf("  Refresh rate: %sHz%s\n", live_rate, snapshot_applied_tag());
     return 0;
+}
+
+static int rr_set(const char *rate)
+{
+    return rr_set_ext(rate, NULL);
+}
+
+static int profile_apply_refresh_rate(const struct profile_def *p)
+{
+    if (!p || !p->rr || !*p->rr || strcmp(p->rr, "skip") == 0)
+        return 0;
+
+    if (!has_display_support())
+        return 0;
+
+    struct display_info info;
+    if (!is_x11_xrandr_available(&info) || info.rate_count == 0)
+        return 0;
+
+    if (strcmp(p->rr, "lowest") == 0) {
+        int min_idx = 0;
+        double min_val = strtod(info.available_rates[0], NULL);
+        for (int i = 1; i < info.rate_count; i++) {
+            double v = strtod(info.available_rates[i], NULL);
+            if (v > 0.0 && (min_val <= 0.0 || v < min_val)) {
+                min_val = v;
+                min_idx = i;
+            }
+        }
+        const char *note = (strcmp(p->name, "powersave") == 0)
+            ? "(you can change refresh rate in this mode using cctl rr)"
+            : NULL;
+        return rr_set_ext(info.available_rates[min_idx], note);
+    }
+
+    return rr_set_ext(p->rr, NULL);
 }
 
 static int rr_list(void)
@@ -543,7 +585,7 @@ static int rr_list(void)
         printf("  %s%-8s%s%s\n", C_CYN, info.available_rates[i], C_RST,
                (strcmp(info.available_rates[i], info.current_rate) == 0) ? " (current)" : "");
     }
-    printf("\n%sUsage:%s %scctl rr <rate | 1 | 2>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+    printf("\n%sUsage:%s %scctl rr <rate | toggle>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
     return 0;
 }
 
@@ -736,6 +778,19 @@ int cctl_live_ec_state(int *tcc_offset, int *prochot_c)
 static const char *status_inferred_mode(int ec_code,
                                         const struct cpu_profile_state *cpu)
 {
+    if ((ec_code == 3 || ec_code == 2) && cpu->have_governor && cpu->have_epp &&
+        strcmp(cpu->governor, "powersave") == 0 &&
+        (strcmp(cpu->epp, "power") == 0 || strcmp(cpu->epp, "balance_power") == 0))
+        return "powersave (epp induced)";
+
+    if (ec_code == 2 && cpu->have_governor && cpu->have_epp &&
+        strcmp(cpu->governor, "performance") == 0 &&
+        strcmp(cpu->epp, "performance") == 0)
+        return "max (high performance - aggressive)";
+    if (ec_code == 2 && cpu->have_governor && cpu->have_epp &&
+        strcmp(cpu->governor, "powersave") == 0 &&
+        strcmp(cpu->epp, "performance") == 0)
+        return "max (high performance - non aggressive)";
     if (ec_code == 2) return "max (high performance)";
     if (ec_code == 1) return "powersave";
     if (ec_code == 0) return "silent";
@@ -749,8 +804,7 @@ static const char *status_inferred_mode(int ec_code,
         return "cpuperf (non-aggressive)";
     if (ec_code == 3 && cpu->have_governor && cpu->have_epp &&
         strcmp(cpu->governor, "powersave") == 0 &&
-        (strcmp(cpu->epp, "balance_performance") == 0 ||
-         strcmp(cpu->epp, "balance_power") == 0))
+        strcmp(cpu->epp, "balance_performance") == 0)
         return "balanced";
     return "standard mode (profile unclear)";
 }
@@ -842,6 +896,8 @@ static void query_cpu_max_freqs(int *p_max_mhz, int *e_max_mhz)
     *e_max_mhz = e_max;
 }
 
+static int s_status_mode_has_aggressive = 0;
+
 static void status_system(void)
 {
     char buf[128] = {0};
@@ -854,8 +910,11 @@ static void status_system(void)
     struct cpu_profile_state cpu_profile;
     read_cpu_profile(&cpu_profile);
     if (live_ec_code >= 0) {
+        const char *mode = status_inferred_mode(live_ec_code, &cpu_profile);
+        if (strstr(mode, "aggressive"))
+            s_status_mode_has_aggressive = 1;
         row("Mode:", "%s%s%s",
-            C_CYN, status_inferred_mode(live_ec_code, &cpu_profile), C_RST);
+            C_CYN, mode, C_RST);
         row("EC Code:", "%s%s%s (%d; live, TCC offset %d°C)", C_CYN,
             gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
     } else {
@@ -1101,6 +1160,7 @@ static void status_battery(void)
 
 static void show_status(void)
 {
+    s_status_mode_has_aggressive = 0;
     if (json_output) {
         json_first_field = 1;
         putchar('{');
@@ -1114,7 +1174,12 @@ static void show_status(void)
     status_battery();
     if (json_output) puts("}");
     else {
-        printf("\n%s** NVIDIA GPU clocks are not read live; cctl records only changes made through cctl, so these saved values may not reflect current hardware state.%s\n\n",
+        printf("\n");
+        if (s_status_mode_has_aggressive) {
+            printf("%sNote: Aggressive locks CPU clocks near max constantly; non-aggressive scales dynamically on demand (cool & quiet at idle).%s\n",
+                   C_DIM, C_RST);
+        }
+        printf("%s** NVIDIA GPU clocks are not read live; cctl records only changes made through cctl, so these saved values may not reflect current hardware state.%s\n\n",
                C_DIM, C_RST);
     }
 }

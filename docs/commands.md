@@ -109,7 +109,7 @@ Press `p` again before D3cold to cancel the wait; press `q` or Ctrl-C to exit.
 
 ```bash
 cctl rr                         # List all supported refresh rates
-cctl rr [1|2|<rate>]            # Set refresh rate (1=highest, 2=lowest, or explicit value like 60 or 144)
+cctl rr [<rate>|toggle]         # Set refresh rate (explicit value like 60 or 144, or toggle)
 cctl scale <factor|WxH|off>    # X11 display scaling (0.75, 1920x1080, or off to reset)
 ```
 
