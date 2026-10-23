@@ -105,12 +105,22 @@ Press `p` again before D3cold to cancel the wait; press `q` or Ctrl-C to exit.
 ### Display
 > **Note:** Display commands need a native **X11** session — if your desktop doesn't support one (e.g. Wayland), the `DISPLAY` section is hidden from `cctl --help` and the refresh rate from `cctl status`.
 >
-> Only the display panel's preconfigured refresh rates are supported — run `cctl rr` to list the valid ones for your screen and pick from that list.
+> `cctl rr` accepts any numeric rate: it is passed straight to `xrandr`, which snaps to the closest rate supported by that display's current mode, and cctl prints the rate actually applied. Run `cctl rr` to see the exact values available.
+>
+> `cctl rr` numbers every active display: the internal panel (`eDP-*`, or the first `DP-*` when the MUX is in dGPU mode) is always **#1** when it is on, other outputs follow as **#2**, **#3**, … When the internal panel is off, the first active monitor takes **#1**. Connected but inactive outputs are listed separately and cannot be targeted.
+>
+> Scaling applies to the **internal laptop panel** only; profiles also only change the internal panel's refresh rate. Use `cctl rr <rate> --N` to change an external monitor.
 
 ```bash
-cctl rr                         # List all supported refresh rates
-cctl rr [<rate>|toggle]         # Set refresh rate (explicit value like 60 or 144, or toggle)
+cctl rr                         # List displays: number, resolution, current & available rates
+cctl rr [<rate>|toggle] [#N]    # Set/toggle a rate; #N defaults to display 1
 cctl scale <factor|WxH|off>    # X11 display scaling (0.75, 1920x1080, or off to reset)
+```
+
+Example — set the second monitor to 60 Hz without touching the laptop panel:
+
+```bash
+cctl rr 60 --2
 ```
 
 ### Profile Individual Overrides

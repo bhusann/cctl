@@ -674,7 +674,7 @@ static void render(const GpuSnapshot *s, const Ui *u, double t, const char *bdf)
     draw_left_module(s, u);
     draw_right_module(s, u);
 
-    text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 p pause nvidia-smi to allow D3cold \xC2\xB7 poll %.1fs", g_cfg.interval);
+    text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 p pause nvidia-smi polling to allow D3cold \xC2\xB7 poll %.1fs", g_cfg.interval);
 }
 
 /* ----------------------------------------------------------- frame emission */

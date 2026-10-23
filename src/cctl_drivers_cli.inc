@@ -539,19 +539,18 @@ static const struct command commands[] = {
     /* Keyboard */
     { "kbc",            0, cmd_kbc,             SEC_KEYBOARD,  "<R G B | preset>",                "Set keyboard color (no arg: list presets)", NULL },
     { "kbb",            0, cmd_kbb,             SEC_KEYBOARD,  "<pct>",                           "Set brightness (0-100%)", NULL },
-    { "kbe",            0, cmd_kbe,             SEC_KEYBOARD,  "[effect|stop]",                   "Keyboard backlight effects (no arg: shows effect preset list & status)", NULL },
-    { "fn",             1, cmd_fnlock,          SEC_KEYBOARD,  "[lock|unlock]",                   "Toggle/set Fn Lock (Fn key behavior)", NULL },
+    { "kbe",            0, cmd_kbe,             SEC_KEYBOARD,  "[effect|stop]",                   "Keyboard backlight effects (no arg: list preset & status)", NULL },
+    { "fn",             1, cmd_fnlock,          SEC_KEYBOARD,  "[lock|unlock]",                   "Toggle/set Fn Lock", NULL },
 
     /* Fan */
-    { "fan",            0, cmd_fan,             SEC_FAN,       "auto|max",                          "Set both fans (EC-controlled / full)", NULL },
+    { "fan",            0, cmd_fan,             SEC_FAN,       "auto|max",                          "Set both fans (auto: EC-controlled, max: full speed)", NULL },
     { "fan",            0, cmd_fan,             SEC_FAN,       "silent [--nosafe]",                 "Quiet mode (forces silent/eco profile first; bypass with --nosafe)", NULL },
     { "fan",            0, cmd_fan,             SEC_FAN,       "<pct> --nosafe",                    "Set both fans to duty (25-100%)", NULL },
     { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu <pct> --nosafe",             "Set individual fan duty (25-100%)", NULL },
-    { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu auto",                      "Restore individual fan to auto (independent)", NULL },
+    { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu auto",                      "Restore individual fan to auto", NULL },
 
     /* GPU MUX */
-    { "mux",            0, cmd_mux,             SEC_MUX,       "",                                "Show current MUX mode (MSHybrid / dGPU)", NULL },
-    { "mux",            0, cmd_mux,             SEC_MUX,       "switch",                          "Toggle to the other mode (reboot to apply)", NULL },
+    { "mux",            0, cmd_mux,             SEC_MUX,       "[switch]",                        "Switch MUX mode (no arg: shows current mode)", NULL },
 
     /* Privacy */
     { "webcam",         1, cmd_webcam,          SEC_PRIVACY,   "[on|off]",                        "Toggle/set webcam", NULL },
@@ -563,7 +562,7 @@ static const struct command commands[] = {
     { "bat",            0, cmd_bat,             SEC_BATTERY,   "standard",                         "Select Standard charge mode", NULL },
 
     /* Info */
-    { "status",         1, cmd_status,          SEC_INFO,      "[--json]",                        "Show current settings (JSON with --json)", NULL },
+    { "status",         1, cmd_status,          SEC_INFO,      "[--json]",                        "Show current settings", NULL },
     { "cpumon",         1, cmd_cpumon,          SEC_INFO,      "[--json] [--interval SEC] [--once]", "Live CPU, memory, power, and fan monitor", NULL },
     { "gpumon",         1, cmd_gpumon,          SEC_INFO,      "[--json]",                        "Live NVIDIA GPU monitor", NULL },
     { "capabilities",   0, cmd_capabilities,    SEC_INFO,      "[--json]",                        "Show controls available on this system", NULL },
@@ -580,8 +579,8 @@ static const struct command commands[] = {
     { "nvidia",         0, cmd_nvidia,          SEC_NVIDIA,    "memclock [min] <max>|reset",      "Lock/unlock memory clocks (no arg: show max clock)", NULL },
 
     /* Display */
-    { "rr",             0, cmd_rr,              SEC_DISPLAY,   "[rate|toggle]",                   "List/set refresh rate or toggle", has_display_support },
-    { "scale",          0, cmd_scale,           SEC_DISPLAY,   "<factor|WxH|off>",                "GPU-side scaling (no arg: explain in detail)", has_display_support },
+    { "rr",             0, cmd_rr,              SEC_DISPLAY,   "[rate|toggle] [#N]",              "List displays or set/toggle refresh rate", has_display_support },
+    { "scale",          0, cmd_scale,           SEC_DISPLAY,   "<factor|WxH|off>",                "Scale the internal panel", has_display_support },
 
     /* Overrides */
     { "turbo",          0, cmd_turbo,           SEC_OVERRIDES, "<on|off> [--nosafe]",              "Turbo on sets fans to auto only in EC code 2/3; bypass with --nosafe", NULL },
@@ -592,7 +591,7 @@ static const struct command commands[] = {
     /* System */
     { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force]",                       "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
     { "uninstall",      1, cmd_uninstall,       SEC_SYSTEM,    "",                                "Remove cctl, its profiles, sudo rule, and saved data", is_installed_systemwide },
-    { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (auto-fetch or offline; sha256-verified)", NULL },
+    { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (sha256-verified)", NULL },
     { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [name] [--mask fields]", "Save, restore, view, or delete snapshots (alias: snap)", NULL },
     { "options",        0, cmd_options,          SEC_SYSTEM,    "[setting [value]]",               "Show or change cctl-specific settings", NULL },
 };
@@ -613,7 +612,7 @@ static const struct section_def sections[] = {
     { SEC_BATTERY,   "BATTERY",                     PROF_COL_GRN,     NULL },
     { SEC_INFO,      "INFO",                        PROF_COL_CYN_BLD, NULL },
     { SEC_NVIDIA,    "NVIDIA",                      PROF_COL_RED,     NULL },
-    { SEC_DISPLAY,   "DISPLAY",                     PROF_COL_BLU,     "(only X11 session is supported, needs xrandr)" },
+    { SEC_DISPLAY,   "DISPLAY",                     PROF_COL_BLU,     "(X11 detected)" },
     { SEC_OVERRIDES, "PROFILE INDIVIDUAL OVERRIDES", PROF_COL_YLW,     NULL },
     { SEC_SYSTEM,    "SYSTEM",                      PROF_COL_CYN_BLD, NULL },
 };
@@ -690,7 +689,6 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST);
 
     printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
-    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n\n", C_DIM, C_RST);
 
     for (size_t s = 0; s < sizeof(sections) / sizeof(sections[0]); s++) {
         const struct section_def *sec = &sections[s];
@@ -709,7 +707,6 @@ static void print_usage(const char *prog)
                 print_help_command(cmd);
                 printf("\n");
             }
-            printf("      %sEC code 2/3, or Turbo ON while in EC code 2/3, sets fans to auto; bypass with --nosafe%s\n\n", C_DIM, C_RST);
             print_profile_table();
             continue;
         }
@@ -740,6 +737,7 @@ static void print_usage(const char *prog)
         printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
     }
 
+    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n\n", C_DIM, C_RST);
     printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
     g_stream_output = prev_stream;
 }

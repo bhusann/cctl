@@ -10,10 +10,12 @@ static int scale_set(const char *resolution)
     struct display_info info;
     if (query_display_info(&info) < 0)
         return fail("failed to query display info");
+    if (!info.internal)
+        return fail("the internal laptop panel is not active (scaling is internal-only)");
 
     char *const args[] = {
         "xrandr", "--output", info.output, "--mode", info.resolution,
-        "--scale-from", (char *)resolution, NULL
+        "--rate", info.current_rate, "--scale-from", (char *)resolution, NULL
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to set scale to %s", resolution);
@@ -26,10 +28,12 @@ static int scale_reset(void)
     struct display_info info;
     if (query_display_info(&info) < 0)
         return fail("failed to query display info");
+    if (!info.internal)
+        return fail("the internal laptop panel is not active (scaling is internal-only)");
 
     char *const args[] = {
         "xrandr", "--output", info.output, "--mode", info.resolution,
-        "--scale", "1x1", NULL
+        "--rate", info.current_rate, "--scale", "1x1", NULL
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to reset scale");
@@ -337,19 +341,7 @@ static int cmd_set(int argc, char **argv)
         printf("%sUsage:%s %scctl %s <profile> [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, "set", C_RST);
         printf("%sValid Profiles:%s\n", C_YLW, C_RST);
-        load_user_profiles();
-        for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
-            const char *display_name = strcmp(PROFILES[i].name, "silent") == 0
-                                     ? "silent/eco" : PROFILES[i].name;
-            printf("  %s%-12s%s %s\n",
-                   prof_color_str(PROFILES[i].color),
-                   display_name,
-                   C_RST,
-                   PROFILES[i].help_desc);
-        }
-        for (int i = 0; i < user_profile_count; i++)
-            printf("  %s%-12s%s %s\n", C_BLU, user_profiles[i].name, C_RST,
-                   user_profiles[i].help_desc);
+        print_profile_table();
         g_stream_mode = prev;
         return 0;
     }
@@ -394,7 +386,8 @@ static int cmd_set(int argc, char **argv)
         if (p->rr && *p->rr && strcmp(p->rr, "skip") != 0 && has_display_support()) {
             if (strcmp(p->rr, "lowest") == 0) {
                 struct display_info dinfo;
-                if (is_x11_xrandr_available(&dinfo) && dinfo.rate_count > 0) {
+                if (is_x11_xrandr_available(&dinfo) && dinfo.rate_count > 0 &&
+                    dinfo.internal) {
                     int min_idx = 0;
                     double min_val = strtod(dinfo.available_rates[0], NULL);
                     for (int j = 1; j < dinfo.rate_count; j++) {

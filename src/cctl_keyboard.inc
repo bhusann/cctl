@@ -121,7 +121,7 @@ static int kbd_set_preset(const char *name)
     fprintf(stderr, "Error: Unknown preset '%s'\n", name);
     fprintf(stderr, "Available presets:\n");
     for (const struct kbd_preset *p = kbd_presets; p->name; p++)
-        fprintf(stderr, "  %-11s (%d, %d, %d)\n", p->name, p->r, p->g, p->b);
+        fprintf(stderr, "  %-8s (%d, %d, %d)\n", p->name, p->r, p->g, p->b);
 
     g_stream_error_mode = prev_mode;
     g_stream_error_line = prev_line;
@@ -163,7 +163,7 @@ static void kbd_show_presets(void)
     printf("%sAvailable Presets:%s\n", C_YLW, C_RST);
     int col = 0;
     for (const struct kbd_preset *p = kbd_presets; p->name; p++) {
-        printf("  %s%-11s%s (%3d, %3d, %3d)", C_CYN, p->name, C_RST, p->r, p->g, p->b);
+        printf("  %s%-8s%s (%3d, %3d, %3d)", C_CYN, p->name, C_RST, p->r, p->g, p->b);
         col++;
         if (col % 2 == 0) printf("\n");
     }

@@ -4,8 +4,9 @@ These full-load measurements on the author's 10-core, 16-thread CPU compare
 the performance, power, and temperature tradeoffs. Results vary with cooling
 and workload.
 
-The `performance` EPP results were the same with either governor, so they are
-combined below.
+The results depend on EPP alone: with either the `performance` or `powersave`
+governor, the same EPP produced the same measurements, so governor variants are
+combined in each row below.
 
 For the highest measured performance, code `2` with Turbo on and EPP
 `performance` reached 85–87W, then sustained 75–76W near 98°C. Code `2` with
@@ -59,3 +60,6 @@ reaching their 15W PL1 limit.
 | powersave / power | On or off | Peak & sustained: P 1100 MHz; E 1100 MHz; about 12W across all codes. |
 
 
+
+EPP determines the performance of the CPU under either the `performance` or
+`powersave` governor.

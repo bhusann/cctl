@@ -1080,30 +1080,57 @@ static int cmd_rr(int argc, char **argv)
         return rc;
     }
 
-    if (argc > 3)
-        return fail("Unexpected extra argument '%s'", argv[3]);
+    const char *rate = NULL;
+    int mon = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strncmp(argv[i], "--", 2) == 0) {
+            char *end = NULL;
+            long v = strtol(argv[i] + 2, &end, 10);
+            if (!end || *end || v < 1 || v > 99)
+                return fail("Invalid display number '%s' (use --2, --3, ...)",
+                            argv[i]);
+            mon = (int)v;
+        } else if (!rate) {
+            rate = argv[i];
+        } else {
+            return fail("Unexpected extra argument '%s'", argv[i]);
+        }
+    }
+    if (!rate)
+        return fail("Missing refresh rate (run 'cctl rr' to list displays)");
 
-    const char *rate = argv[2];
     if (strcmp(rate, "toggle") == 0 || strcmp(rate, "t") == 0) {
         struct display_info info;
-        if (query_display_info(&info) < 0 || info.rate_count < 2) {
-            fprintf(stderr, "Error: cannot toggle refresh rate (multiple rates unavailable)\n");
+        if (query_display_info(&info) < 0) {
+            fprintf(stderr, "Error: cannot toggle refresh rate (no display info)\n");
+            return -1;
+        }
+        int ti = display_monitor_by_number(&info, mon > 0 ? mon : 1);
+        if (ti < 0) {
+            fprintf(stderr, "Error: no display #%d (run 'cctl rr' to list displays)\n",
+                    mon > 0 ? mon : 1);
+            return -1;
+        }
+        struct display_monitor *m = &info.monitors[ti];
+        if (m->rate_count < 2) {
+            fprintf(stderr, "Error: cannot toggle refresh rate on %s (multiple rates unavailable)\n",
+                    m->name);
             return -1;
         }
         int cur_idx = -1;
-        double cur_val = strtod(info.current_rate, NULL);
-        for (int i = 0; i < info.rate_count; i++) {
-            if (strcmp(info.current_rate, info.available_rates[i]) == 0 ||
-                (cur_val > 0.0 && fabs(cur_val - strtod(info.available_rates[i], NULL)) < 0.05)) {
+        double cur_val = strtod(m->current_rate, NULL);
+        for (int i = 0; i < m->rate_count; i++) {
+            if (strcmp(m->current_rate, m->available_rates[i]) == 0 ||
+                (cur_val > 0.0 && fabs(cur_val - strtod(m->available_rates[i], NULL)) < 0.05)) {
                 cur_idx = i;
                 break;
             }
         }
-        int next_idx = (cur_idx >= 0) ? ((cur_idx + 1) % info.rate_count) : 0;
-        rate = info.available_rates[next_idx];
+        int next_idx = (cur_idx >= 0) ? ((cur_idx + 1) % m->rate_count) : 0;
+        rate = m->available_rates[next_idx];
     }
 
-    int rc = rr_set(rate);
+    int rc = rr_set_ext_on(mon, rate, NULL);
     if (rc == 0) print_done();
     return rc;
 }

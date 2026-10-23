@@ -102,17 +102,29 @@ recommendations. Choose what suits your workload, or save a preferred
 combination as a [custom profile](#custom-profiles).
 
 ```
-Profile     EC profile code Turbo  Governor     EPP                EC default CPU & GPU TDP
-─────────── ─────────────── ────── ──────────── ────────────────── ──────────────────────────────
-max         2               ON     performance  performance        90/115W + GPU 100W
-cpuperf     3               ON     powersave    performance        45/115W + GPU 70W
-balanced    3               ON     powersave    balance_performance 45/115W + GPU 70W
-powersave   1               OFF    powersave    balance_power      15/30W  + GPU 70W
-silent/eco  0               OFF    powersave    power              15/30W  + GPU 70W
+Profile    EC code Turbo  Governor     EPP                 EC default TDP      Refresh
+────────── ─────── ────── ──────────── ─────────────────── ─────────────────── ───────
+max        2       ON     powersave    performance         90/115W + GPU 100W  --
+cpuperf    3       ON     powersave    performance         45/115W             --
+balanced   3       ON     powersave    balance_performance 45/115W             --
+powersave  1       OFF    powersave    balance_power       15/30W              lowest
+silent/eco 0       OFF    powersave    power               15/30W              --
 ```
 
 > [!NOTE]
 > Applying the built-in `powersave` profile sets both fans to **SILENT** (just like `silent/eco` mode) and automatically switches the internal display to the lowest supported refresh rate when running under X11 (e.g. 40 Hz) to maximize battery runtime. You can adjust the refresh rate anytime using `cctl rr`.
+
+> [!NOTE]
+> `cctl rr` lists every active display and numbers it: the internal panel
+> (`eDP-*`, or the first `DP-*` when the MUX is in dGPU mode) is always **#1**
+> while it is on, other outputs follow as **#2**, **#3**, … When the panel is
+> off, the first active monitor becomes **#1**.
+> `cctl rr <rate>` changes display 1; `cctl rr <rate> --2` changes display 2.
+> Any numeric value is accepted: `xrandr` snaps it to the closest rate that
+> display supports, and cctl prints what was actually applied.
+>
+> Scaling, profiles and the `powersave` refresh drop target the **internal
+> laptop panel** only.
 
 > [!CAUTION]
 > Silent fan mode and manual fan duty may keep fans quiet or fixed regardless of
@@ -175,9 +187,26 @@ Valid values: EC code `3`, `2`, `1`, or `0`; Turbo `1` (on) or `0` (off);
 governor `powersave` or `performance`; and EPP `performance`,
 `balance_performance`, `balance_power`, or `power`.
 
-When pairing performance profiles with EPP `performance`, cctl distinguishes between **aggressive** and **non-aggressive** behavior based on the CPU governor:
-- **Aggressive** (`gov: performance`): Locks CPU frequencies near maximum constantly for minimal latency, at the expense of higher idle heat and power consumption.
-- **Non-aggressive** (`gov: powersave`): Scales frequencies dynamically on demand, idling cool and quiet (around 800–1200 MHz) while boosting instantly to maximum clocks under load.
+CPU performance under either the `performance` or `powersave` governor is set by
+**EPP** alone — the same EPP produced identical measurements under both
+governors (see the [EC profile test results](docs/ec-profile-test-results.md)).
+The governor only decides *how* clocks are chosen:
+
+- **`powersave`** — scales clocks on demand, idling around 800–1200 MHz and
+  boosting under load. EPP is freely selectable with `cctl epp`:
+  `performance`, `balance_performance`, `balance_power`, or `power`.
+- **`performance`** — holds clocks near maximum constantly for the lowest
+  latency, at the cost of idle heat and power. **EPP is locked to
+  `performance`** in this mode: `cctl epp` refuses any other value and asks you
+  to switch the governor first.
+
+Because the governor changes only the frequency *policy*, while EPP changes the
+actual performance target, every built-in profile uses governor `powersave` and
+expresses its intent through EPP — `max` and `cpuperf` with `performance`,
+`balanced` with `balance_performance`, `powersave` with `balance_power`, and
+`silent/eco` with `power`. `cctl status` still reports a profile as
+**aggressive** when a custom profile pairs governor `performance` with EPP
+`performance`, and **non-aggressive** for the dynamic `powersave` pairing.
 
 > **Caution:** If a profile line contains a typo or unsupported value, cctl
 > skips it, so the profile will not appear in `cctl set` or `cctl --help`.
@@ -185,8 +214,8 @@ When pairing performance profiles with EPP `performance`, cctl distinguishes bet
 Custom profiles trigger automatic fan control when they apply EC code `2` or
 `3`, or enable Turbo while the resulting EC code is `2` or `3`; `--nosafe`
 bypasses it. Skipped or unset values show as `--` in the help table; custom
-PL1/PL2 values appear in the EC TDP column, for example
-`PL1 90W / PL2 115W (custom)`.
+PL1/PL2 values appear in the EC TDP column as `pl1/pl2W`, for example `45/60W`,
+or `--/25W` when only PL2 is set.
 
 Append `--dry-run` to preview changes without applying them. Dry-run is
 available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
@@ -200,7 +229,7 @@ Command names:
 - Keyboard and fans: `kbc`, `kbb`, `kbe`, `fn`, `fan`
 - GPU and privacy: `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic`
 - Battery and system info: `bat`, `status`, `capabilities`, `--version`
-- Monitors: `cpumon`, `gpumon`; `monitor` is deprecated
+- Monitors: `cpumon`, `gpumon`
 - Display: `rr`, `scale`
 - CPU controls: `turbo`, `gov`, `epp`, `rapl`
 - Snapshots: `snap` (alias `snapshot`), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del`

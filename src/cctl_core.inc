@@ -1071,7 +1071,7 @@ static int mux_show_internal(const char *prefix)
         json_field("GPU MUX", value);
         return 0;
     }
-    const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_MAG;
+    const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_RED;
     if (running >= 0 && nvram != running)
         printf("%s%s%s%s  %s← %s pending (reboot to apply)%s\n",
                prefix,
@@ -1271,6 +1271,8 @@ static int mux_switch(void)
         return 1;
     }
 
+    int prev_stream_mode = g_stream_mode;
+    g_stream_mode = STREAM_MODE_LINE;
     stream_printf(STREAM_DELAY_US, "GPU MUX switched: %s%s%s → %s%s%s\n",
                   C_DIM, mux_mode_str(current), C_RST,
                   C_BLD, mux_mode_str(target), C_RST);
@@ -1280,6 +1282,7 @@ static int mux_switch(void)
                "After reboot in dGPU mode, the X11 display may start at 40 Hz due to a hardware quirk.\n"
                "Run 'cctl rr 165' to restore 165 Hz.\n");
     }
+    g_stream_mode = prev_stream_mode;
     return 0;
 }
 

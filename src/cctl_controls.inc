@@ -458,8 +458,10 @@ static int legacy_fan_auto_all(void)
  * Profiles from the Rust codebase (profiles.rs):
  *
  * max (perf_gpu):
- *   GPU=2(performance), turbo=ON, governor=performance, EPP=performance,
+ *   GPU=2(performance), turbo=ON, governor=powersave, EPP=performance,
  *   display=auto; built-in profiles leave RAPL limits unchanged.
+ *   Governor is powersave because measured performance depends on EPP alone,
+ *   and powersave keeps EPP selectable while idling cooler.
  *
  * cpuperf (perf_cpu):
  *   GPU=3(turbo), turbo=ON, governor=powersave, EPP=performance,
@@ -525,11 +527,11 @@ struct profile_def {
 };
 
 static const struct profile_def PROFILES[] = {
-    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "performance", "performance",         255,   0,   0, "90/115W + GPU 100W", 0, 0, NULL },
-    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "powersave",   "performance",         255, 110,   0, "45/115W + GPU 70W",  0, 0, NULL },
-    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 200,  50, 255, "45/115W + GPU 70W",  0, 0, NULL },
-    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",         0, 255,   0, "15/30W  + GPU 70W", 0, 0, "lowest" },
-    { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                 80, 180, 255, "15/30W  + GPU 70W", 0, 0, NULL },
+    { "max",       "Performance Max + GPU (80W-100W)", PROF_COL_RED,     "Maximum performance (90/115W + GPU 100W)",              2, 1, "powersave",   "performance",         255,   0,   0, "90/115W + GPU 100W", 0, 0, NULL },
+    { "cpuperf",   "Performance CPU Only",             PROF_COL_YLW,     "Performance CPU only (45/115W + GPU 70W)",              3, 1, "powersave",   "performance",         255, 110,   0, "45/115W",            0, 0, NULL },
+    { "balanced",  "Balanced",                         PROF_COL_GRN,     "Balanced daily use (45/115W + GPU 70W)",                3, 1, "powersave",   "balance_performance", 200,  50, 255, "45/115W",            0, 0, NULL },
+    { "powersave", "Powersave",                        PROF_COL_CYN_BLD, "Power saving, turbo off (15/30W + GPU 70W)",            1, 0, "powersave",   "balance_power",         0, 255,   0, "15/30W",             0, 0, "lowest" },
+    { "silent",    "Silent",                           PROF_COL_DIM,     "Ultra power saving (15/30W + GPU 70W)",                 0, 0, "powersave",   "power",                 80, 180, 255, "15/30W",             0, 0, NULL },
 };
 
 #define USER_PROFILE_FILE "/var/lib/cctl/profiles.conf"
@@ -637,8 +639,36 @@ static void load_user_profiles(void)
     fclose(fp);
 }
 
+/* Defined in cctl_platform.inc, which is included after this file. Mirrors the
+ * visibility rule used by the DISPLAY section (cctl rr / cctl scale). */
+static int has_display_support(void);
+
+/* Refresh cell for the profile table: "lowest", "<rate>Hz", or "--" when unset. */
+static const char *profile_rr_label(const char *rr, char *buf, size_t len)
+{
+    if (!rr || !*rr || strcmp(rr, "skip") == 0)
+        snprintf(buf, len, "--");
+    else if (strcmp(rr, "lowest") == 0)
+        snprintf(buf, len, "lowest");
+    else
+        snprintf(buf, len, "%sHz", rr);
+    return buf;
+}
+
+static void profile_table_row(const char *color, int name_width, const char *name,
+                              const char *ec, const char *turbo, const char *gov,
+                              const char *epp, const char *tdp, const char *rr)
+{
+    printf("      %s%-*s%s %-7s %-6s %-12s %-19s", color, name_width, name, C_RST,
+           ec, turbo, gov, epp);
+    if (rr) printf(" %-19s %s", tdp, rr);
+    else printf(" %s", tdp);
+    printf("\n");
+}
+
 static void print_profile_table(void)
 {
+    int show_rr = has_display_support();
     size_t name_width = strlen("silent/eco");
     for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
         size_t len = strlen(PROFILES[i].name);
@@ -649,47 +679,58 @@ static void print_profile_table(void)
         size_t len = strlen(user_profiles[i].name);
         if (len > name_width) name_width = len;
     }
-    printf("      %s%-*s %-15s %-6s %-12s %-18s %s%s\n", C_BLD, (int)name_width,
-           "Profile", "EC profile code", "Turbo", "Governor", "EPP",
-           "EC default CPU & GPU TDP", C_RST);
+    if (show_rr)
+        printf("      %s%-*s %-7s %-6s %-12s %-19s %-19s %s%s\n", C_BLD, (int)name_width,
+               "Profile", "EC code", "Turbo", "Governor", "EPP", "EC default TDP",
+               "Refresh", C_RST);
+    else
+        printf("      %s%-*s %-7s %-6s %-12s %-19s %s%s\n", C_BLD, (int)name_width,
+               "Profile", "EC code", "Turbo", "Governor", "EPP", "EC default TDP", C_RST);
     printf("      %s", C_DIM);
     for (size_t i = 0; i < name_width; i++) printf("─");
-    printf(" ─────────────── ────── ──────────── ────────────────── ──────────────────────────────%s\n", C_RST);
+    printf(" ─────── ────── ──────────── ─────────────────── ───────────────────%s%s\n",
+           show_rr ? " ───────" : "", C_RST);
     for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
         const struct profile_def *p = &PROFILES[i];
         const char *display_name = strcmp(p->name, "silent") == 0 ? "silent/eco" : p->name;
-        printf("      %s%-*s%s %-15d %-6s %-12s %-18s %s\n",
-               prof_color_str(p->color), (int)name_width, display_name, C_RST,
-               p->gpu_profile,
-               p->turbo ? "ON" : "OFF",
-               p->gov,
-               p->epp,
-               p->ec_tdp);
+        char ec_code[8], rr_buf[16];
+        snprintf(ec_code, sizeof(ec_code), "%d", p->gpu_profile);
+        profile_table_row(prof_color_str(p->color), (int)name_width, display_name,
+                          ec_code,
+                          p->turbo ? "ON" : "OFF",
+                          p->gov,
+                          p->epp,
+                          p->ec_tdp,
+                          show_rr ? profile_rr_label(p->rr, rr_buf, sizeof(rr_buf)) : NULL);
     }
     for (int i = 0; i < user_profile_count; i++) {
         const struct profile_def *p = &user_profiles[i];
-        char tdp[64];
-        snprintf(tdp, sizeof(tdp), "%s", p->ec_tdp);
-        if (p->rapl_pl1 <= 0 && p->rapl_pl2 <= 0)
+        char tdp[32];
+        if (p->rapl_pl1 <= 0 && p->rapl_pl2 <= 0) {
             snprintf(tdp, sizeof(tdp), "--");
-        if (p->rapl_pl1 > 0 || p->rapl_pl2 > 0) {
-            char pl1[16], pl2[16];
-            if (p->rapl_pl1 > 0) snprintf(pl1, sizeof(pl1), "%dW", p->rapl_pl1);
+        } else {
+            char pl1[12], pl2[12];
+            if (p->rapl_pl1 > 0) snprintf(pl1, sizeof(pl1), "%d", p->rapl_pl1);
             else snprintf(pl1, sizeof(pl1), "--");
-            if (p->rapl_pl2 > 0) snprintf(pl2, sizeof(pl2), "%dW", p->rapl_pl2);
+            if (p->rapl_pl2 > 0) snprintf(pl2, sizeof(pl2), "%d", p->rapl_pl2);
             else snprintf(pl2, sizeof(pl2), "--");
-            snprintf(tdp, sizeof(tdp), "PL1 %s / PL2 %s (custom)", pl1, pl2);
+            snprintf(tdp, sizeof(tdp), "%s/%sW", pl1, pl2);
         }
-        char ec_code[16];
+        char ec_code[16], rr_buf[16];
         if (p->gpu_profile >= 0) snprintf(ec_code, sizeof(ec_code), "%d", p->gpu_profile);
         else snprintf(ec_code, sizeof(ec_code), "--");
-        printf("      %s%-*s%s %-15s %-6s %-12s %-18s %s\n",
-               prof_color_str(p->color), (int)name_width, p->name, C_RST,
-               ec_code,
-               p->turbo < 0 ? "--" : (p->turbo ? "ON" : "OFF"),
-               strcmp(p->gov, "skip") == 0 ? "--" : p->gov,
-               strcmp(p->epp, "skip") == 0 ? "--" : p->epp, tdp);
+        profile_table_row(prof_color_str(p->color), (int)name_width, p->name,
+                          ec_code,
+                          p->turbo < 0 ? "--" : (p->turbo ? "ON" : "OFF"),
+                          strcmp(p->gov, "skip") == 0 ? "--" : p->gov,
+                          strcmp(p->epp, "skip") == 0 ? "--" : p->epp,
+                          tdp,
+                          show_rr ? profile_rr_label(p->rr, rr_buf, sizeof(rr_buf)) : NULL);
     }
+    printf("\n      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto; bypass with --nosafe.%s\n",
+           C_DIM, C_RST);
+    printf("      %sEPP determines CPU performance under either the performance or powersave governor.%s\n",
+           C_DIM, C_RST);
     printf("\n");
 }
 

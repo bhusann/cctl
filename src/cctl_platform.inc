@@ -314,18 +314,40 @@ static int mic_toggle(void)
  * REFRESH RATE (xrandr)
  * ======================================================================== */
 
-/* Detect the first connected output name (e.g. "eDP-1"). Returns static buffer. */
-struct display_info {
-    char output[64];
-    char resolution[64];
-    char current_resolution[64];
+/* Parsed per-output state from `xrandr --current` (one entry per connected
+ * output, internal panel flagged separately). */
+#define MAX_MONITORS 8
+
+struct display_monitor {
+    char name[64];
+    int active;                 /* a mode with '*' is currently scanned out */
+    int internal;               /* the laptop panel (also when named DP-*) */
+    char geometry[64];          /* "WxH" from the output line (framebuffer region) */
+    char resolution[64];        /* active mode */
     char current_rate[16];
     char available_rates[32][16];
     int rate_count;
 };
 
-static void display_parse_current_resolution(const char *line, char *out, size_t out_sz)
+struct display_info {
+    /* Priority monitor (internal panel when active), kept for callers that only need one. */
+    char output[64];
+    int internal;
+    char resolution[64];
+    char current_resolution[64];
+    char current_rate[16];
+    char available_rates[32][16];
+    int rate_count;
+    /* Every output xrandr reports, in server order. */
+    struct display_monitor monitors[MAX_MONITORS];
+    int monitor_count;
+};
+
+/* Framebuffer region ("WxH") from a connected output line, if one is set. */
+static void display_parse_geometry(const char *line, char *out, size_t out_sz)
 {
+    if (!out_sz) return;
+    out[0] = '\0';
     const char *p = strstr(line, " connected");
     if (!p) return;
     p += strlen(" connected");
@@ -347,6 +369,48 @@ static void display_parse_current_resolution(const char *line, char *out, size_t
     }
 }
 
+/* Accept only "<digits>[.<digits>][*|+]" tokens, so verbose mode blocks
+ * ("135.000MHz", "(0x6b)", "h:") can never be mistaken for rates. */
+static int display_rate_token(const char *tok, char *out, size_t out_sz, int *is_active)
+{
+    size_t n = 0;
+    int digits = 0, dots = 0;
+    *is_active = 0;
+    while (tok[n]) {
+        unsigned char c = (unsigned char)tok[n];
+        if (isdigit(c)) {
+            digits++;
+        } else if (c == '.') {
+            if (++dots > 1) return 0;
+        } else if (c == '*') {
+            *is_active = 1;
+        } else if (c != '+') {
+            return 0;
+        }
+        n++;
+    }
+    if (!digits || n >= out_sz) return 0;
+    size_t o = 0;
+    for (size_t i = 0; i < n && o + 1 < out_sz; i++) {
+        if (isdigit((unsigned char)tok[i]) || tok[i] == '.')
+            out[o++] = tok[i];
+    }
+    out[o] = '\0';
+    return o > 0;
+}
+
+/* Internal laptop panel by connector name (eDP / LVDS / DSI). */
+static int is_internal_panel(const char *output)
+{
+    if (!output) return 0;
+    return strncmp(output, "eDP", 3) == 0 ||
+           strncmp(output, "LVDS", 4) == 0 ||
+           strncmp(output, "DSI", 3) == 0;
+}
+
+/* The NVIDIA proprietary driver exposes the laptop panel as DP-0 once the
+ * MUX switches to dGPU-only. mux_running_mode() (from cctl_core.inc) tells us
+ * which naming scheme xrandr is using. */
 static int query_display_info(struct display_info *info)
 {
     /* No fabricated fallbacks: every field must come from a real xrandr
@@ -355,7 +419,7 @@ static int query_display_info(struct display_info *info)
      * nothing — most visibly under XWayland. */
     memset(info, 0, sizeof(*info));
 
-    char output[32768];
+    char output[65536];
     char *const xrandr_args[] = { "xrandr", "--current", NULL };
     if (run(xrandr_args, RUN_CAPTURE, output, sizeof(output)) != 0)
         return -1;
@@ -365,89 +429,164 @@ static int query_display_info(struct display_info *info)
     if (!fp) return -1;
 
     char line[512];
-    int found_output = 0;
+    int cur = -1;
     while (fgets(line, sizeof(line), fp)) {
-        // Strip trailing newlines
         for (char *p = line; *p; p++) if (*p == '\n' || *p == '\r') *p = '\0';
 
-        // Check for output line: "<name> connected ..."
-        if (!found_output && strstr(line, " connected")) {
+        /* An output line ends the previous output's mode block. */
+        if (line[0] != ' ') {
+            cur = -1;
+            if (strstr(line, " disconnected")) continue;
+            if (!strstr(line, " connected")) continue;
             char name[64];
-            if (sscanf(line, "%63s connected", name) == 1) {
-                strcpy(info->output, name);
-                found_output = 1;
-                display_parse_current_resolution(line, info->current_resolution,
-                                                 sizeof(info->current_resolution));
-            }
+            if (sscanf(line, "%63s", name) != 1) continue;
+            if (info->monitor_count >= MAX_MONITORS) continue;
+            cur = info->monitor_count++;
+            snprintf(info->monitors[cur].name,
+                     sizeof(info->monitors[cur].name), "%s", name);
+            display_parse_geometry(line, info->monitors[cur].geometry,
+                                   sizeof(info->monitors[cur].geometry));
+            continue;
         }
 
-        // If we found the output, look for resolution lines starting with spaces
-        if (found_output && line[0] == ' ' && line[1] == ' ' && line[2] == ' ') {
-            char res[64];
-            // Read the resolution name
-            char *p = line;
+        if (cur < 0) continue;
+        struct display_monitor *m = &info->monitors[cur];
+
+        const char *p = line;
+        while (*p == ' ') p++;
+        char res[64];
+        if (sscanf(p, "%63s", res) != 1) continue;
+        int w, h;
+        if (sscanf(res, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) continue;
+
+        p += strlen(res);
+        char rates[32][16];
+        int rc = 0, active = 0;
+        char active_rate[16] = "";
+        while (*p && rc < 32) {
             while (*p == ' ') p++;
-            if (sscanf(p, "%63s", res) != 1) continue;
-
-            // Parse rates
-            p += strlen(res);
-            int rate_idx = 0;
-            int is_active_res = 0;
-            char rates_temp[32][16];
-
-            while (*p && rate_idx < 32) {
-                // skip spaces
-                while (*p == ' ') p++;
-                if (!*p) break;
-
-                // read rate token (till space)
-                char rate_tok[32];
-                int len = 0;
-                while (*p && *p != ' ' && len < 31) {
-                    rate_tok[len++] = *p++;
-                }
-                rate_tok[len] = '\0';
-
-                // Check if this rate is active (contains '*')
-                int active = (strchr(rate_tok, '*') != NULL);
-
-                // Clean the rate token (only keep digits and dots)
-                char clean_rate[16];
-                int c_len = 0;
-                for (int i = 0; i < len && c_len < 15; i++) {
-                    if (isdigit((unsigned char)rate_tok[i]) || rate_tok[i] == '.') {
-                        clean_rate[c_len++] = rate_tok[i];
-                    }
-                }
-                clean_rate[c_len] = '\0';
-
-                if (c_len > 0) {
-                    strcpy(rates_temp[rate_idx], clean_rate);
-                    if (active) {
-                        is_active_res = 1;
-                        strcpy(info->current_rate, clean_rate);
-                    }
-                    rate_idx++;
-                }
+            if (!*p) break;
+            char tok[32];
+            size_t n = 0;
+            while (p[n] && p[n] != ' ' && n + 1 < sizeof(tok)) n++;
+            memcpy(tok, p, n);
+            tok[n] = '\0';
+            p += n;
+            char clean[16];
+            int act = 0;
+            if (!display_rate_token(tok, clean, sizeof(clean), &act))
+                continue;
+            snprintf(rates[rc], sizeof(rates[rc]), "%s", clean);
+            if (act) {
+                active = 1;
+                snprintf(active_rate, sizeof(active_rate), "%s", clean);
             }
+            rc++;
+        }
+        /* Zero parses rates => not a mode line (verbose timing block). */
+        if (rc == 0) continue;
 
-            // If this is the active resolution, copy everything to display_info
-            if (is_active_res) {
-                strcpy(info->resolution, res);
-                info->rate_count = rate_idx;
-                for (int i = 0; i < rate_idx; i++) {
-                    strcpy(info->available_rates[i], rates_temp[i]);
-                }
-                // Once we found the active resolution, we can stop
+        if (active) {
+            m->active = 1;
+            snprintf(m->resolution, sizeof(m->resolution), "%s", res);
+            snprintf(m->current_rate, sizeof(m->current_rate), "%s", active_rate);
+            m->rate_count = rc;
+            for (int i = 0; i < rc; i++)
+                snprintf(m->available_rates[i], sizeof(m->available_rates[i]),
+                         "%s", rates[i]);
+        }
+    }
+    fclose(fp);
+
+    if (info->monitor_count == 0) return -1;
+
+    /* Which output is the laptop panel? Prefer an eDP/LVDS/DSI name; in dGPU
+     * (MUX) mode the NVIDIA driver renames the panel to DP-0, so the first
+     * DP-* output is the panel. The DP-* fallback is gated on the MUX efivar
+     * existing (MUX-capable hardware only), so plain desktops or laptops with
+     * external DP monitors are never mistaken for a panel. */
+    int named_panel = 0;
+    for (int i = 0; i < info->monitor_count; i++) {
+        if (is_internal_panel(info->monitors[i].name)) {
+            info->monitors[i].internal = 1;
+            named_panel = 1;
+        }
+    }
+    if (!named_panel && mux_running_mode() == MUX_VAL_DGPU &&
+        access(MUX_VAR_PATH, F_OK) == 0) {
+        for (int i = 0; i < info->monitor_count; i++) {
+            if (strncmp(info->monitors[i].name, "DP-", 3) == 0) {
+                info->monitors[i].internal = 1;
                 break;
             }
         }
     }
-    fclose(fp);
-    /* Success requires BOTH the connected output AND its active mode —
-     * a bare "connected" line with no parsed rate is treated as failure
-     * so callers never display a half-invented screen state. */
-    return (found_output && info->current_rate[0] != '\0') ? 0 : -1;
+
+    /* Priority: an active internal panel (even when not primary), else the
+     * first active monitor. Inactive connected outputs are parsed but never
+     * selected, so one panel's modes cannot leak into another's fields. */
+    int pri = -1;
+    for (int i = 0; i < info->monitor_count; i++) {
+        if (info->monitors[i].active && info->monitors[i].internal) {
+            pri = i;
+            break;
+        }
+    }
+    if (pri < 0) {
+        for (int i = 0; i < info->monitor_count; i++) {
+            if (info->monitors[i].active) {
+                pri = i;
+                break;
+            }
+        }
+    }
+    if (pri < 0) return -1;
+
+    struct display_monitor *m = &info->monitors[pri];
+    char name[64], resolution[64], geometry[64], rate[16];
+    snprintf(name, sizeof(name), "%s", m->name);
+    snprintf(resolution, sizeof(resolution), "%s", m->resolution);
+    snprintf(geometry, sizeof(geometry), "%s", m->geometry);
+    snprintf(rate, sizeof(rate), "%s", m->current_rate);
+    int rate_count = m->rate_count;
+
+    snprintf(info->output, sizeof(info->output), "%s", name);
+    info->internal = m->internal;
+    snprintf(info->resolution, sizeof(info->resolution), "%s", resolution);
+    snprintf(info->current_resolution, sizeof(info->current_resolution),
+             "%s", geometry[0] ? geometry : resolution);
+    snprintf(info->current_rate, sizeof(info->current_rate), "%s", rate);
+    info->rate_count = rate_count;
+    for (int i = 0; i < rate_count; i++)
+        memcpy(info->available_rates[i], m->available_rates[i],
+               sizeof(info->available_rates[i]));
+    return 0;
+}
+
+/* Stable numbering for `rr`: the active internal panel is always #1 (even
+ * when another monitor is primary), remaining active outputs follow in
+ * xrandr order. With no active panel the first active output becomes #1. */
+static int display_numbered(struct display_info *info, int *idx, int max)
+{
+    int n = 0;
+    for (int i = 0; i < info->monitor_count && n < max; i++) {
+        if (info->monitors[i].active && info->monitors[i].internal)
+            idx[n++] = i;
+    }
+    for (int i = 0; i < info->monitor_count && n < max; i++) {
+        if (info->monitors[i].active && !info->monitors[i].internal)
+            idx[n++] = i;
+    }
+    return n;
+}
+
+/* 1-based display number -> monitor index, or -1. */
+static int display_monitor_by_number(struct display_info *info, int num)
+{
+    int idx[MAX_MONITORS];
+    int n = display_numbered(info, idx, MAX_MONITORS);
+    if (num < 1 || num > n) return -1;
+    return idx[num - 1];
 }
 
 static int command_exists(const char *cmd)
@@ -497,7 +636,8 @@ static int is_x11_xrandr_available(struct display_info *out_info)
     return 1;
 }
 
-static int rr_set_ext(const char *rate, const char *extra_note)
+/* mon == 0 selects the priority display (#1); otherwise the numbered one. */
+static int rr_set_ext_on(int mon, const char *rate, const char *extra_note)
 {
     /* Validate rate: must be digits and at most one dot */
     for (const char *p = rate; *p; p++) {
@@ -513,22 +653,46 @@ static int rr_set_ext(const char *rate, const char *extra_note)
         return -1;
     }
 
+    int target = (mon > 0) ? mon : 1;
+    int ti = display_monitor_by_number(&info, target);
+    if (ti < 0) {
+        fprintf(stderr, "Error: no display #%d (run 'cctl rr' to list displays)\n",
+                target);
+        return -1;
+    }
+
+    char output[64], resolution[64];
+    snprintf(output, sizeof(output), "%s", info.monitors[ti].name);
+    snprintf(resolution, sizeof(resolution), "%s", info.monitors[ti].resolution);
+
     char *const args[] = {
-        "xrandr", "--output", info.output, "--mode", info.resolution,
+        "xrandr", "--output", output, "--mode", resolution,
         "--rate", (char *)rate, NULL
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0) {
-        fprintf(stderr, "Error: Failed to set refresh rate to %sHz\n", rate);
+        fprintf(stderr, "Error: Failed to set display #%d (%s) to %sHz\n",
+                target, output, rate);
         return -1;
     }
+
     const char *live_rate = rate;
-    if (query_display_info(&info) == 0 && info.current_rate[0])
-        live_rate = info.current_rate;
+    if (query_display_info(&info) == 0) {
+        int ni = display_monitor_by_number(&info, target);
+        if (ni >= 0 && info.monitors[ni].current_rate[0])
+            live_rate = info.monitors[ni].current_rate;
+    }
     if (extra_note && *extra_note)
-        printf("  Refresh rate: %sHz %s%s\n", live_rate, extra_note, snapshot_applied_tag());
+        printf("  Refresh rate: %sHz on %s %s%s\n", live_rate, output,
+               extra_note, snapshot_applied_tag());
     else
-        printf("  Refresh rate: %sHz%s\n", live_rate, snapshot_applied_tag());
+        printf("  Refresh rate: %sHz on %s%s\n", live_rate, output,
+               snapshot_applied_tag());
     return 0;
+}
+
+static int rr_set_ext(const char *rate, const char *extra_note)
+{
+    return rr_set_ext_on(0, rate, extra_note);
 }
 
 static int rr_set(const char *rate)
@@ -546,6 +710,11 @@ static int profile_apply_refresh_rate(const struct profile_def *p)
 
     struct display_info info;
     if (!is_x11_xrandr_available(&info) || info.rate_count == 0)
+        return 0;
+
+    /* Profiles only ever touch the internal panel, even in clamshell where
+     * an external display would otherwise become the priority output. */
+    if (!info.internal)
         return 0;
 
     if (strcmp(p->rr, "lowest") == 0) {
@@ -574,18 +743,45 @@ static int rr_list(void)
         fprintf(stderr, "Error: xrandr not available or failed to parse\n");
         return -1;
     }
-    printf("%sCurrent Display:%s\n", C_YLW, C_RST);
-    printf("  %sOutput:%s       %s (%s)", C_CYN, C_RST, info.output, info.resolution);
-    if (info.current_resolution[0] && strcmp(info.current_resolution, info.resolution) != 0)
-        printf(" (%s scaled)", info.current_resolution);
-    putchar('\n');
-    printf("  %sCurrent Rate:%s %sHz\n\n", C_CYN, C_RST, info.current_rate);
-    printf("%sAvailable Rates:%s\n", C_YLW, C_RST);
-    for (int i = 0; i < info.rate_count; i++) {
-        printf("  %s%-8s%s%s\n", C_CYN, info.available_rates[i], C_RST,
-               (strcmp(info.available_rates[i], info.current_rate) == 0) ? " (current)" : "");
+
+    int idx[MAX_MONITORS];
+    int n = display_numbered(&info, idx, MAX_MONITORS);
+
+    printf("%sDisplays:%s\n", C_YLW, C_RST);
+    for (int k = 0; k < n; k++) {
+        struct display_monitor *m = &info.monitors[idx[k]];
+        char resbuf[96];
+        if (m->geometry[0] && strcmp(m->geometry, m->resolution) != 0)
+            snprintf(resbuf, sizeof(resbuf), "%s (scaled from %s)",
+                     m->geometry, m->resolution);
+        else
+            snprintf(resbuf, sizeof(resbuf), "%s", m->resolution);
+        printf("  %s#%d%s  %s%-10s%s %-11s %s%sHz%s\n",
+               C_BLD, k + 1, C_RST,
+               C_CYN, m->name, C_RST,
+               resbuf,
+               C_GRN, m->current_rate, C_RST);
+        printf("       %sRates:%s", C_CYN, C_RST);
+        for (int i = 0; i < m->rate_count; i++) {
+            printf("  %s%s%s%s", C_CYN, m->available_rates[i], C_RST,
+                   strcmp(m->available_rates[i], m->current_rate) == 0
+                       ? " (current)" : "");
+        }
+        putchar('\n');
     }
-    printf("\n%sUsage:%s %scctl rr <rate | toggle>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+
+    int inactive = 0;
+    for (int i = 0; i < info.monitor_count; i++) {
+        if (info.monitors[i].active) continue;
+        if (!inactive++) printf("\n%sConnected (inactive):%s\n", C_YLW, C_RST);
+        printf("  %s%-10s%s  %sno mode set%s\n", C_CYN, info.monitors[i].name,
+               C_RST, C_DIM, C_RST);
+    }
+
+    printf("\n%sUsage:%s %scctl rr <rate | toggle> [#N]%s\n",
+           C_BLD, C_RST, C_CYN_BLD, C_RST);
+    printf("       %scctl rr 60 --2%s   (display #2, closest rate is applied)\n",
+           C_CYN, C_RST);
     return 0;
 }
 
@@ -1009,7 +1205,25 @@ static void status_system(void)
     struct display_info disp_info = {0};
     int have_disp_info = is_x11_xrandr_available(&disp_info);
     if (have_disp_info) {
-        row("Refresh Rate:", "%s%s Hz%s", C_CYN, disp_info.current_rate, C_RST);
+        if (json_output) {
+            row("Refresh Rate:", "%s%s Hz%s", C_CYN, disp_info.current_rate, C_RST);
+        } else {
+            int idx[MAX_MONITORS];
+            int n = display_numbered(&disp_info, idx, MAX_MONITORS);
+            if (n <= 1) {
+                row("Refresh Rate:", "%s%s Hz%s (%s)", C_CYN,
+                    disp_info.current_rate, C_RST, disp_info.output);
+            } else {
+                /* One line per active display, internal panel first. */
+                for (int k = 0; k < n; k++) {
+                    struct display_monitor *m = &disp_info.monitors[idx[k]];
+                    printf("  %-14s %s%s%s (%s) %s%s Hz%s\n",
+                           k == 0 ? "Displays:" : "",
+                           C_CYN, m->name, C_RST, m->resolution,
+                           C_CYN, m->current_rate, C_RST);
+                }
+            }
+        }
 
         if (disp_info.current_resolution[0] && disp_info.resolution[0]) {
             if (strcmp(disp_info.current_resolution, disp_info.resolution) == 0)
