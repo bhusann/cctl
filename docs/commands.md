@@ -8,7 +8,7 @@ cctl kbe [effect|stop]          # Start an effect, stop & restore original color
 cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/unlock)
 ```
 
-Color presets: `blue` `chocolate` `coral` `cyan` `gold` `gray` `green` `indigo` `lime` `magenta` `maroon` `navy` `olive` `orange` `pink` `purple` `red` `salmon` `silver` `teal` `turquoise` `violet` `white` `yellow` `off`
+Color presets: `azure` `blue` `coral` `cyan` `green` `lime` `orange` `pink` `purple` `red` `white` `yellow` `off`
 
 Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `fire` `aurora` `storm` `temp` `ram` `sos` `firecrackers`
 
