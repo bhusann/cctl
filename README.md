@@ -1,13 +1,19 @@
-# CCTL — Linux Control Center for Colorful Laptops
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="CCTL icon">
+</p>
 
-Looking for a Linux control center alternative for a Colorful laptop? CCTL
-(ColorControl) is a lightweight CLI built for Colorful Evol P15 laptops using
-Clevo/TUXEDO chassis. Manage EC power profiles, CPU and GPU fans, keyboard RGB
-colors and effects, battery charge modes and thresholds, display refresh rate
-and scaling, GPU MUX switching, NVIDIA clocks, webcam, and microphone. It also
-includes live CPU and GPU monitors and manages its DKMS drivers. CCTL is written
-in C and runs without a GUI or persistent daemon; keyboard effects use a small
-background process only while active.
+<h1 align="center">CCTL — Linux Control Center for Colorful Laptops</h1>
+
+CCTL (ColorControl) is a lightweight command-line control center for Colorful
+Evol P15 laptops built on Clevo/TUXEDO chassis. It provides direct control over
+EC power profiles, CPU and GPU fans, keyboard RGB colors and effects, battery
+charge modes and thresholds, display refresh rate and scaling, GPU MUX
+switching, NVIDIA clocks, webcam, and microphone. Live CPU and GPU monitors are
+included, and the DKMS drivers that back these features can be managed from the
+same tool.
+
+CCTL is written in C, runs without a GUI, and needs no persistent daemon —
+keyboard effects use a small background process only while an effect is active.
 
 ## Hardware Compatibility
 
