@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/bhusann/cctl/releases/latest"><img src="https://img.shields.io/github/v/release/bhusann/cctl?label=release&color=7C5CFF" alt="Latest release"></a>
+  <a href="https://github.com/bhusann/cctl/releases/latest"><img src="https://img.shields.io/github/v/release/bhusann/cctl?label=release&color=7C5CFF&logo=github" alt="Latest release"></a>
   <a href="https://github.com/bhusann/cctl/releases"><img src="https://img.shields.io/github/downloads/bhusann/cctl/total?label=downloads&color=22D3EE" alt="Total downloads"></a>
 </p>
 
