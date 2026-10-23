@@ -1,5 +1,10 @@
 <p align="center">
-  <img src="docs/icon.png" width="128" alt="CCTL icon">
+  <a href="https://github.com/bhusann/cctl/releases/latest"><img src="https://img.shields.io/github/v/release/bhusann/cctl?label=release&color=7C5CFF" alt="Latest release"></a>
+  <a href="https://github.com/bhusann/cctl/releases"><img src="https://img.shields.io/github/downloads/bhusann/cctl/total?label=downloads&color=22D3EE" alt="Total downloads"></a>
+</p>
+
+<p align="center">
+  <img src="docs/cctl-icon.svg" width="112" alt="CCTL icon">
 </p>
 
 <h1 align="center">CCTL — Linux Control Center for Colorful Laptops</h1>
@@ -37,20 +42,31 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
 
 ## Quick Start
 
-1. Download the pre-built `cctl` binary from the **[Releases page](https://github.com/bhusann/cctl/releases)**.
+1. Install the latest release in one command (downloads the latest binary and runs the installer):
 
-```bash
-# 2. Make it executable and install cctl system-wide (installs to /usr/local/bin, sets up passwordless sudo & auto-elevation)
-chmod +x ./cctl && sudo ./cctl install
+   ```bash
+   curl -fsSL https://github.com/bhusann/cctl/releases/latest/download/cctl -o /tmp/cctl && chmod +x /tmp/cctl && sudo /tmp/cctl install
+   ```
 
-# 3. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery)
-cctl drivers-manage
+2. Or download the pre-built `cctl` binary from the **[Releases page](https://github.com/bhusann/cctl/releases)** and install it manually:
 
-# 4. Ready to use immediately (privileged commands auto-elevate seamlessly, no manual sudo or aliases needed):
-cctl set balanced          # apply a power profile (auto-elevates via sudo)
-cctl fan auto              # set fans to automatic (auto-elevates via sudo)
-cctl status                # view all current settings
-```
+   ```bash
+   chmod +x ./cctl && sudo ./cctl install
+   ```
+
+3. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery):
+
+   ```bash
+   cctl drivers-manage
+   ```
+
+4. Ready to use immediately (privileged commands auto-elevate seamlessly, no manual sudo or aliases needed):
+
+   ```bash
+   cctl set balanced          # apply a power profile (auto-elevates via sudo)
+   cctl fan auto              # set fans to automatic (auto-elevates via sudo)
+   cctl status                # view all current settings
+   ```
 
 ## Updating cctl
 
@@ -114,18 +130,6 @@ silent/eco 0       OFF    powersave    power               15/30W              -
 > [!NOTE]
 > Applying the built-in `powersave` profile sets both fans to **SILENT** (just like `silent/eco` mode) and automatically switches the internal display to the lowest supported refresh rate when running under X11 (e.g. 40 Hz) to maximize battery runtime. You can adjust the refresh rate anytime using `cctl rr`.
 
-> [!NOTE]
-> `cctl rr` lists every active display and numbers it: the internal panel
-> (`eDP-*`, or the first `DP-*` when the MUX is in dGPU mode) is always **#1**
-> while it is on, other outputs follow as **#2**, **#3**, … When the panel is
-> off, the first active monitor becomes **#1**.
-> `cctl rr <rate>` changes display 1; `cctl rr <rate> --2` changes display 2.
-> Any numeric value is accepted: `xrandr` snaps it to the closest rate that
-> display supports, and cctl prints what was actually applied.
->
-> Scaling, profiles and the `powersave` refresh drop target the **internal
-> laptop panel** only.
-
 > [!CAUTION]
 > Silent fan mode and manual fan duty may keep fans quiet or fixed regardless of
 > CPU temperature, even under heavy load. To protect the hardware, applying EC
@@ -140,24 +144,15 @@ Full-load measurements and comparisons are documented in the [EC profile test re
 
 ### Custom Profiles
 
-You can add your own power profiles in `/var/lib/cctl/profiles.conf`. To open or
-create the file, run:
+You can add your own power profiles in `/var/lib/cctl/profiles.conf`. Edit it
+with `cctl editconf`, or manually:
 
 ```bash
-cctl editconf
+sudo nano /var/lib/cctl/profiles.conf
 ```
 
-This opens the file with your configured editor (`SUDO_EDITOR`, `VISUAL`, or
-`EDITOR`). If none is set, cctl tries `nano`, then `micro`. A new file includes
-a commented line showing the fields.
-
-If you are upgrading from an older cctl version, copy an existing
-`/etc/cctl/profiles.conf` to `/var/lib/cctl/profiles.conf` to keep using those
-profiles:
-
-```bash
-sudo install -D -m 0644 /etc/cctl/profiles.conf /var/lib/cctl/profiles.conf
-```
+The legacy `/etc/cctl/profiles.conf` location is only kept for migration — copy
+any profiles from there to `/var/lib/cctl/profiles.conf` once.
 
 Add one profile per line, with fields in this order:
 
@@ -167,55 +162,18 @@ quietwork 1 0 powersave balance_power skip skip 40
 highcpu 2 1 performance performance 90 115 165
 ```
 
-Fields: `name EC-code turbo governor epp [pl1 pl2 [rr]]`. Use `skip` to leave a field
-unchanged; omit trailing fields for shorter formats (5, 7, or 8 fields). To set
-a refresh rate without changing RAPL limits, specify `skip` for pl1 and pl2 (for example, `myprof 3 1 powersave performance skip skip 60`). Unset RAPL limits
-stay unchanged; set them in the file or with `cctl rapl <pl1> <pl2>`.
+Each line defines one profile: `name EC-code turbo governor epp [pl1 pl2 [rr]]`. Use `skip` to leave a value unchanged, omit trailing fields (5, 7, or 8), and `skip skip` to set only a refresh rate (e.g. `myprof 3 1 powersave performance skip skip 60`); unset RAPL limits stay as they are, or set them with `cctl rapl <pl1> <pl2>`. Valid values are EC code `0`–`3` (Silent, Powersave, High performance, Standard — modes, not a ranking), Turbo `1`/`0`, governor `powersave`/`performance`, and EPP `performance`/`balance_performance`/`balance_power`/`power`. EC limits: PL1/PL2 90/115W on code `2`, 45/115W on code `3`, and 15/30W on codes `0`/`1` (a higher `cctl rapl` value is written but the EC keeps those codes at 15W/30W); the EC defaults GPU TDP to 70W on codes `0`, `1`, and `3`, and 100W on code `2`.
 
-EC profile codes select modes; they are not a ranking:
-
-- `0` — Silent
-- `1` — Powersave
-- `2` — High performance
-- `3` — Standard mode
-
-Code `2` is high performance: PL1 up to 90W, PL2 up to 115W, and GPU power up
-to 100W. Codes `0`, `1`, and `3` allow PL1 up to 45W; code `3` defaults to
-45W/115W CPU and 70W GPU.
-
-Valid values: EC code `3`, `2`, `1`, or `0`; Turbo `1` (on) or `0` (off);
-governor `powersave` or `performance`; and EPP `performance`,
-`balance_performance`, `balance_power`, or `power`.
-
-CPU performance under either the `performance` or `powersave` governor is set by
-**EPP** alone — the same EPP produced identical measurements under both
-governors (see the [EC profile test results](docs/ec-profile-test-results.md)).
-The governor only decides *how* clocks are chosen:
-
-- **`powersave`** — scales clocks on demand, idling around 800–1200 MHz and
-  boosting under load. EPP is freely selectable with `cctl epp`:
-  `performance`, `balance_performance`, `balance_power`, or `power`.
-- **`performance`** — holds clocks near maximum constantly for the lowest
-  latency, at the cost of idle heat and power. **EPP is locked to
-  `performance`** in this mode: `cctl epp` refuses any other value and asks you
-  to switch the governor first.
-
-Because the governor changes only the frequency *policy*, while EPP changes the
-actual performance target, every built-in profile uses governor `powersave` and
-expresses its intent through EPP — `max` and `cpuperf` with `performance`,
-`balanced` with `balance_performance`, `powersave` with `balance_power`, and
-`silent/eco` with `power`. `cctl status` still reports a profile as
-**aggressive** when a custom profile pairs governor `performance` with EPP
-`performance`, and **non-aggressive** for the dynamic `powersave` pairing.
+CPU performance is set by **EPP** alone; the governor only decides how clocks
+are chosen (`powersave` scales on demand with EPP freely selectable,
+`performance` holds clocks high and locks EPP to `performance`). Every built-in
+profile therefore uses `powersave` and expresses its intent through EPP —
+`max`/`cpuperf` → `performance`, `balanced` → `balance_performance`,
+`powersave` → `balance_power`, `silent/eco` → `power`. Full explanation and
+measurements: [EC profile test results](docs/ec-profile-test-results.md#governor-and-epp).
 
 > **Caution:** If a profile line contains a typo or unsupported value, cctl
 > skips it, so the profile will not appear in `cctl set` or `cctl --help`.
-
-Custom profiles trigger automatic fan control when they apply EC code `2` or
-`3`, or enable Turbo while the resulting EC code is `2` or `3`; `--nosafe`
-bypasses it. Skipped or unset values show as `--` in the help table; custom
-PL1/PL2 values appear in the EC TDP column as `pl1/pl2W`, for example `45/60W`,
-or `--/25W` when only PL2 is set.
 
 Append `--dry-run` to preview changes without applying them. Dry-run is
 available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
