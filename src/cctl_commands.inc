@@ -403,10 +403,19 @@ static int cmd_set(int argc, char **argv)
                 stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (preview only)\n", p->rr);
             }
         }
-        if (profile_requires_fan_auto(p) && !nosafe)
-            stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
-        else if (strcmp(p->name, "silent") == 0 || strcmp(p->name, "powersave") == 0)
-            stream_printf(STREAM_DELAY_US, "  Fans: set both to SILENT\n");
+        struct fancurve_state curve_st;
+        int curve_active = fc_any_active(&curve_st);
+        if (profile_requires_fan_auto(p) && !nosafe) {
+            if (curve_active)
+                stream_printf(STREAM_DELAY_US, "  Fans: left to the active fan curve (auto safety skipped)\n");
+            else
+                stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
+        } else if (strcmp(p->name, "silent") == 0 || strcmp(p->name, "powersave") == 0) {
+            if (curve_active)
+                stream_printf(STREAM_DELAY_US, "  Fans: left to the active fan curve (silent override skipped)\n");
+            else
+                stream_printf(STREAM_DELAY_US, "  Fans: set both to SILENT\n");
+        }
         if (strcmp(p->name, "max") == 0) {
             int prev = g_stream_mode;
             g_stream_mode = STREAM_MODE_LINE;
@@ -419,12 +428,23 @@ static int cmd_set(int argc, char **argv)
 
     require_root(argc, argv);
 
-    if (profile_requires_fan_auto(p) && !nosafe) {
+    struct fancurve_state curve_st;
+    int curve_active = fc_is_running(&curve_st);
+    int wants_auto = profile_requires_fan_auto(p) && !nosafe;
+    int wants_silent = strcmp(p->name, "silent") == 0 ||
+                       strcmp(p->name, "powersave") == 0;
+
+    if (curve_active && wants_auto)
+        fc_warn_active(&curve_st, "the profile's fan auto safety");
+    else if (curve_active && wants_silent)
+        fc_warn_active(&curve_st, "the profile's silent fan setting");
+
+    if (wants_auto && !curve_active) {
         printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
         fan_auto_all();
     }
     int rc = profile_apply(p);
-    if (rc == 0 && (strcmp(p->name, "silent") == 0 || strcmp(p->name, "powersave") == 0)) {
+    if (rc == 0 && wants_silent && !curve_active) {
         printf("Setting both fans to SILENT...\n");
         if (fan_silent_all() < 0)
             rc = -1;
@@ -450,9 +470,20 @@ static int cmd_set(int argc, char **argv)
 static int cmd_fan(int argc, char **argv)
 {
     int nosafe = 0;
+    int admin_mode = 0;
     const char *pos[2] = {NULL, NULL};
-    int npos = parse_flags(argc, argv, &nosafe, pos, 2);
-    if (npos < 0) return 1;
+    int npos = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--nosafe") == 0) {
+            nosafe = 1;
+        } else if (strcmp(argv[i], "--am") == 0) {
+            admin_mode = 1;
+        } else if (npos < 2) {
+            pos[npos++] = argv[i];
+        } else {
+            return fail("Unexpected extra argument '%s'", argv[i]);
+        }
+    }
 
     if (npos == 0) {
         int prev = g_stream_mode;
@@ -475,6 +506,31 @@ static int cmd_fan(int argc, char **argv)
     const char *val_str = (npos >= 2) ? pos[1] : NULL;
 
     require_root(argc, argv);
+
+    int plain_auto = strcmp(mode, "auto") == 0 && !val_str;
+    int changes_fans = 0;
+    if (strcmp(mode, "auto") == 0 || strcmp(mode, "max") == 0 ||
+        strcmp(mode, "silent") == 0) {
+        changes_fans = 1;
+    } else if ((strcmp(mode, "cpu") == 0 || strcmp(mode, "gpu") == 0) && val_str) {
+        changes_fans = 1;
+    } else {
+        int pct;
+        if (safe_atoi(mode, &pct) == 0 && pct >= 0 && pct <= 100)
+            changes_fans = 1;
+    }
+
+    struct fancurve_state curve_st;
+    if (fc_is_running(&curve_st)) {
+        if (plain_auto) {
+            stream_printf(STREAM_DELAY_US, "Stopping fan curve '%s' and restoring EC auto...\n",
+                          curve_st.name);
+            fc_stop_worker(1, 0);
+        } else if (changes_fans) {
+            fc_warn_fan_change(&curve_st);
+            return 1;
+        }
+    }
 
     int rc = 0;
 
@@ -509,11 +565,15 @@ static int cmd_fan(int argc, char **argv)
             int pct;
             if (safe_atoi(val_str, &pct) < 0)
                 return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
+            if (pct > 100)
+                return fail("Fan duty %d%% is above the maximum allowed 100%%", pct);
+            if (pct < 25 && !admin_mode)
+                return fail("Fan duty %d%% is below the minimum allowed 25%%", pct);
             if (!nosafe)
                 return fail_line("Manual fan duty requires --nosafe (e.g. cctl fan cpu %d --nosafe)\n"
                                  "       Fixed duty ignores temperature and may cause overheating or damage.\n"
                                  "       Use manual fan duty for experimental purposes only.", pct);
-            rc = fan_set_duty(FAN_CPU, pct);
+            rc = fan_set_duty(FAN_CPU, pct, admin_mode);
         }
     } else if (strcmp(mode, "gpu") == 0) {
         if (!val_str)
@@ -525,22 +585,32 @@ static int cmd_fan(int argc, char **argv)
             int pct;
             if (safe_atoi(val_str, &pct) < 0)
                 return fail("Invalid duty percentage '%s' (use 25-100 or 'auto')", val_str);
+            if (pct > 100)
+                return fail("Fan duty %d%% is above the maximum allowed 100%%", pct);
+            if (pct < 25 && !admin_mode)
+                return fail("Fan duty %d%% is below the minimum allowed 25%%", pct);
             if (!nosafe)
                 return fail_line("Manual fan duty requires --nosafe (e.g. cctl fan gpu %d --nosafe)\n"
                                  "       Fixed duty ignores temperature and may cause overheating or damage.\n"
                                  "       Use manual fan duty for experimental purposes only.", pct);
-            rc = fan_set_duty(FAN_GPU, pct);
+            rc = fan_set_duty(FAN_GPU, pct, admin_mode);
         }
     } else {
         /* Try as a plain number — apply to both fans */
         int pct;
-        if (safe_atoi(mode, &pct) >= 0 && pct >= 25 && pct <= 100) {
+        if (safe_atoi(mode, &pct) >= 0) {
+            if (pct > 100)
+                return fail("Fan duty %d%% is above the maximum allowed 100%%", pct);
+            if (pct < 0)
+                return fail("Fan duty %d%% is out of range (0-100)", pct);
+            if (pct < 25 && !admin_mode)
+                return fail("Fan duty %d%% is below the minimum allowed 25%%", pct);
             if (!nosafe)
                 return fail_line("Manual fan duty requires --nosafe (e.g. cctl fan %d --nosafe)\n"
                                  "       Fixed duty ignores temperature and may cause overheating or damage.\n"
                                  "       Use manual fan duty for experimental purposes only.", pct);
             stream_printf(STREAM_DELAY_US, "Setting both fans to %d%%...\n", pct);
-            rc = fan_set_duty(0, pct);
+            rc = fan_set_duty(0, pct, admin_mode);
         } else {
             fail("Unknown fan mode '%s'", mode);
             fprintf(stderr, "Valid modes: auto [cpu|gpu], max, silent, cpu <pct|auto>, gpu <pct|auto>, or <pct> --nosafe\n");
@@ -586,8 +656,13 @@ static int cmd_turbo(int argc, char **argv)
 
     int live_ec_code = enabled ? cctl_live_ec_state(NULL, NULL) : -1;
     if (enabled && !nosafe && (live_ec_code == 2 || live_ec_code == 3)) {
-        stream_printf(STREAM_DELAY_US, "Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
-        fan_auto_all();
+        struct fancurve_state curve_st;
+        if (fc_is_running(&curve_st)) {
+            fc_warn_active(&curve_st, "turbo's fan auto safety");
+        } else {
+            stream_printf(STREAM_DELAY_US, "Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
+            fan_auto_all();
+        }
     }
 
     int rc = set_turbo(enabled);

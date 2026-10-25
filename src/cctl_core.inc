@@ -445,6 +445,29 @@ static int fail_line(const char *fmt, ...)
     return rc;
 }
 
+/* Destructive-action confirmation. Returns 1 only for an explicit y/yes. */
+static int cctl_confirm_delete(const char *label, const char *name)
+{
+    fprintf(stderr, "Delete %s '%s'? [y/N] ", label, name);
+    fflush(stderr);
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm deletion, or pass --noconfirm.\n");
+        return 0;
+    }
+
+    char answer[32];
+    if (!fgets(answer, sizeof(answer), stdin)) {
+        puts("Cancelled; nothing was deleted.");
+        return 0;
+    }
+    answer[strcspn(answer, "\r\n")] = '\0';
+    if (strcasecmp(answer, "y") != 0 && strcasecmp(answer, "yes") != 0) {
+        puts("Cancelled; nothing was deleted.");
+        return 0;
+    }
+    return 1;
+}
+
 static void print_done(void)
 {
     stream_text(dry_run ? "Dry run complete." : "Done.", STREAM_DELAY_US);

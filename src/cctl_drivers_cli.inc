@@ -14,15 +14,15 @@
  * ======================================================================== */
 
 #define DRIVERS_TARBALL     "drivers.tar.gz"
-#define DRIVERS_MIRROR_RAW  "https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/drivers.tar.gz"
-#define DRIVERS_MIRROR_REPO "https://github.com/bhusann/tuxedo-drivers-cctl-mirror"
+#define DRIVERS_MIRROR_RAW  "https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/d28cc60fab001821c27a80985a2116d5562c8474bf1dd4c7c307c4e993be44e6/drivers.tar.gz"
+#define DRIVERS_MIRROR_REPO "https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/d28cc60fab001821c27a80985a2116d5562c8474bf1dd4c7c307c4e993be44e6/drivers.tar.gz"
 /* SHA256 of drivers.tar.gz from the mirror repo, baked in at build time so
  * cctl only ever installs exactly these driver sources — a re-tarred or
  * swapped file with any other name/content is rejected. When the MIRROR's
  * drivers/ tree changes: re-tar deterministically, update THIS constant,
  * bump CCTL_MICROVERSION, release a new cctl binary. (The driver sources
  * themselves live only in the mirror repo, not in this checkout.) */
-#define DRIVERS_SHA256      "3e0c3cf5d4f2f5ddf17f328e2897874ea578476eea5db7356bb44f2bd67a6dbe"
+#define DRIVERS_SHA256      "d28cc60fab001821c27a80985a2116d5562c8474bf1dd4c7c307c4e993be44e6"
 
 /* Persistent driver cache: survives reboots so reinstall/uninstall works
  * offline with no tarball beside the binary and no typed path. /var/lib
@@ -277,9 +277,21 @@ static int cmd_drivers_install(int argc, char **argv)
     if (geteuid() != 0)
         self_elevate(argc, argv);
 
+    struct fancurve_state curve_state;
+    if (fc_is_running(&curve_state)) {
+        printf("Stopping fan curve '%s' before driver management...\n", curve_state.name);
+        if (fc_stop_worker(1, 1) != 0)
+            return fail("could not stop the active fan curve; refusing driver changes");
+    }
+
     int prev_mode = g_stream_mode;
+    int prev_line = g_stream_line;
+    int prev_error_mode = g_stream_error_mode;
+    int prev_error_line = g_stream_error_line;
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
+    g_stream_error_mode = STREAM_MODE_LINE;
+    g_stream_error_line = 0;
 
     char tmpbase[] = "/tmp/cctl-drivers.XXXXXX";
     char *tmpdir = NULL;
@@ -479,6 +491,9 @@ static int cmd_drivers_install(int argc, char **argv)
 
 cleanup:
     g_stream_mode = prev_mode;
+    g_stream_line = prev_line;
+    g_stream_error_mode = prev_error_mode;
+    g_stream_error_line = prev_error_line;
     if (tmpdir) remove_tree(tmpdir);
     return rc;
 }
@@ -518,6 +533,7 @@ enum cmd_section {
     SEC_NVIDIA,
     SEC_DISPLAY,
     SEC_OVERRIDES,
+    SEC_EXPERIMENTAL,
     SEC_SYSTEM
 };
 
@@ -544,10 +560,13 @@ static const struct command commands[] = {
 
     /* Fan */
     { "fan",            0, cmd_fan,             SEC_FAN,       "auto|max",                          "Set both fans (auto: EC-controlled, max: full speed)", NULL },
-    { "fan",            0, cmd_fan,             SEC_FAN,       "silent [--nosafe]",                 "Quiet mode (forces silent/eco profile first; bypass with --nosafe)", NULL },
-    { "fan",            0, cmd_fan,             SEC_FAN,       "<pct> --nosafe",                    "Set both fans to duty (25-100%)", NULL },
-    { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu <pct> --nosafe",             "Set individual fan duty (25-100%)", NULL },
-    { "fan",            0, cmd_fan,             SEC_FAN,       "cpu|gpu auto",                      "Restore individual fan to auto", NULL },
+    { "fancurve",       0, cmd_fancurve,        SEC_FAN,       "[action] [name]",                  "Manage fan curves (no arg: status & help)", NULL },
+
+    /* Experimental fan controls */
+    { "fan",            0, cmd_fan,             SEC_EXPERIMENTAL, "silent [--nosafe]",                 "Quiet mode; applies silent/eco profile unless --nosafe", NULL },
+    { "fan",            0, cmd_fan,             SEC_EXPERIMENTAL, "<pct> --nosafe",                    "Set both fans to duty (25-100%)", NULL },
+    { "fan",            0, cmd_fan,             SEC_EXPERIMENTAL, "cpu|gpu <pct> --nosafe",             "Set individual fan duty (25-100%)", NULL },
+    { "fan",            0, cmd_fan,             SEC_EXPERIMENTAL, "cpu|gpu auto",                      "Restore individual fan to auto", NULL },
 
     /* GPU MUX */
     { "mux",            0, cmd_mux,             SEC_MUX,       "[switch]",                        "Switch MUX mode (no arg: shows current mode)", NULL },
@@ -614,6 +633,7 @@ static const struct section_def sections[] = {
     { SEC_NVIDIA,    "NVIDIA",                      PROF_COL_RED,     NULL },
     { SEC_DISPLAY,   "DISPLAY",                     PROF_COL_BLU,     "(X11 detected)" },
     { SEC_OVERRIDES, "PROFILE INDIVIDUAL OVERRIDES", PROF_COL_YLW,     NULL },
+    { SEC_EXPERIMENTAL, "EXPERIMENTAL",              PROF_COL_YLW,     "(Manual fan settings stay fixed and won't rise with heat or throttling; use auto for EC control)" },
     { SEC_SYSTEM,    "SYSTEM",                      PROF_COL_CYN_BLD, NULL },
 };
 
@@ -627,16 +647,18 @@ static void print_help_desc(const char *desc)
     }
 }
 
-static void print_help_command(const struct command *cmd)
+static void print_help_command_indent(const struct command *cmd, int indent)
 {
     int target_col = (strcmp(cmd->name, "nvidia") == 0) ? 39 : 29;
     if (strcmp(cmd->name, "set") == 0 || strcmp(cmd->name, "turbo") == 0)
         target_col = 31;
     else if (strcmp(cmd->name, "fan") == 0)
         target_col = 36;
+    else if (strcmp(cmd->name, "fancurve") == 0)
+        target_col = 36;
 
-    int col = 4;
-    printf("    %s%s%s", C_BLD, cmd->name, C_RST);
+    int col = indent;
+    printf("%*s%s%s%s", indent, "", C_BLD, cmd->name, C_RST);
     col += (int)strlen(cmd->name);
 
     if (cmd->usage && cmd->usage[0]) {
@@ -664,6 +686,11 @@ static void print_help_command(const struct command *cmd)
     }
 
     print_help_desc(cmd->desc);
+}
+
+static void print_help_command(const struct command *cmd)
+{
+    print_help_command_indent(cmd, 4);
 }
 
 static void print_usage(const char *prog)
@@ -737,9 +764,65 @@ static void print_usage(const char *prog)
         printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
     }
 
-    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n\n", C_DIM, C_RST);
+    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n", C_DIM, C_RST);
+    printf("  %ssnap del and fancurve del ask before deleting; append --noconfirm to skip.%s\n\n", C_DIM, C_RST);
     printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
     g_stream_output = prev_stream;
+}
+
+/* Hidden diagnostic: dump the four raw bytes of R_CL_FANINFO1/2/3 as JSON. */
+static void faninfo_print_json(int fd)
+{
+    static const unsigned long faninfo_req[3] = {
+        R_CL_FANINFO1, R_CL_FANINFO2, R_CL_FANINFO3
+    };
+    char out[256];
+    size_t n = 0;
+    int w;
+
+    w = snprintf(out, sizeof(out), "{");
+    if (w > 0) n = (size_t)w;
+
+    for (int i = 0; i < 3; i++) {
+        int32_t raw = 0;
+        if (ioctl(fd, faninfo_req[i], &raw) == 0)
+            w = snprintf(out + n, sizeof(out) - n,
+                         "%s\"faninfo%d\":[%d,%d,%d,%d]",
+                         i ? "," : "", i + 1,
+                         (int)(raw & 0xFF),
+                         (int)((raw >> 8) & 0xFF),
+                         (int)((raw >> 16) & 0xFF),
+                         (int)((raw >> 24) & 0xFF));
+        else
+            w = snprintf(out + n, sizeof(out) - n,
+                         "%s\"faninfo%d\":null", i ? "," : "", i + 1);
+        if (w > 0 && (size_t)w < sizeof(out) - n) n += (size_t)w;
+    }
+
+    w = snprintf(out + n, sizeof(out) - n, "}\n");
+    if (w > 0 && (size_t)w < sizeof(out) - n) n += (size_t)w;
+
+    /* Write the whole object at once: printf/putchar are macro-mapped to
+     * cctl's char-by-char stream renderer, which must not apply to JSON. */
+    fwrite(out, 1, n, stdout);
+    fflush(stdout);
+}
+
+static int cmd_faninfo(int once)
+{
+    int fd = tuxedo_open_clevo();
+    if (fd < 0) {
+        fprintf(stderr, "Error: /dev/tuxedo_io not available (Clevo interface)\n");
+        return 1;
+    }
+
+    do {
+        faninfo_print_json(fd);
+        if (!once) sleep(1);
+    } while (!once);
+
+    close(fd);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -837,6 +920,17 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "--shasecret") == 0) {
         printf("%s\n", DRIVERS_SHA256);
         return 0;
+    }
+
+    /* Hidden diagnostic (no help): raw bytes of R_CL_FANINFO1/2/3 as JSON. */
+    if (strcmp(argv[1], "--faninfo") == 0) {
+        int once = 0;
+        if (argc == 3 && strcmp(argv[2], "--once") == 0)
+            once = 1;
+        else if (argc != 2)
+            return fail("Usage: cctl --faninfo [--once]");
+        require_root(argc, argv);
+        return cmd_faninfo(once);
     }
 
     int cmd_found = 0;

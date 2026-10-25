@@ -17,8 +17,9 @@ switching, NVIDIA clocks, webcam, and microphone. Live CPU and GPU monitors are
 included, and the DKMS drivers that back these features can be managed from the
 same tool.
 
-CCTL is written in C, runs without a GUI, and needs no persistent daemon —
-keyboard effects use a small background process only while an effect is active.
+CCTL is written in C, runs without a GUI, and needs no always-on service —
+keyboard effects and custom fan curves use a small background worker only
+while they are active.
 
 ## Hardware Compatibility
 
@@ -65,6 +66,7 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
    ```bash
    cctl set balanced          # apply a power profile (auto-elevates via sudo)
    cctl fan auto              # set fans to automatic (auto-elevates via sudo)
+   cctl fancurve start quiet  # run a saved custom fan curve (after creating one)
    cctl status                # view all current settings
    ```
 
@@ -184,7 +186,7 @@ available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
 
 Command names:
 - Profiles and setup: `set`, `editconf`, `install`, `uninstall`, `drivers-manage`
-- Keyboard and fans: `kbc`, `kbb`, `kbe`, `fn`, `fan`
+- Keyboard and fans: `kbc`, `kbb`, `kbe`, `fn`, `fan`, `fancurve`
 - GPU and privacy: `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic`
 - Battery and system info: `bat`, `status`, `capabilities`, `--version`
 - Monitors: `cpumon`, `gpumon`
@@ -195,22 +197,25 @@ Command names:
 - Help: `--help`
 
 Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).
+
 ---
 
 ## Persistence and Services
 
-cctl is designed for immediate, one-shot changes: apply a setting, then let
-the command exit. It does not include a tray app, automatic startup, or a
-background service to keep settings reapplied. If you want that behavior, you
-can use an AI assistant to help create a small app or service around cctl.
+Most `cctl` commands apply a setting and exit; cctl has no tray app or general
+startup service. `cctl fancurve start <name>` is an exception: it starts a
+detached worker that runs the curve until stopped or the system shuts down.
 
-For startup restoration, save a setup with `cctl snap save <name>` and have
-your preferred service manager, such as systemd or runit, run
-`cctl snap restore <name>` when the system starts. For custom fan curves, your
-own script or app can read temperatures and call `cctl fan <pct> --nosafe` as
-needed. Manual fan duty stays fixed regardless of temperature, so only use it
-with a controller that actively adjusts it; fan settings are not part of
-snapshots.
+To restore saved settings at startup, save them with `cctl snap save <name>` and
+configure your service manager (for example, systemd or runit) to run
+`cctl snap restore <name>`. Snapshots do not include fan settings or active fan
+curves; fan curves do not start automatically at boot. See
+[Fan Curves](docs/commands.md#fan-curves) for usage and safety details.
+
+> **Caution:** cctl writes the EC directly. Don't run TCC (`tccd`), NBFC, or
+> another Clevo fan daemon at the same time — they will fight over fan speed and
+> profile state. If TCC is installed, stop it first:
+> `sudo systemctl stop tccd` (re-enable later with `sudo systemctl enable --now tccd`).
 
 ---
 

@@ -2,7 +2,9 @@
  * NAMED SNAPSHOTS
  * ======================================================================== */
 
+#ifndef CCTL_SNAPSHOT_DIR
 #define CCTL_SNAPSHOT_DIR "/var/lib/cctl/snapshots"
+#endif
 #define CCTL_SNAPSHOT_NAME_MAX 64
 
 struct cctl_snapshot_data {
@@ -806,7 +808,7 @@ static int cctl_snapshot_save(const char *name, unsigned long long mask)
     return 0;
 }
 
-static int cctl_snapshot_delete(const char *name)
+static int cctl_snapshot_delete(const char *name, int noconfirm)
 {
     char path[160];
     int exists = 0;
@@ -815,6 +817,8 @@ static int cctl_snapshot_delete(const char *name)
         return fail("Cannot safely delete snapshot '%s'", name);
     if (!exists)
         return fail("Snapshot '%s' does not exist", name);
+    if (!noconfirm && !cctl_confirm_delete("snapshot", name))
+        return 1;
     if (unlink(path) != 0) {
         perror("Error: could not delete snapshot");
         return 1;
@@ -1269,7 +1273,7 @@ static int cmd_snapshot(int argc, char **argv)
         printf("  save/s <name> [--mask fields]       Save current settings\n");
         printf("  restore/r <name> [--mask fields] [--dry-run]  Apply or preview settings\n");
         printf("  view/v [name]                       List snapshots or show one snapshot\n");
-        printf("  delete/del <name>                   Delete a snapshot\n");
+        printf("  delete/del <name> [--noconfirm]      Delete a snapshot (prompts by default)\n");
         printf("  Names: letters, numbers, '-' and '_' only; no spaces (max %d characters).\n",
                CCTL_SNAPSHOT_NAME_MAX);
         printf("\n%sMask fields:%s\n", C_YLW, C_RST);
@@ -1295,14 +1299,14 @@ static int cmd_snapshot(int argc, char **argv)
         return cctl_snapshot_list();
     }
     if (argc < 4 || argc > 7)
-        return fail("Usage: cctl snap <save|s|restore|r|view|v|delete|del> [name] [--mask fields] [--dry-run]");
+        return fail("Usage: cctl snap <save|s|restore|r|view|v|delete|del> [name] [--mask fields] [--dry-run] [--noconfirm]");
     const char *name = argv[3];
     if (!cctl_snapshot_name_valid(name))
         return fail("Snapshot names must be 1-%d characters using only letters, numbers, '-' or '_'",
                     CCTL_SNAPSHOT_NAME_MAX);
 
     unsigned long long mask = 0;
-    int have_mask = 0, snapshot_dry_run = 0;
+    int have_mask = 0, snapshot_dry_run = 0, snapshot_noconfirm = 0;
     for (int i = 4; i < argc; i++) {
         if (strcmp(argv[i], "--mask") == 0) {
             if (have_mask || i + 1 >= argc ||
@@ -1312,6 +1316,9 @@ static int cmd_snapshot(int argc, char **argv)
         } else if (strcmp(argv[i], "--dry-run") == 0) {
             if (snapshot_dry_run) return fail("--dry-run was specified more than once");
             snapshot_dry_run = 1;
+        } else if (strcmp(argv[i], "--noconfirm") == 0) {
+            if (snapshot_noconfirm) return fail("--noconfirm was specified more than once");
+            snapshot_noconfirm = 1;
         } else {
             return fail("Unknown snapshot option '%s'", argv[i]);
         }
@@ -1322,6 +1329,8 @@ static int cmd_snapshot(int argc, char **argv)
         return fail("--mask nosafe is supported only for snapshot restore");
     if (snapshot_dry_run && strcmp(action, "restore") != 0)
         return fail("--dry-run is supported only for snapshot restore");
+    if (snapshot_noconfirm && strcmp(action, "delete") != 0 && strcmp(action, "del") != 0)
+        return fail("--noconfirm is supported only for snapshot delete");
 
     if (strcmp(action, "save") == 0) {
         require_root(argc, argv);
@@ -1329,7 +1338,7 @@ static int cmd_snapshot(int argc, char **argv)
     }
     if (strcmp(action, "delete") == 0) {
         require_root(argc, argv);
-        return cctl_snapshot_delete(name);
+        return cctl_snapshot_delete(name, snapshot_noconfirm);
     }
     if (strcmp(action, "view") == 0 || strcmp(action, "restore") == 0) {
         require_root(argc, argv);

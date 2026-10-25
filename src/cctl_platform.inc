@@ -1105,17 +1105,55 @@ static void status_system(void)
     int live_ec_code = cctl_live_ec_state(&live_tcc_offset, NULL);
     struct cpu_profile_state cpu_profile;
     read_cpu_profile(&cpu_profile);
-    if (live_ec_code >= 0) {
-        const char *mode = status_inferred_mode(live_ec_code, &cpu_profile);
+
+    int cache_code = -1;
+    int cache_available = 0;
+    int profile_fd = tuxedo_open_clevo();
+    if (profile_fd >= 0) {
+        if (tuxedo_io_version_ok(profile_fd)) {
+            int32_t last_profile = -1;
+            if (ioctl(profile_fd, R_CL_PERF_PROFILE, &last_profile) == 0) {
+                if (last_profile >= 0 && last_profile <= 3) {
+                    cache_code = last_profile;
+                    cache_available = 1;
+                }
+            }
+        }
+        close(profile_fd);
+    }
+    char cache_detail[96] = "";
+    if (cache_available)
+        snprintf(cache_detail, sizeof(cache_detail), "tuxedo_io cache: %s [%d]",
+                 gpu_profile_name(cache_code), cache_code);
+
+    int tcc_recognized = live_ec_code >= 0;
+    int status_ec_code = tcc_recognized ? live_ec_code
+                                        : (cache_available ? cache_code : -1);
+    if (status_ec_code >= 0) {
+        const char *mode = status_inferred_mode(status_ec_code, &cpu_profile);
         if (strstr(mode, "aggressive"))
             s_status_mode_has_aggressive = 1;
-        row("Mode:", "%s%s%s",
-            C_CYN, mode, C_RST);
-        row("EC Code:", "%s%s%s (%d; live, TCC offset %d°C)", C_CYN,
-            gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
+        if (tcc_recognized)
+            row("Mode:", "%s%s%s", C_CYN, mode, C_RST);
+        else
+            row("Mode:", "%s%s%s (from tuxedo_io %s)", C_CYN, mode, C_RST,
+                "cache");
+
+        if (tcc_recognized && cache_available)
+            row("EC Code:", "%s%s%s (%d; TCC offset %d°C; %s)", C_CYN,
+                gpu_profile_name(live_ec_code), C_RST, live_ec_code,
+                live_tcc_offset, cache_detail);
+        else if (tcc_recognized)
+            row("EC Code:", "%s%s%s (%d; live, TCC offset %d°C)", C_CYN,
+                gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
+        else
+            row("EC Code:", "%s%s%s (%d; %s; TCC offset %s)", C_CYN,
+                gpu_profile_name(cache_code), C_RST, cache_code,
+                "tuxedo_io cache",
+                live_tcc_offset >= 0 ? "unrecognized" : "unavailable");
     } else {
-        row("Mode:", "%sunknown (live TCC offset unavailable)%s", C_DIM, C_RST);
-        row("EC Code:", "%sunknown (live TCC offset unavailable)%s", C_DIM, C_RST);
+        row("Mode:", "%sunknown (TCC offset unavailable or unrecognized)%s", C_DIM, C_RST);
+        row("EC Code:", "%sunknown (TCC offset unavailable or unrecognized)%s", C_DIM, C_RST);
     }
 
     char core_clock[64], mem_clock[64];
@@ -1237,6 +1275,8 @@ static void status_system(void)
     }
 }
 
+static void fc_print_status(const char *requested_name);
+
 static void status_fans(void)
 {
     if (!json_output) printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
@@ -1249,6 +1289,7 @@ static void status_fans(void)
     } else {
         row("Fans:", "%sN/A (ec_sys or tuxedo_io not available)%s", C_DIM, C_RST);
     }
+    fc_print_status(NULL);
 }
 
 static void status_keyboard_color(const char *label, int r, int g, int b)

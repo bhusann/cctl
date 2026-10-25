@@ -29,6 +29,7 @@
 #include <ctype.h>
 #include <sched.h>
 #include <sys/wait.h>
+#include <sys/syscall.h>
 #include <limits.h>
 #include <pwd.h>
 #include <sys/types.h>
@@ -38,14 +39,14 @@
 #include <stdarg.h>
 #include <math.h>
 
-#define CCTL_VERSION      "4.7"
+#define CCTL_VERSION      "4.8"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100094
+#define CCTL_MICROVERSION 100108
 #endif
 
 
@@ -54,6 +55,7 @@
 #include "src/cctl_controls.inc"
 #include "src/cctl_platform.inc"
 #include "src/cctl_keyboard.inc"
+#include "src/cctl_fancurve.inc"
 #include "src/cctl_telemetry.inc"
 #include "src/cctl_runtime.inc"
 #include "src/cctl_nvidia.inc"

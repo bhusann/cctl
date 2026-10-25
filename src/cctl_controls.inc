@@ -244,7 +244,27 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 #include <sys/ioctl.h>
 
 #define R_HWCHECK_CL       0x8008EC05
+#define R_MOD_VERSION      0x8008EC00
 #define W_CL_PERF_PROFILE  0x4008EE15
+#define R_CL_PERF_PROFILE  0x8008ED16
+#define W_CL_FAN_AUTO_ON_CLOSE 0x0000EE16
+
+#define CCTL_TUXEDO_MIN_VERSION "0.3.10"
+
+static int tuxedo_io_version_ok(int fd)
+{
+    char version[64] = {0};
+    int major, minor, patch, min_major, min_minor, min_patch;
+
+    if (ioctl(fd, R_MOD_VERSION, version) != 0 ||
+        sscanf(version, "%d.%d.%d", &major, &minor, &patch) != 3 ||
+        sscanf(CCTL_TUXEDO_MIN_VERSION, "%d.%d.%d",
+               &min_major, &min_minor, &min_patch) != 3)
+        return 0;
+    return major > min_major ||
+           (major == min_major && (minor > min_minor ||
+            (minor == min_minor && patch >= min_patch)));
+}
 
 static const char *gpu_profile_name(int profile)
 {
@@ -258,7 +278,7 @@ static int tuxedo_open_clevo(void)
 {
     if (access("/dev/tuxedo_io", F_OK) != 0)
         return -1;
-    int fd = open("/dev/tuxedo_io", O_RDWR);
+    int fd = open("/dev/tuxedo_io", O_RDWR | O_CLOEXEC);
     if (fd < 0) return -1;
     int is_cl = 0;
     if (ioctl(fd, R_HWCHECK_CL, &is_cl) < 0 || !is_cl) {
@@ -327,6 +347,7 @@ static int set_gpu_profile(int profile)
 /* tuxedo_io ioctl constants */
 #define R_CL_FANINFO1   0x8008ED10
 #define R_CL_FANINFO2   0x8008ED11
+#define R_CL_FANINFO3   0x8008ED12
 #define W_CL_FANSPEED   0x4008EE10
 #define W_CL_FANAUTO    0x4008EE11
 #define FAN_MAX_RAW     255
@@ -407,10 +428,14 @@ static int fan_silent_all(void)
 
 /* --- Fan Duty (Individual = Legacy EC, Both = tuxedo_io) --- */
 
-static int fan_set_duty(int fan_idx, int percent)
+static int fan_set_duty(int fan_idx, int percent, int allow_low)
 {
-    if (percent < 25 || percent > 100) {
-        fprintf(stderr, "Error: Fan duty %d%% out of range (25-100)\n", percent);
+    int minimum = allow_low ? 0 : 25;
+    if (percent < minimum || percent > 100) {
+        if (!allow_low && percent >= 0 && percent < 25)
+            fprintf(stderr, "Error: Fan duty %d%% is below the minimum allowed 25%%\n", percent);
+        else
+            fprintf(stderr, "Error: Fan duty %d%% out of range (%d-100)\n", percent, minimum);
         return -1;
     }
     uint8_t raw = (uint8_t)((percent * 255) / 100);
@@ -727,7 +752,7 @@ static void print_profile_table(void)
                           tdp,
                           show_rr ? profile_rr_label(p->rr, rr_buf, sizeof(rr_buf)) : NULL);
     }
-    printf("\n      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto; bypass with --nosafe.%s\n",
+    printf("\n      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto unless a fan curve is active; bypass with --nosafe.%s\n",
            C_DIM, C_RST);
     printf("      %sEPP determines CPU performance under either the performance or powersave governor.%s\n",
            C_DIM, C_RST);

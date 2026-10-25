@@ -29,6 +29,94 @@ cctl fan cpu|gpu <pct> --nosafe # Set individual fan duty (requires --nosafe)
 cctl fan cpu|gpu auto           # Restore individual fan to automatic EC control (independent)
 ```
 
+### Fan Curves
+```bash
+cctl fancurve                      # List saved curves and the active curve
+cctl fancurve create <name>        # Prompt for point count, then open the editor
+cctl fancurve view <name>          # Validate and show a curve
+cctl fancurve edit <name>          # Edit and save; refuses while this curve is active
+cctl fancurve start <name>         # Start/restart the curve worker (`set` is an alias)
+cctl fancurve del <name> [--noconfirm] # Delete an inactive curve (asks first)
+cctl fancurve stop                 # Stop the worker; both fans -> EC auto ('off' is an alias)
+```
+
+Profiles are JSON files with optional `##` comments in
+`/var/lib/cctl/fancurves/`. Names are case-sensitive (`Cat` and `cat` are
+different). If the name already exists,
+`create` asks `Warning: fan curve '<name>' already exists. Replace it? [y/N]`
+and keeps the existing curve unless you answer `y` or `yes`.
+
+```json
+{
+  "name": "quiet",
+  "hysteresis": 3,
+  "interval_ms": 2000,
+  "points": [
+    { "temp": 40, "fan": 25 },
+    { "temp": 60, "fan": 35 },
+    { "temp": 80, "fan": 70 },
+    { "temp": 95, "fan": 100 }
+  ]
+}
+```
+
+`create` starts from a template with `##` instruction comments and `"--"`
+placeholders. Replace each `--` with a number while keeping the quotes:
+`temp` is Celsius (`0–95`) and `fan` is percentage (`25–100`). The final point
+may instead use `"a"` (or `"auto"`) for EC automatic fan control. The parser
+also accepts unquoted numbers and preserves `##` comment lines in the file.
+
+- `points`: 2–16 entries, temperature `0–95 °C` strictly increasing, fan
+  `25–100 %`. Only the final point may use fan `"a"`/`"auto"`. Values are
+  checked by `view`, `edit`, and `start`.
+- A curve starts only when `clevo_acpi` and `tuxedo_io` are loaded and
+  `/dev/tuxedo_io` exists; otherwise run `cctl drivers-manage`. Curves also
+  require `tuxedo_io` 0.3.10 or newer, which provides close-on-exit fan recovery;
+  cctl refuses to start a curve with an older driver.
+- If three consecutive fan-control ioctls fail, the worker tries
+  `W_CL_FANAUTO`, reloads `clevo_acpi`/`tuxedo_io` with `modprobe` if needed,
+  and retries. If driver recovery fails, it uses the direct EC fan-auto path
+  and stops the curve.
+- `hysteresis`: deadband in °C (0–20). A new duty is written only after the
+  temperature moves at least this far since the previous write.
+- `interval_ms`: polling interval, 250–60000 ms.
+- The worker reads the hottest of the CPU and GPU fan-sensor temperatures from
+  `tuxedo_io` (`R_CL_FANINFO1/2`, third byte), falling back to `hwmon` for the
+  CPU and `nvidia-smi` for the GPU.
+- Between points, fan speed is linearly interpolated. Below the first point the
+  first fan value is used; at or above the last numeric point its value is
+  held.
+- If the final point uses fan `"a"`, reaching its temperature hands both fans
+  to EC auto. The curve resumes below `auto-temp − hysteresis`.
+- Above **95 °C** the worker returns both fans to EC automatic control. It
+  resumes the curve only after the temperature falls below **90 °C**.
+- Curve points use the same `25–100 %` range as `cctl fan`: the EC clamps
+  `13–24 %` to 25 %, and values below 13 % drop both fans to 0 %.
+- While a curve is active, `cctl fan auto` stops it and restores both fans to
+  EC automatic control. Other fan changes — `cctl fan <pct>`,
+  `cctl fan cpu|gpu <pct>`, `cctl fan cpu|gpu auto`, `cctl fan max`, and
+  `cctl fan silent` — are refused with a warning until you run
+  `cctl fancurve stop`.
+- Profile fan changes are suppressed while a curve is active: `cctl set` on an
+  EC 2/3 profile skips its fan-auto safety step, and the silent/powersave
+  profiles skip their silent-fan step. `cctl turbo on` likewise skips turbo's
+  fan-auto safety step. Each case prints a warning that the curve keeps fan
+  control.
+- While active, `/run/cctl_curve.state` contains the worker PID, kernel start
+  time, profile name, and start epoch. `fancurve stop` removes it.
+- If the worker exits unexpectedly, including `SIGKILL`, the driver's armed
+  file descriptor restores EC automatic fan control when it closes. The worker
+  opens its own descriptor; unrelated status and monitor commands cannot
+  trigger this recovery.
+- `fancurve stop` waits for the recorded worker process to exit before it
+  restores auto and returns. The lock file remains in `/run`; flock releases
+  automatically when the worker exits.
+- `edit` refuses to modify a curve while that curve is active; run
+  `fancurve stop` first.
+- `del` asks for confirmation, and refuses to delete the currently active
+  curve (run `fancurve stop` first). Add `--noconfirm` to skip the prompt.
+- Fan curves are not saved in snapshots and do not start at boot.
+
 ### GPU MUX Switching
 Switches between **MSHybrid** (iGPU + dGPU) and **dGPU** (NVIDIA GPU only). A reboot is required to apply the change.
 
@@ -67,13 +155,15 @@ cctl snap view                   # List saved snapshot names
 cctl snap save <name> [--mask fields]      # Save current settings (alias: s)
 cctl snap view <name>            # Show a saved snapshot (alias: v)
 cctl snap restore <name> [--mask fields] [--dry-run] # Apply or preview (alias: r)
-cctl snap delete <name>          # Delete a saved snapshot (alias: del)
+cctl snap delete <name> [--noconfirm] # Delete a saved snapshot (alias: del)
 ```
 
 Use `--mask` to omit fields while saving or skip them while restoring. Separate
 field names with commas. For example: `cctl snap s mypcwork --mask epp,pl1,turbo`.
 Snapshot names can contain letters, numbers, hyphens, and underscores, but no
 spaces or other symbols. `snap` is a shorter alias for `snapshot`.
+`snap delete` asks for confirmation before removing a snapshot; add
+`--noconfirm` to skip the prompt (for example, `cctl snap del mypcwork --noconfirm`).
 Add `--dry-run` to `snap restore` to preview the settings and skipped
 fields without applying changes. Restoring EC code `2`/`3` sets fans to AUTO;
 restoring Turbo ON does so only when the active EC code is `2`/`3`. Add
