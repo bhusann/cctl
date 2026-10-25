@@ -59,7 +59,24 @@ reaching their 15W PL1 limit.
 | powersave / balance_power | On or off | Peak: P 2200 MHz; E 1600 MHz; about 22W.<br>────────────<br>Sustained: Codes `2` and `3` remain around P 2200 MHz, E 1600 MHz, 22W; codes `0` and `1` reach 15W after TAU and settle around P 1500–1600 MHz, E 1200 MHz. |
 | powersave / power | On or off | Peak & sustained: P 1100 MHz; E 1100 MHz; about 12W across all codes. |
 
+## Governor and EPP
 
+CPU performance under either the `performance` or `powersave` governor is set by
+**EPP** alone — the same EPP produced identical measurements under both
+governors. The governor only decides *how* clocks are chosen:
 
-EPP determines the performance of the CPU under either the `performance` or
-`powersave` governor.
+- **`powersave`** — scales clocks on demand, idling around 800–1200 MHz and
+  boosting under load. EPP is freely selectable with `cctl epp`:
+  `performance`, `balance_performance`, `balance_power`, or `power`.
+- **`performance`** — holds clocks near maximum constantly for the lowest
+  latency, at the cost of idle heat and power. **EPP is locked to
+  `performance`** in this mode: `cctl epp` refuses any other value and asks you
+  to switch the governor first.
+
+Because the governor changes only the frequency *policy*, while EPP changes the
+actual performance target, every built-in profile uses governor `powersave` and
+expresses its intent through EPP — `max` and `cpuperf` with `performance`,
+`balanced` with `balance_performance`, `powersave` with `balance_power`, and
+`silent/eco` with `power`. `cctl status` still reports a profile as
+**aggressive** when a custom profile pairs governor `performance` with EPP
+`performance`, and **non-aggressive** for the dynamic `powersave` pairing.

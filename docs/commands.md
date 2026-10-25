@@ -105,11 +105,9 @@ Press `p` again before D3cold to cancel the wait; press `q` or Ctrl-C to exit.
 ### Display
 > **Note:** Display commands need a native **X11** session — if your desktop doesn't support one (e.g. Wayland), the `DISPLAY` section is hidden from `cctl --help` and the refresh rate from `cctl status`.
 >
-> `cctl rr` accepts any numeric rate: it is passed straight to `xrandr`, which snaps to the closest rate supported by that display's current mode, and cctl prints the rate actually applied. Run `cctl rr` to see the exact values available.
+> `cctl rr` lists every active display and numbers it: the internal panel (`eDP-*`, or the first `DP-*` when the MUX is in dGPU mode) is always **#1** while it is on, other outputs follow as **#2**, **#3**, … When the panel is off, the first active monitor becomes **#1**. `cctl rr <rate>` changes display 1; `cctl rr <rate> --2` changes display 2. Any numeric value is accepted: `xrandr` snaps it to the closest rate that display supports, and cctl prints what was actually applied.
 >
-> `cctl rr` numbers every active display: the internal panel (`eDP-*`, or the first `DP-*` when the MUX is in dGPU mode) is always **#1** when it is on, other outputs follow as **#2**, **#3**, … When the internal panel is off, the first active monitor takes **#1**. Connected but inactive outputs are listed separately and cannot be targeted.
->
-> Scaling applies to the **internal laptop panel** only; profiles also only change the internal panel's refresh rate. Use `cctl rr <rate> --N` to change an external monitor.
+> Scaling, profiles and the `powersave` refresh drop target the **internal laptop panel** only. Connected but inactive outputs are listed separately and cannot be targeted.
 
 ```bash
 cctl rr                         # List displays: number, resolution, current & available rates
