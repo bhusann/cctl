@@ -156,7 +156,7 @@ how to choose profile settings and includes examples and safety limits.
 
 Command names:
 - Profiles and setup: `set`, `editconf`, `install`, `uninstall`, `drivers-manage`
-- Keyboard and fans: `kbc`, `kbb`, `kbe`, `fn`, `fan`, `fancurve`
+- Keyboard and fans: `kbc`, `kbb`, `kbe`, `kbn`, `fn`, `fan`, `fancurve`
 - GPU and privacy: `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic`
 - Battery and system info: `bat`, `status`, `--version`
 - Monitors: `cpumon`, `gpumon`
@@ -175,12 +175,16 @@ Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).
 Most `cctl` commands apply a setting and exit; cctl has no tray app or general
 startup service. `cctl fancurve start <name>` is an exception: it starts a
 detached worker that runs the curve until stopped or the system shuts down.
+When a compatible login manager provides sleep notifications, the worker
+returns fan control to the laptop before sleep and resumes the curve after wake.
+If the wake notification is missed, it can resume curve control when a monitored
+temperature rises above 85 °C. See the [Fan Curves guide](docs/commands.md#fan-curves)
+for details.
 
 To restore saved settings at startup, save them with `cctl snap save <name>` and
 configure your service manager (for example, systemd or runit) to run
 `cctl snap restore <name>`. Snapshots do not include fan settings or active fan
-curves; fan curves do not start automatically at boot. See
-[Fan Curves](docs/commands.md#fan-curves) for usage and safety details.
+curves; fan curves do not start automatically at boot.
 
 > **Caution:** cctl writes the EC directly. Don't run TCC (`tccd`), NBFC, or
 > another Clevo fan daemon at the same time — they will fight over fan speed and

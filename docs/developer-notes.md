@@ -22,6 +22,14 @@ otherwise, hardware observations refer to the tested Colorful Evol P15.
 
 ## EC Profiles, CPU Power, and Thermal Reporting
 
+### Custom profile editor elevation
+
+`cctl editconf` edits a private temporary copy as the invoking user. It saves
+through the `editconf __install` helper, which validates temporary-file owner
+and permissions before atomically replacing `/var/lib/cctl/profiles.conf`.
+This uses cctl's installed passwordless sudo rule instead of nested
+`sudoedit`/`install` commands that would prompt separately for a password.
+
 ### Live EC profile detection
 
 `cctl_live_ec_state()` reads the recognized TCC offset from processor thermal

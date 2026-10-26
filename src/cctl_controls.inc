@@ -756,8 +756,6 @@ static void print_profile_table(void)
     }
     printf("\n      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto unless a fan curve is active; bypass with --nosafe.%s\n",
            C_DIM, C_RST);
-    printf("      %sEPP determines CPU performance under either the performance or powersave governor.%s\n",
-           C_DIM, C_RST);
     printf("\n");
 }
 

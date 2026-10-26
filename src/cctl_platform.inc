@@ -1020,7 +1020,8 @@ static void row(const char *label, const char *fmt, ...)
         json_field(key, val);
         return;
     }
-    printf("  %-14s %s\n", label, val);
+    int ec_code_row = strcmp(label, "EC Code:") == 0;
+    printf("  %-14s %s%s\n", label, val, ec_code_row ? " **" : "");
 }
 
 static void json_field(const char *key, const char *value)
@@ -1103,7 +1104,7 @@ static void status_system(void)
     }
     char cache_detail[96] = "";
     if (cache_available)
-        snprintf(cache_detail, sizeof(cache_detail), "tuxedo_io cache: %s [%d]",
+        snprintf(cache_detail, sizeof(cache_detail), "IO cache: %s [%d]",
                  gpu_profile_name(cache_code), cache_code);
 
     int tcc_recognized = live_ec_code >= 0;
@@ -1120,11 +1121,11 @@ static void status_system(void)
                 "cache");
 
         if (tcc_recognized && cache_available)
-            row("EC Code:", "%s%s%s (%d; TCC offset %d°C; %s)", C_CYN,
+            row("EC Code:", "%s%s%s (%d; TCC %d°C; %s)", C_CYN,
                 gpu_profile_name(live_ec_code), C_RST, live_ec_code,
                 live_tcc_offset, cache_detail);
         else if (tcc_recognized)
-            row("EC Code:", "%s%s%s (%d; TCC offset %d°C)", C_CYN,
+            row("EC Code:", "%s%s%s (%d; TCC %d°C)", C_CYN,
                 gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
         else
             row("EC Code:", "%s%s%s (%d; %s; TCC offset %s)", C_CYN,
@@ -1192,7 +1193,7 @@ static void status_system(void)
     else
         row("CPU Max Freq:", "%sN/A%s", C_DIM, C_RST);
 
-    row("GPU Clocks:", "Core %s, memory %s %s(self-recorded, not live)**%s",
+    row("GPU Clocks:", "Core %s, memory %s %s(self-recorded)**%s",
         core_clock, mem_clock, C_DIM, C_RST);
 
     /* 5. dGPU Power State */
@@ -1414,7 +1415,9 @@ static void show_status(void)
             printf("%sNote: Aggressive locks CPU clocks near max constantly; non-aggressive scales dynamically on demand (cool & quiet at idle).%s\n",
                    C_DIM, C_RST);
         }
-        printf("%s** NVIDIA GPU clocks are not read live; cctl records only changes made through cctl, so these saved values may not reflect current hardware state.%s\n\n",
+        printf("%s** EC Code uses TCC when recognized; otherwise, it uses the tuxedo_io cache.%s\n",
+               C_DIM, C_RST);
+        printf("%sNVIDIA clock values show the last settings applied through cctl, not live readings.%s\n\n",
                C_DIM, C_RST);
     }
 }

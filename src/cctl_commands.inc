@@ -243,47 +243,135 @@ static int experimental_fan_controls_enabled(void)
     return settings.experimental_fan_enabled;
 }
 
-static int create_profile_conf(void)
+static int editconf_write_all(int fd, const char *buf, size_t len)
 {
-    char tmp_path[] = "/tmp/cctl-profiles.XXXXXX";
-    int fd = mkstemp(tmp_path);
-    if (fd < 0) return -1;
-
-    static const char header[] =
-        "# Custom profiles: one profile per line; use 'skip' to leave a setting unchanged.\n"
-        "# name ec_profile_code turbo governor epp pl1_watts pl2_watts [refresh_rate]\n"
-        "# example 3 1 powersave performance 40 60 144\n";
     size_t offset = 0;
-    while (offset < sizeof(header) - 1) {
-        ssize_t n = write(fd, header + offset, sizeof(header) - 1 - offset);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) {
-            close(fd);
-            unlink(tmp_path);
-            return -1;
-        }
-        offset += (size_t)n;
+    while (offset < len) {
+        ssize_t n = write(fd, buf + offset, len - offset);
+        if (n > 0) offset += (size_t)n;
+        else if (n < 0 && errno == EINTR) continue;
+        else return -1;
     }
-    int chmod_rc = fchmod(fd, 0600);
-    int close_rc = close(fd);
-    if (chmod_rc < 0 || close_rc < 0) {
+    return 0;
+}
+
+static int editconf_install_helper(const char *src, uid_t owner)
+{
+    static const char prefix[] = "/tmp/cctl-profiles-edit-";
+    if (strncmp(src, prefix, sizeof(prefix) - 1) != 0 ||
+        strchr(src + sizeof(prefix) - 1, '/') != NULL)
+        return fail("Invalid temporary custom-profile path");
+
+    char err[256];
+    char *text = fc_read_owned_text(src, owner, err, sizeof(err));
+    if (!text) return fail("%s", err);
+
+    const char *dir = "/var/lib/cctl";
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        free(text);
+        return fail("Could not create %s: %s", dir, strerror(errno));
+    }
+    struct stat dst;
+    if (lstat(dir, &dst) != 0 || !S_ISDIR(dst.st_mode) || S_ISLNK(dst.st_mode) ||
+        dst.st_uid != 0 || (dst.st_mode & 0022) != 0) {
+        free(text);
+        return fail("Refusing to write profiles through an unsafe %s directory", dir);
+    }
+
+    char temp[PATH_MAX];
+    int n = snprintf(temp, sizeof(temp), "%s/.profiles.conf.XXXXXX", dir);
+    if (n < 0 || (size_t)n >= sizeof(temp)) {
+        free(text);
+        return fail("Custom-profile path is too long");
+    }
+    int fd = mkstemp(temp);
+    if (fd < 0) {
+        free(text);
+        return fail("Could not create a temporary profile file: %s", strerror(errno));
+    }
+    int rc = 0;
+    if (fchmod(fd, 0644) != 0 ||
+        editconf_write_all(fd, text, strlen(text)) != 0 || fsync(fd) != 0)
+        rc = -1;
+    free(text);
+    if (close(fd) != 0) rc = -1;
+    if (rc == 0 && rename(temp, USER_PROFILE_FILE) != 0) rc = -1;
+    if (rc != 0) {
+        int saved_errno = errno;
+        unlink(temp);
+        return fail("Could not save %s: %s", USER_PROFILE_FILE, strerror(saved_errno));
+    }
+    return 0;
+}
+
+static int editconf_make_temp(char *tmp_path, size_t path_size)
+{
+    if (path_size < sizeof("/tmp/cctl-profiles-edit-XXXXXX")) return -1;
+    snprintf(tmp_path, path_size, "/tmp/cctl-profiles-edit-XXXXXX");
+    int out = mkstemp(tmp_path);
+    if (out < 0) return -1;
+    if (fchmod(out, 0600) != 0) goto fail;
+
+    int in = open(USER_PROFILE_FILE, O_RDONLY | O_NOFOLLOW);
+    if (in >= 0) {
+        struct stat st;
+        if (fstat(in, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+            st.st_size > FANCURVE_FILE_MAX) {
+            close(in);
+            goto fail;
+        }
+        char buf[4096];
+        size_t total = 0;
+        for (;;) {
+            ssize_t n = read(in, buf, sizeof(buf));
+            if (n > 0) {
+                if ((size_t)n > FANCURVE_FILE_MAX - total) {
+                    close(in);
+                    errno = EFBIG;
+                    goto fail;
+                }
+                if (editconf_write_all(out, buf, (size_t)n) != 0) {
+                    close(in);
+                    goto fail;
+                }
+                total += (size_t)n;
+            } else if (n == 0) {
+                break;
+            } else if (errno != EINTR) {
+                close(in);
+                goto fail;
+            }
+        }
+        close(in);
+    } else if (errno == ENOENT) {
+        static const char header[] =
+            "# Custom profiles: one profile per line; use 'skip' to leave a setting unchanged.\n"
+            "# name ec_profile_code turbo governor epp pl1_watts pl2_watts [refresh_rate]\n"
+            "# example 3 1 powersave performance 40 60 144\n";
+        if (editconf_write_all(out, header, sizeof(header) - 1) != 0) goto fail;
+    } else {
+        goto fail;
+    }
+
+    if (close(out) != 0) {
         unlink(tmp_path);
         return -1;
     }
+    return 0;
 
-    char *const install_root[] = {
-        "install", "-D", "-m", "0644", tmp_path, USER_PROFILE_FILE, NULL
-    };
-    char *const install_user[] = {
-        "sudo", "install", "-D", "-m", "0644", tmp_path, USER_PROFILE_FILE, NULL
-    };
-    int rc = run(geteuid() == 0 ? install_root : install_user, RUN_SILENT, NULL, 0);
+fail:
+    close(out);
     unlink(tmp_path);
-    return rc;
+    return -1;
 }
 
 static int cmd_editconf(int argc, char **argv)
 {
+    if (argc == 4 && strcmp(argv[2], "__install") == 0) {
+        if (geteuid() != 0)
+            return fail("Internal profile installer must run as root");
+        return editconf_install_helper(argv[3], fc_invoking_uid());
+    }
     if (argc > 2)
         return fail("Unexpected extra argument '%s'", argv[2]);
 
@@ -296,18 +384,40 @@ static int cmd_editconf(int argc, char **argv)
         else return fail("No editor configured and neither nano nor micro is installed; "
                          "set SUDO_EDITOR, VISUAL, or EDITOR");
     }
-    if (setenv("SUDO_EDITOR", editor, 1) != 0)
-        return fail("Could not set the configured editor for sudoedit");
-
-    if (access(USER_PROFILE_FILE, F_OK) != 0 && errno == ENOENT) {
-        if (create_profile_conf() != 0)
-            return fail("Could not create %s", USER_PROFILE_FILE);
+    char temp[PATH_MAX];
+    if (editconf_make_temp(temp, sizeof(temp)) != 0)
+        return fail("Could not prepare a temporary custom-profile file: %s", strerror(errno));
+    if (setenv("EDITOR", editor, 1) != 0) {
+        unlink(temp);
+        return fail("Could not set the configured editor");
     }
 
-    char *const edit_args[] = { "sudoedit", USER_PROFILE_FILE, NULL };
+    char *const edit_args[] = { "/bin/sh", "-c", "exec $EDITOR \"$1\"",
+                                "cctl-editconf", temp, NULL };
     int rc = run(edit_args, RUN_RAW, NULL, 0);
-    if (rc != 0)
+    if (rc != 0) {
+        unlink(temp);
         return fail("Editor exited with status %d", rc);
+    }
+
+    if (geteuid() == 0) {
+        rc = editconf_install_helper(temp, getuid());
+        unlink(temp);
+        if (rc == 0) printf("Saved custom profiles to %s\n", USER_PROFILE_FILE);
+        return rc;
+    }
+
+    char exe[PATH_MAX];
+    if (get_self_exe(exe, sizeof(exe)) < 0) {
+        unlink(temp);
+        return fail("Could not determine the cctl binary path");
+    }
+    char *const install_args[] = { "sudo", exe, "editconf", "__install", temp, NULL };
+    rc = run(install_args, RUN_RAW, NULL, 0);
+    unlink(temp);
+    if (rc != 0)
+        return fail("Could not save custom profiles (installer exited with status %d)", rc);
+    printf("Saved custom profiles to %s\n", USER_PROFILE_FILE);
     return 0;
 }
 

@@ -556,7 +556,7 @@ static const struct command commands[] = {
     { "kbc",            0, cmd_kbc,             SEC_KEYBOARD,  "<R G B | preset>",                "Set keyboard color (no arg: list presets)", NULL },
     { "kbb",            0, cmd_kbb,             SEC_KEYBOARD,  "<pct>",                           "Set brightness (0-100%)", NULL },
     { "kbe",            0, cmd_kbe,             SEC_KEYBOARD,  "[effect|stop]",                   "Keyboard backlight effects (no arg: list preset & status)", NULL },
-    { "kbn",            0, cmd_kbn,             SEC_KEYBOARD,  "<effect> [colors] [n]",           "Play a temporary keyboard notification", NULL },
+    { "kbn",            0, cmd_kbn,             SEC_KEYBOARD,  "effect [args]",                    "Play a temporary keyboard notification", NULL },
     { "fn",             1, cmd_fnlock,          SEC_KEYBOARD,  "[lock|unlock]",                   "Toggle/set Fn Lock", NULL },
 
     /* Fan */
@@ -656,8 +656,6 @@ static void print_help_command_indent(const struct command *cmd, int indent)
         target_col = 36;
     else if (strcmp(cmd->name, "fancurve") == 0)
         target_col = 36;
-    else if (strcmp(cmd->name, "kbn") == 0)
-        target_col = 38;
 
     int col = indent;
     printf("%*s%s%s%s", indent, "", C_BLD, cmd->name, C_RST);
@@ -739,8 +737,8 @@ static void print_usage(const char *prog)
                 const struct command *cmd = &commands[i];
                 if (cmd->section != sec->section) continue;
                 print_help_command(cmd);
-                printf("\n");
             }
+            printf("\n");
             print_profile_table();
             continue;
         }
@@ -771,7 +769,6 @@ static void print_usage(const char *prog)
         printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
     }
 
-    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n\n", C_DIM, C_RST);
     printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
     g_stream_output = prev_stream;
 }
