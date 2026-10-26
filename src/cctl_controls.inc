@@ -251,6 +251,8 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 
 #define CCTL_TUXEDO_MIN_VERSION "0.3.10"
 
+#include "cctl_shared.h"
+
 static int tuxedo_io_version_ok(int fd)
 {
     char version[64] = {0};
@@ -271,21 +273,6 @@ static const char *gpu_profile_name(int profile)
     static const char *names[] = { "silent", "powersave", "high performance", "standard" };
     if (profile >= 0 && profile <= 3) return names[profile];
     return "unknown";
-}
-
-/* Open /dev/tuxedo_io and verify Clevo hardware. Returns fd or -1. */
-static int tuxedo_open_clevo(void)
-{
-    if (access("/dev/tuxedo_io", F_OK) != 0)
-        return -1;
-    int fd = open("/dev/tuxedo_io", O_RDWR | O_CLOEXEC);
-    if (fd < 0) return -1;
-    int is_cl = 0;
-    if (ioctl(fd, R_HWCHECK_CL, &is_cl) < 0 || !is_cl) {
-        close(fd);
-        return -1;
-    }
-    return fd;
 }
 
 /* Open /dev/tuxedo_io, issue an ioctl, and close it. Returns ioctl status or -1. */
@@ -797,13 +784,18 @@ static int profile_apply(const struct profile_def *p)
     return err ? -1 : 0;
 }
 
+static int ec_profile_needs_fan_auto(int ec_code)
+{
+    return ec_code == 2 || ec_code == 3;
+}
+
 static int profile_requires_fan_auto(const struct profile_def *p)
 {
     if (!p) return 0;
     int ec_code = p->gpu_profile;
     if (ec_code < 0 && p->turbo == 1)
         ec_code = cctl_live_ec_state(NULL, NULL);
-    return ec_code == 2 || ec_code == 3;
+    return ec_profile_needs_fan_auto(ec_code);
 }
 
 static int profile_silent(void)

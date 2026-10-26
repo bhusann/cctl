@@ -63,6 +63,8 @@
 #define R_HWCHECK_CL 0x8008EC05
 #define R_CL_FANINFO2 0x8008ED11
 
+#include "cctl_monitor_common.h"
+
 #define W_MOD   21
 #define H_MOD   15
 #define Y_MOD   9
@@ -118,30 +120,6 @@ static volatile sig_atomic_t g_quit = 0;
 static atomic_int        g_wait_d3cold = 0;     /* pause NVIDIA queries until D3cold */
 static double            g_t0 = 0;
 static float             g_amt = 1.0f;          /* 0 = dull/grey, 1 = full colour */
-
-/* ----------------------------------------------------------------- helpers */
-static double clampd(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
-static double clamp01(double v) { return clampd(v, 0.0, 1.0); }
-static uint8_t u8(double v) { return (uint8_t)(clampd(v, 0, 255) + 0.5); }
-
-static double now_s(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-}
-
-static void sleep_s(double s)
-{
-    if (s <= 0) return;
-    struct timespec ts = { (time_t)s, (long)((s - (double)(time_t)s) * 1e9) };
-    nanosleep(&ts, NULL);
-}
-
-static void ease(double *cur, double target, double dt, double rate)
-{
-    *cur += (target - *cur) * (1.0 - exp(-dt * rate));
-}
 
 /* ------------------------------------------------------------------ colour */
 static const RGB C_NV    = {118, 185, 0};
@@ -739,19 +717,6 @@ static const char *pci_root(void)
     return (e && *e) ? e : "/sys/bus/pci/devices";
 }
 
-static bool read_first_line(const char *path, char *out, size_t n)
-{
-    FILE *f = fopen(path, "r");
-    if (!f) return false;
-    bool ok = fgets(out, (int)n, f) != NULL;
-    fclose(f);
-    if (ok) {
-        size_t l = strlen(out);
-        while (l && (out[l - 1] == '\n' || out[l - 1] == '\r' || out[l - 1] == ' ')) out[--l] = 0;
-    }
-    return ok;
-}
-
 static PciPm read_pm_state(const char *bdf)
 {
     char path[512], v[32];
@@ -848,19 +813,6 @@ static bool parse_smi_csv(char *line, GpuSnapshot *s)
     s->gpu_util_pct      = num(f[14], 0);
     snprintf(s->name, sizeof s->name, "%s", f[15]);
     return true;
-}
-
-static int tuxedo_open_clevo(void)
-{
-    int fd = open("/dev/tuxedo_io", O_RDWR);
-    if (fd < 0)
-        return -1;
-    int is_clevo = 0;
-    if (ioctl(fd, R_HWCHECK_CL, &is_clevo) < 0 || !is_clevo) {
-        close(fd);
-        return -1;
-    }
-    return fd;
 }
 
 static void ensure_ec_sys(void)
@@ -1043,15 +995,6 @@ static void *poller(void *arg)
 static struct termios g_old;
 static bool g_raw = false;
 
-static void write_all(const char *p, size_t n)
-{
-    while (n) {
-        ssize_t w = write(STDOUT_FILENO, p, n);
-        if (w <= 0) return;
-        p += w; n -= (size_t)w;
-    }
-}
-
 static void term_enter(void)
 {
     if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &g_old) == 0) {
@@ -1068,13 +1011,6 @@ static void term_leave(void)
 {
     write_all("\x1b[0m\x1b[?25h\x1b[?1049l", 19);
     if (g_raw) { tcsetattr(STDIN_FILENO, TCSANOW, &g_old); g_raw = false; }
-}
-
-static void term_size(int *cols, int *rows)
-{
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) { *cols = ws.ws_col; *rows = ws.ws_row; }
-    else { *cols = 80; *rows = 24; }
 }
 
 static void on_signal(int sig) { (void)sig; g_quit = 1; }
@@ -1099,17 +1035,6 @@ static const char *pm_name(PciPm pm)
     case PM_D3COLD: return "D3cold";
     default: return "unknown";
     }
-}
-
-static void json_string(const char *s)
-{
-    putchar('"');
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p == '"' || *p == '\\') { putchar('\\'); putchar(*p); }
-        else if (*p < 0x20) printf("\\u%04x", *p);
-        else putchar(*p);
-    }
-    putchar('"');
 }
 
 static void json_num(double v, bool valid, int precision)

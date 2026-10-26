@@ -28,7 +28,8 @@ SOURCES  = cctl.c src/cctl_gpumon.c src/cctl_cpumon.c
 INCLUDES = src/cctl_core.inc src/cctl_controls.inc src/cctl_platform.inc src/cctl_keyboard.inc \
            src/cctl_fancurve.inc \
            src/cctl_telemetry.inc src/cctl_runtime.inc src/cctl_nvidia.inc \
-           src/cctl_snapshot.inc src/cctl_commands.inc src/cctl_drivers_cli.inc
+           src/cctl_snapshot.inc src/cctl_commands.inc src/cctl_drivers_cli.inc \
+           src/cctl_monitor_common.h src/cctl_shared.h
 
 # ── Default: only cctl binary (no NVIDIA support) ────────────────────────────
 cctl: $(SOURCES) $(INCLUDES)

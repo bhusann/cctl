@@ -72,6 +72,8 @@ extern int cctl_live_ec_state(int *tcc_offset, int *prochot_c);
 #define R_CL_FANINFO1 0x8008ED10
 #define R_CL_FANINFO2 0x8008ED11
 
+#include "cctl_monitor_common.h"
+
 #define X_THM   0
 #define X_CPU   11
 #define W_CPU   39
@@ -137,30 +139,6 @@ static volatile sig_atomic_t g_quit = 0;
 static atomic_int        g_show_threads = 1;    /* toggle physical cores vs threads with 't' */
 static double            g_t0 = 0;
 static float             g_amt = 1.0f;          /* 0 = dull/grey, 1 = full colour */
-
-/* ----------------------------------------------------------------- helpers */
-static double clampd(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
-static double clamp01(double v) { return clampd(v, 0.0, 1.0); }
-static uint8_t u8(double v) { return (uint8_t)(clampd(v, 0, 255) + 0.5); }
-
-static double now_s(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-}
-
-static void sleep_s(double s)
-{
-    if (s <= 0) return;
-    struct timespec ts = { (time_t)s, (long)((s - (double)(time_t)s) * 1e9) };
-    nanosleep(&ts, NULL);
-}
-
-static void ease(double *cur, double target, double dt, double rate)
-{
-    *cur += (target - *cur) * (1.0 - exp(-dt * rate));
-}
 
 /* ------------------------------------------------------------------ colour */
 static const RGB C_DIM   = {88, 96, 112};
@@ -939,7 +917,7 @@ static void draw_power(const CpuSnapshot *s, const Ui *u, double t, int y, int h
     if (act && s->pl_ok) { snprintf(b, sizeof b, "%+.0f W", s->pl2_w - s->pkg_w); kvw(rx, y + 4, rw, "HEADROOM", C_LABEL, b, C_TEXT); }
     else                   kvw(rx, y + 4, rw, "HEADROOM", C_LABEL, "--", C_DIM);
     const char *st = "--"; RGB sc = C_DIM;
-    if (act) {
+    if (s->valid) {
         bool pw = s->power_ok && s->pl_ok;
         if (s->throttle_status_ok && s->thermal_throttling)
             { st = "\xE2\x96\xB2 THERMAL THROTTLE"; sc = C_RED; }
@@ -948,15 +926,17 @@ static void draw_power(const CpuSnapshot *s, const Ui *u, double t, int y, int h
         else if (s->throttle_status_ok && s->power_limit_active)
             { st = "\xE2\x96\xB2 POWER LIMIT ACTIVE"; sc = C_MAG; }
         else if (pw && s->pkg_w >= s->pl2_w * 0.98)
-            { st = "\xE2\x96\xB2 PL2 LIMIT";        sc = C_MAG; }
+            { st = "\xE2\x96\xB2 NEAR PL2 (est.)"; sc = C_MAG; }
         else if (pw && s->pkg_w > s->pl1_w * 1.02)
-            { st = "\xE2\x96\xB2 BOOST";            sc = C_AMBER; }
+            { st = "\xE2\x96\xB2 ABOVE PL1 (est.)"; sc = C_AMBER; }
         else if (pw && s->pkg_w >= s->pl1_w * 0.90 && s->util_total > 60)
-            { st = "\xE2\x96\xA0 PL1 LIMIT";        sc = C_AMBER; }
+            { st = "\xE2\x96\xA0 NEAR PL1 (est.)"; sc = C_AMBER; }
         else if (s->util_total < 10)
             { st = "\xE2\x97\x8F IDLE";             sc = C_CYAN; }
-        else
+        else if (s->throttle_status_ok)
             { st = "\xE2\x97\x8F NORMAL";           sc = C_GREEN; }
+        else
+            { st = "\xE2\x97\x8F STATUS N/A";       sc = C_DIM; }
     }
     kvw(rx, y + 5, rw, "STATE", C_LABEL, st, sc);
 
@@ -1108,19 +1088,6 @@ static void emit_frame(Buf *b, int ox, int oy, bool absolute)
 }
 
 /* ===================================================================== DATA */
-
-static bool read_first_line(const char *path, char *out, size_t n)
-{
-    FILE *f = fopen(path, "r");
-    if (!f) return false;
-    bool ok = fgets(out, (int)n, f) != NULL;
-    fclose(f);
-    if (ok) {
-        size_t l = strlen(out);
-        while (l && (out[l - 1] == '\n' || out[l - 1] == '\r' || out[l - 1] == ' ')) out[--l] = 0;
-    }
-    return ok;
-}
 
 static bool read_ll(const char *path, long long *v)
 {
@@ -1359,18 +1326,6 @@ static bool read_proc_stat(CpuSnapshot *s)
     return true;
 }
 
-static int tuxedo_open_clevo(void)
-{
-    int fd = open("/dev/tuxedo_io", O_RDWR);
-    if (fd < 0) return -1;
-    int is_clevo = 0;
-    if (ioctl(fd, R_HWCHECK_CL, &is_clevo) < 0 || !is_clevo) {
-        close(fd);
-        return -1;
-    }
-    return fd;
-}
-
 static int ensure_ec_sys(void)
 {
     if (access(EC_RAM_PATH, F_OK) == 0) return 0;
@@ -1564,15 +1519,6 @@ static void *poller(void *arg)
 static struct termios g_old;
 static bool g_raw = false;
 
-static void write_all(const char *p, size_t n)
-{
-    while (n) {
-        ssize_t w = write(STDOUT_FILENO, p, n);
-        if (w <= 0) return;
-        p += w; n -= (size_t)w;
-    }
-}
-
 static void write_str(const char *s) { write_all(s, strlen(s)); }
 
 static void term_enter(void)
@@ -1591,13 +1537,6 @@ static void term_leave(void)
 {
     write_str("\x1b[0m\x1b[?25h\x1b[?1049l");
     if (g_raw) { tcsetattr(STDIN_FILENO, TCSANOW, &g_old); g_raw = false; }
-}
-
-static void term_size(int *cols, int *rows)
-{
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) { *cols = ws.ws_col; *rows = ws.ws_row; }
-    else { *cols = 80; *rows = 24; }
 }
 
 static void on_signal(int sig) { (void)sig; g_quit = 1; }
@@ -1620,17 +1559,6 @@ static void usage(void)
            "  --once          Show one live frame and exit\n"
            "  -h, --help      Show this help\n"
            "Press q to quit, t to toggle cores/threads.\n");
-}
-
-static void json_string(const char *s)
-{
-    putchar('"');
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p == '"' || *p == '\\') { putchar('\\'); putchar(*p); }
-        else if (*p < 0x20) printf("\\u%04x", *p);
-        else putchar(*p);
-    }
-    putchar('"');
 }
 
 static void json_number(double value, bool valid, int precision)

@@ -136,12 +136,17 @@ static int cmd_options(int argc, char **argv)
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
         printf("%sCCTL-specific settings:%s\n", C_YLW, C_RST);
-        printf("  streamtext  %-6s  Character/line streamed terminal output\n",
-               settings.streamtext_enabled ? "on" : "off");
-        printf("  default     %-6s  Action on bare 'cctl' (help, status)\n",
-               settings.default_is_status ? "status" : "help");
-        printf("\nUsage: cctl options streamtext <on|off>\n");
-        printf("       cctl options default <help|status>\n");
+        printf("  %s%-12s%s %s%-6s%s  Stream output character-by-character or by line\n",
+               C_CYN, "streamtext", C_RST,
+               settings.streamtext_enabled ? C_GRN : C_DIM,
+               settings.streamtext_enabled ? "on" : "off", C_RST);
+        printf("  %s%-12s%s %s%-6s%s  What bare 'cctl' shows: help or status\n",
+               C_CYN, "default", C_RST, C_GRN,
+               settings.default_is_status ? "status" : "help", C_RST);
+        printf("\n%sUsage:%s %scctl options streamtext <on|off>%s\n",
+               C_BLD, C_RST, C_CYN, C_RST);
+        printf("       %scctl options default <help|status>%s\n",
+               C_CYN, C_RST);
         g_stream_mode = prev_mode;
         g_stream_line = prev_line;
         return 0;
@@ -655,7 +660,7 @@ static int cmd_turbo(int argc, char **argv)
     require_root(argc, argv);
 
     int live_ec_code = enabled ? cctl_live_ec_state(NULL, NULL) : -1;
-    if (enabled && !nosafe && (live_ec_code == 2 || live_ec_code == 3)) {
+    if (enabled && !nosafe && ec_profile_needs_fan_auto(live_ec_code)) {
         struct fancurve_state curve_st;
         if (fc_is_running(&curve_st)) {
             fc_warn_active(&curve_st, "turbo's fan auto safety");

@@ -30,21 +30,25 @@ cctl fan cpu|gpu auto           # Restore individual fan to automatic EC control
 ```
 
 ### Fan Curves
+
+Fan curves adjust both fans as the laptop heats up. Create a curve, fill in its
+temperature and fan-speed points, then start it:
+
 ```bash
-cctl fancurve                      # List saved curves and the active curve
-cctl fancurve create <name>        # Prompt for point count, then open the editor
-cctl fancurve view <name>          # Validate and show a curve
-cctl fancurve edit <name>          # Edit and save; refuses while this curve is active
-cctl fancurve start <name>         # Start/restart the curve worker (`set` is an alias)
-cctl fancurve del <name> [--noconfirm] # Delete an inactive curve (asks first)
-cctl fancurve stop                 # Stop the worker; both fans -> EC auto ('off' is an alias)
+cctl fancurve                         # Show saved curves and the active curve
+cctl fancurve create <name>           # Create a curve and open it for editing
+cctl fancurve view <name>             # Check and display a curve
+cctl fancurve edit <name>             # Edit a saved curve
+cctl fancurve start <name>            # Start or restart a curve
+cctl fancurve stop                    # Stop the curve and return fans to automatic control
+cctl fancurve del <name> [--noconfirm] # Delete a saved curve
 ```
 
-Profiles are JSON files with optional `##` comments in
-`/var/lib/cctl/fancurves/`. Names are case-sensitive (`Cat` and `cat` are
-different). If the name already exists,
-`create` asks `Warning: fan curve '<name>' already exists. Replace it? [y/N]`
-and keeps the existing curve unless you answer `y` or `yes`.
+Short forms: `s` for `start`, `c` for `create`, `v` for `view`, and `e` for
+`edit`.
+
+`create` asks how many points to add, then opens an example for you to edit.
+Each point pairs a temperature with a fan speed. For example:
 
 ```json
 {
@@ -60,62 +64,30 @@ and keeps the existing curve unless you answer `y` or `yes`.
 }
 ```
 
-`create` starts from a template with `##` instruction comments and `"--"`
-placeholders. Replace each `--` with a number while keeping the quotes:
-`temp` is Celsius (`0–95`) and `fan` is percentage (`25–100`). The final point
-may instead use `"a"` (or `"auto"`) for EC automatic fan control. The parser
-also accepts unquoted numbers and preserves `##` comment lines in the file.
+Set temperatures in Celsius from `0` to `95`, in increasing order. Fan speeds
+can be `25` to `100` percent. Use 2–16 points. The curve changes fan speed
+smoothly between points; below the first point it uses that point's speed, and
+above the last point it keeps that point's speed.
 
-- `points`: 2–16 entries, temperature `0–95 °C` strictly increasing, fan
-  `25–100 %`. Only the final point may use fan `"a"`/`"auto"`. Values are
-  checked by `view`, `edit`, and `start`.
-- A curve starts only when `clevo_acpi` and `tuxedo_io` are loaded and
-  `/dev/tuxedo_io` exists; otherwise run `cctl drivers-manage`. Curves also
-  require `tuxedo_io` 0.3.10 or newer, which provides close-on-exit fan recovery;
-  cctl refuses to start a curve with an older driver.
-- If three consecutive fan-control ioctls fail, the worker tries
-  `W_CL_FANAUTO`, reloads `clevo_acpi`/`tuxedo_io` with `modprobe` if needed,
-  and retries. If driver recovery fails, it uses the direct EC fan-auto path
-  and stops the curve.
-- `hysteresis`: deadband in °C (0–20). A new duty is written only after the
-  temperature moves at least this far since the previous write.
-- `interval_ms`: polling interval, 250–60000 ms.
-- The worker reads the hottest of the CPU and GPU fan-sensor temperatures from
-  `tuxedo_io` (`R_CL_FANINFO1/2`, third byte), falling back to `hwmon` for the
-  CPU and `nvidia-smi` for the GPU.
-- Between points, fan speed is linearly interpolated. Below the first point the
-  first fan value is used; at or above the last numeric point its value is
-  held.
-- If the final point uses fan `"a"`, reaching its temperature hands both fans
-  to EC auto. The curve resumes below `auto-temp − hysteresis`.
-- Above **95 °C** the worker returns both fans to EC automatic control. It
-  resumes the curve only after the temperature falls below **90 °C**.
-- Curve points use the same `25–100 %` range as `cctl fan`: the EC clamps
-  `13–24 %` to 25 %, and values below 13 % drop both fans to 0 %.
-- While a curve is active, `cctl fan auto` stops it and restores both fans to
-  EC automatic control. Other fan changes — `cctl fan <pct>`,
-  `cctl fan cpu|gpu <pct>`, `cctl fan cpu|gpu auto`, `cctl fan max`, and
-  `cctl fan silent` — are refused with a warning until you run
-  `cctl fancurve stop`.
-- Profile fan changes are suppressed while a curve is active: `cctl set` on an
-  EC 2/3 profile skips its fan-auto safety step, and the silent/powersave
-  profiles skip their silent-fan step. `cctl turbo on` likewise skips turbo's
-  fan-auto safety step. Each case prints a warning that the curve keeps fan
-  control.
-- While active, `/run/cctl_curve.state` contains the worker PID, kernel start
-  time, profile name, and start epoch. `fancurve stop` removes it.
-- If the worker exits unexpectedly, including `SIGKILL`, the driver's armed
-  file descriptor restores EC automatic fan control when it closes. The worker
-  opens its own descriptor; unrelated status and monitor commands cannot
-  trigger this recovery.
-- `fancurve stop` waits for the recorded worker process to exit before it
-  restores auto and returns. The lock file remains in `/run`; flock releases
-  automatically when the worker exits.
-- `edit` refuses to modify a curve while that curve is active; run
-  `fancurve stop` first.
-- `del` asks for confirmation, and refuses to delete the currently active
-  curve (run `fancurve stop` first). Add `--noconfirm` to skip the prompt.
-- Fan curves are not saved in snapshots and do not start at boot.
+`hysteresis` helps prevent frequent speed changes when the temperature
+fluctuates. `interval_ms` controls how often the temperature is checked. The
+final point can use `"a"` or `"auto"` instead of a percentage to return the
+fans to automatic control at that temperature. The curve resumes after the
+temperature drops below that point by the hysteresis amount.
+
+For safety, cctl returns the fans to automatic control if the temperature
+goes above 95 °C, then resumes the curve after it cools below 90 °C. If the curve
+stops unexpectedly, the fans also return to automatic control. Curves require
+an up-to-date driver; run `cctl drivers-manage` if cctl asks you to update it.
+
+While a curve is running, it keeps control of both fans. Other manual fan
+changes are unavailable until the curve stops. Applying a profile or restoring
+a snapshot leaves fan control with the curve. `cctl fan auto` stops the curve
+and returns the fans to automatic control.
+
+You cannot edit or delete the curve that is currently running; stop it first.
+Deleting a saved curve asks for confirmation; add `--noconfirm` to skip the
+prompt. Curves run only for the current boot and are not included in snapshots.
 
 ### GPU MUX Switching
 Switches between **MSHybrid** (iGPU + dGPU) and **dGPU** (NVIDIA GPU only). A reboot is required to apply the change.
@@ -166,9 +138,10 @@ spaces or other symbols. `snap` is a shorter alias for `snapshot`.
 `--noconfirm` to skip the prompt (for example, `cctl snap del mypcwork --noconfirm`).
 Add `--dry-run` to `snap restore` to preview the settings and skipped
 fields without applying changes. Restoring EC code `2`/`3` sets fans to AUTO;
-restoring Turbo ON does so only when the active EC code is `2`/`3`. Add
-`nosafe` to the restore mask to bypass the automatic fan change (for example,
-`cctl snap r mypcwork --mask nosafe`).
+restoring Turbo ON does so only when the active EC code is `2`/`3`. If a fan
+curve is active, restore leaves fan control with the curve and skips the AUTO
+change. Add `nosafe` to the restore mask to bypass automatic fan changes
+(for example, `cctl snap r mypcwork --mask nosafe`).
 Available names are `nvidia_clock`, `nvidia_memclock`,
 `ec_code`, `turbo`, `gov`, `epp`, `pl1`, `pl2`, `kbe`, `kbc`, `kbb`,
 `fn_lock`, `webcam`, `mic`, `bat`, `rr`, and `scale`; `nosafe` is restore-only.
@@ -226,9 +199,9 @@ Application settings persist across reboots in `/var/lib/cctl/settings`:
 
 ```bash
 cctl options                            # Show current cctl settings
-cctl options streamtext <on|off>        # Enable or disable character/line-streamed terminal output
+cctl options streamtext <on|off>        # Show output as it appears, or print it immediately
 cctl options default <help|status>      # Action when running bare 'cctl' without arguments (default: help)
 ```
 
-- **`streamtext`**: When `on`, cctl animates terminal text with character- or line-by-line streaming. Set to `off` for instantaneous plain output.
+- **`streamtext`**: When `on`, cctl shows command output as it appears, character-by-character or line-by-line depending on the command. Set it to `off` to print output immediately.
 - **`default`**: By default (`help`), typing bare `cctl` prints the full help menu. Setting this to `status` makes typing bare `cctl` execute `cctl status` directly. The full help menu can always still be accessed via `cctl --help` or `cctl help`.

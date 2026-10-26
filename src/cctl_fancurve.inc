@@ -1811,6 +1811,14 @@ static void fc_print_status(const char *requested_name)
 {
     struct fancurve_state st;
 
+    if (json_output) {
+        if (fc_is_running(&st))
+            row("Fan Curve:", "%s (active; PID %d)", st.name, (int)st.pid);
+        else
+            row("Fan Curve:", "none (stopped)");
+        return;
+    }
+
     if (requested_name)
         printf("%sFan Curve:%s %s\n", C_YLW, C_RST, requested_name);
     else
@@ -1837,6 +1845,22 @@ static void fc_print_status(const char *requested_name)
     printf("\n");
 }
 
+static void fc_print_status_row(void)
+{
+    struct fancurve_state st;
+    if (fc_is_running(&st)) {
+        if (json_output)
+            row("Fan Curve:", "%s (active, PID %d)", st.name, (int)st.pid);
+        else
+            row("Fan Curve:", "%s%s%s (active, PID %d)",
+                C_GRN, st.name, C_RST, (int)st.pid);
+    } else if (json_output) {
+        row("Fan Curve:", "none (stopped)");
+    } else {
+        row("Fan Curve:", "%snone (stopped)%s", C_DIM, C_RST);
+    }
+}
+
 static int fc_list_profiles(void)
 {
     int prev = g_stream_mode;
@@ -1861,15 +1885,18 @@ static int fc_list_profiles(void)
                 free(list[i]);
                 continue;
             }
+            printf("%s%s%.*s%s", shown ? ", " : "  ", C_CYN,
+                   (int)(len - 5), name, C_RST);
             shown++;
-            printf("  %s%.*s%s\n", C_CYN, (int)(len - 5), name, C_RST);
             free(list[i]);
         }
         free(list);
     }
 
-    if (n >= 0 && !shown)
-        printf("No fan-curve profiles yet.\n");
+    if (n >= 0) {
+        if (shown) putchar('\n');
+        else printf("No fan-curve profiles yet.\n");
+    }
 
     g_stream_mode = prev;
     return 0;
@@ -1884,15 +1911,15 @@ static void fc_print_usage(void)
     printf("%sUsage:%s %scctl fancurve <action> [name]%s\n\n",
            C_BLD, C_RST, C_CYN_BLD, C_RST);
     printf("%sActions:%s\n", C_YLW, C_RST);
-    printf("  %s%-15s%s Stop the daemon and return both fans to EC automatic control\n",
+    printf("  %s%-19s%s Stop the daemon and return both fans to EC automatic control\n",
            C_CYN, "stop", C_RST);
-    printf("  %s%-15s%s Start a curve (restarts a running curve)\n",
-           C_CYN, "start <name>", C_RST);
-    printf("  %s%-15s%s Create a profile: prompt for point count, then open the editor\n",
-           C_CYN, "create <name>", C_RST);
-    printf("  %s%-15s%s Validate and show a profile\n", C_CYN, "view <name>", C_RST);
-    printf("  %s%-15s%s Edit a profile in the editor\n", C_CYN, "edit <name>", C_RST);
-    printf("  %s%-15s%s Delete an inactive profile (--noconfirm skips the prompt)\n",
+    printf("  %s%-19s%s Start a curve (restarts a running curve)\n",
+           C_CYN, "start|s <name>", C_RST);
+    printf("  %s%-19s%s Create a profile: prompt for point count, then open the editor\n",
+           C_CYN, "create|c <name>", C_RST);
+    printf("  %s%-19s%s Validate and show a profile\n", C_CYN, "view|v <name>", C_RST);
+    printf("  %s%-19s%s Edit a profile in the editor\n", C_CYN, "edit|e <name>", C_RST);
+    printf("  %s%-19s%s Delete an inactive profile (--noconfirm skips the prompt)\n",
            C_CYN, "del <name>", C_RST);
 
     g_stream_mode = prev;
@@ -2207,13 +2234,14 @@ static int cmd_fancurve(int argc, char **argv)
     }
     if (strcmp(action, "stop") == 0 || strcmp(action, "off") == 0)
         return fc_cmd_stop(argc, argv);
-    if (strcmp(action, "start") == 0 || strcmp(action, "set") == 0)
+    if (strcmp(action, "start") == 0 || strcmp(action, "s") == 0 ||
+        strcmp(action, "set") == 0)
         return fc_cmd_start(argc, argv);
-    if (strcmp(action, "create") == 0)
+    if (strcmp(action, "create") == 0 || strcmp(action, "c") == 0)
         return fc_cmd_create(argc, argv);
-    if (strcmp(action, "view") == 0)
+    if (strcmp(action, "view") == 0 || strcmp(action, "v") == 0)
         return fc_cmd_view(argc, argv);
-    if (strcmp(action, "edit") == 0)
+    if (strcmp(action, "edit") == 0 || strcmp(action, "e") == 0)
         return fc_cmd_edit(argc, argv);
     if (strcmp(action, "del") == 0 || strcmp(action, "delete") == 0)
         return fc_cmd_del(argc, argv);

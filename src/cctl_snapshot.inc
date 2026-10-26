@@ -607,21 +607,16 @@ static int cctl_snapshot_read_file(const char *name, struct cctl_snapshot_data *
     return failed ? -1 : 0;
 }
 
-static int cctl_snapshot_ec_needs_fan_auto(int ec_code)
-{
-    return ec_code == 2 || ec_code == 3;
-}
-
 static int cctl_snapshot_restore_needs_fan_auto(const struct cctl_snapshot_data *st)
 {
-    if (cctl_snapshot_ec_needs_fan_auto(st->ec_profile_code))
+    if (ec_profile_needs_fan_auto(st->ec_profile_code))
         return 1;
     if (st->turbo != 1)
         return 0;
 
     int ec_code = st->ec_profile_code >= 0
                 ? st->ec_profile_code : cctl_live_ec_state(NULL, NULL);
-    return cctl_snapshot_ec_needs_fan_auto(ec_code);
+    return ec_profile_needs_fan_auto(ec_code);
 }
 
 static void cctl_snapshot_preview_restore(const char *name,
@@ -712,12 +707,19 @@ static void cctl_snapshot_preview_restore(const char *name,
     else SNAPSHOT_PREVIEW("Display scale", st->display_scale_set ? st->display_scale : "native (reset)");
 #undef SNAPSHOT_PREVIEW
     int needs_fan_auto = cctl_snapshot_restore_needs_fan_auto(st);
-    if (!nosafe && needs_fan_auto)
+    struct fancurve_state curve_st;
+    int curve_active = fc_any_active(&curve_st);
+    if (!nosafe && needs_fan_auto && curve_active) {
+        char curve_label[160];
+        fc_active_label(&curve_st, curve_label, sizeof(curve_label));
+        printf("Fan safety: skipped; %s keeps control of the fans.\n", curve_label);
+    } else if (!nosafe && needs_fan_auto) {
         puts("Fan safety: fans would be set to AUTO (use --mask nosafe to bypass).");
-    else if (nosafe && needs_fan_auto)
+    } else if (nosafe && needs_fan_auto) {
         puts("Fan safety: automatic fan change bypassed (--mask nosafe).");
-    else
+    } else {
         puts("Fan safety: no automatic fan change for these targets.");
+    }
     puts("Fan settings are not saved in snapshots.");
 }
 
@@ -847,6 +849,32 @@ static int cctl_snapshot_apply_step(const char *name, int rc, int *errors)
     return 0;
 }
 
+static void cctl_snapshot_apply_fan_safety(const char *target, int nosafe,
+                                           int *fans_auto_applied,
+                                           int *fan_safety_bypassed,
+                                           int *errors)
+{
+    if (*fans_auto_applied || *fan_safety_bypassed)
+        return;
+    if (nosafe) {
+        printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
+        *fan_safety_bypassed = 1;
+        return;
+    }
+
+    struct fancurve_state curve_st;
+    if (fc_is_running(&curve_st)) {
+        printf("  Fan curve '%s' is active; leaving fan control to the curve.\n",
+               curve_st.name);
+        *fan_safety_bypassed = 1;
+        return;
+    }
+
+    printf("  Setting both fans to AUTO for %s...\n", target);
+    if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), errors) == 0)
+        *fans_auto_applied = 1;
+}
+
 static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_data *st, int nosafe)
 {
     int prev = g_stream_mode;
@@ -862,15 +890,11 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     cctl_snapshot_divider();
     if (st->ec_profile_code >= 0) {
         cctl_snapshot_apply_step("EC profile code", set_gpu_profile(st->ec_profile_code), &errors);
-        if (cctl_snapshot_ec_needs_fan_auto(st->ec_profile_code)) {
-            if (nosafe) {
-                printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
-                fan_safety_bypassed = 1;
-            } else {
-                printf("  Setting both fans to AUTO for EC profile code %d...\n", st->ec_profile_code);
-                if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), &errors) == 0)
-                    fans_auto_applied = 1;
-            }
+        if (ec_profile_needs_fan_auto(st->ec_profile_code)) {
+            char target[64];
+            snprintf(target, sizeof(target), "EC profile code %d", st->ec_profile_code);
+            cctl_snapshot_apply_fan_safety(target, nosafe, &fans_auto_applied,
+                                           &fan_safety_bypassed, &errors);
         }
     } else {
         printf("  %sSkipping EC profile code (not saved).%s\n", C_DIM, C_RST);
@@ -881,15 +905,11 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     if (st->turbo >= 0) {
         if (st->turbo == 1) {
             int live_ec_code = cctl_live_ec_state(NULL, NULL);
-            if (cctl_snapshot_ec_needs_fan_auto(live_ec_code) && !fans_auto_applied) {
-                if (nosafe) {
-                    if (!fan_safety_bypassed)
-                        printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
-                } else {
-                    printf("  Setting both fans to AUTO for Turbo ON in EC profile code %d...\n", live_ec_code);
-                    if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), &errors) == 0)
-                        fans_auto_applied = 1;
-                }
+            if (ec_profile_needs_fan_auto(live_ec_code) && !fans_auto_applied) {
+                char target[80];
+                snprintf(target, sizeof(target), "Turbo ON in EC profile code %d", live_ec_code);
+                cctl_snapshot_apply_fan_safety(target, nosafe, &fans_auto_applied,
+                                               &fan_safety_bypassed, &errors);
             }
         }
         long cur_turbo_raw = read_sysfs_long(TURBO_PATH, -1);
@@ -1282,7 +1302,7 @@ static int cmd_snapshot(int argc, char **argv)
         printf("  Use 'nosafe' only with restore to bypass automatic fan safety.\n");
         printf("\n%sFan settings:%s not saved by snapshots; restore sets fans to AUTO when\n"
                "  EC profile code 2/3 is applied, or Turbo ON is restored while EC is 2/3,\n"
-               "  unless masked with nosafe.\n",
+               "  unless masked with nosafe or a fan curve is active.\n",
                C_YLW, C_RST);
         g_stream_mode = prev;
         return 0;

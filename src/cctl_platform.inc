@@ -1023,26 +1023,6 @@ static void row(const char *label, const char *fmt, ...)
     printf("  %-14s %s\n", label, val);
 }
 
-static void json_string(const char *value)
-{
-    putchar('"');
-    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
-        switch (*p) {
-            case '"': fputs("\\\"", stdout); break;
-            case '\\': fputs("\\\\", stdout); break;
-            case '\b': fputs("\\b", stdout); break;
-            case '\f': fputs("\\f", stdout); break;
-            case '\n': fputs("\\n", stdout); break;
-            case '\r': fputs("\\r", stdout); break;
-            case '\t': fputs("\\t", stdout); break;
-            default:
-                if (*p < 0x20) printf("\\u%04x", *p);
-                else putchar(*p);
-        }
-    }
-    putchar('"');
-}
-
 static void json_field(const char *key, const char *value)
 {
     if (!json_output) return;
@@ -1144,7 +1124,7 @@ static void status_system(void)
                 gpu_profile_name(live_ec_code), C_RST, live_ec_code,
                 live_tcc_offset, cache_detail);
         else if (tcc_recognized)
-            row("EC Code:", "%s%s%s (%d; live, TCC offset %d°C)", C_CYN,
+            row("EC Code:", "%s%s%s (%d; TCC offset %d°C)", C_CYN,
                 gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
         else
             row("EC Code:", "%s%s%s (%d; %s; TCC offset %s)", C_CYN,
@@ -1275,7 +1255,7 @@ static void status_system(void)
     }
 }
 
-static void fc_print_status(const char *requested_name);
+static void fc_print_status_row(void);
 
 static void status_fans(void)
 {
@@ -1289,7 +1269,7 @@ static void status_fans(void)
     } else {
         row("Fans:", "%sN/A (ec_sys or tuxedo_io not available)%s", C_DIM, C_RST);
     }
-    fc_print_status(NULL);
+    fc_print_status_row();
 }
 
 static void status_keyboard_color(const char *label, int r, int g, int b)

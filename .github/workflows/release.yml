@@ -16,6 +16,11 @@ on:
         description: Optional custom notes for the selected release
         required: false
         type: string
+      prerelease:
+        description: Mark the selected release as a prerelease
+        required: false
+        default: false
+        type: boolean
   release:
     types: [published]
   push:
@@ -45,16 +50,22 @@ jobs:
         run: make cctl
 
       # Attach the FINISHED tarball exactly as it exists in the mirror repo
-      # (never rebuilt here) — see
+      # (never rebuilt here). The mirror stores each archive under its SHA-256
+      # directory — see
       # https://github.com/bhusann/tuxedo-drivers-cctl-mirror
       - name: Fetch drivers.tar.gz from the mirror repo
         run: |
-          curl -fsSL --connect-timeout 10 -o drivers.tar.gz \
-            https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/drivers.tar.gz
-          # Refuse to publish a tarball the cctl binary would reject: the
+          set -eu
+          # Refuse to publish a tarball that the cctl binary would reject.
           # The constant may be in cctl.c or an included source fragment.
           expected=$(grep -h '^#define DRIVERS_SHA256' cctl.c src/*.inc 2>/dev/null | \
             sed -n 's/^#define DRIVERS_SHA256[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p')
+          if [ -z "$expected" ]; then
+            echo "::error::could not find DRIVERS_SHA256 in the cctl sources"
+            exit 1
+          fi
+          curl -fsSL --connect-timeout 10 -o drivers.tar.gz \
+            "https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/${expected}/drivers.tar.gz"
           actual=$(sha256sum drivers.tar.gz | cut -d' ' -f1)
           echo "baked:  $expected"
           echo "mirror: $actual"
@@ -67,6 +78,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
+          prerelease: ${{ inputs.prerelease || github.ref_name == 'v4.8' }}
           generate_release_notes: false
           files: |
             cctl

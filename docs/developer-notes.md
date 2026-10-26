@@ -1,113 +1,251 @@
 # Developer Notes
 
-- **Source layout** — `cctl.c` includes the subsystem fragments from `src/` in a fixed order: core, power controls, platform/privacy/status, keyboard, fan curves, monitor, runtime helpers, NVIDIA, command handlers, and driver/install commands. They remain one translation unit so hardware helpers stay private and link behavior is unchanged; edit the owning fragment instead of growing the main file.
+This document records code structure, hardware-specific behavior, and
+implementation constraints that are useful when changing cctl. Unless noted
+otherwise, hardware observations refer to the tested Colorful Evol P15.
 
-- **RAPL 0.4 GHz Throttle** — Only package-0 (`intel-rapl:0`) is safe to write. Touching sub-zones (`intel-rapl:0:X`) or platform `psys` triggers an EC conflict that hard-throttles the CPU to 400 MHz.
-- **RAPL 90 W mode tracking** — The up-to-90 W PL1 ceiling applies only while live TCC-offset detection identifies EC profile code 2. cctl reads `tcc_offset_degree_celsius` from Intel processor thermal sysfs first and falls back to the MSR when unavailable. `cctl status` infers the mode from the live EC code and current CPU governor/EPP; it does not record the mode or EC code in `/run`.
-- **EC load-test README data** — The documented TCC offset comes from `tcc_offset_degree_celsius`; P-core and E-core frequencies in the test tables are in MHz.
-- **OEM PROCHOT Throttle Trip Points & CPU State Telemetry (`cpumon`)** — Hardware thermal throttling is governed by the laptop manufacturer's EC firmware rather than the silicon TjMax (100°C):
-  - **EC Code 2 (High performance):** The OEM PROCHOT trip point is **98°C** (TCC offset 2°C).
-  - **EC Code 3 (Standard):** The OEM PROCHOT trip point is **87°C** (offset 13°C); code 1 (Powersave) is **85°C** (offset 15°C); code 0 (Silent) is **90°C** (offset 10°C).
-  - The active EC code is read from the live TCC offset, independently of `/run/cctl/mode`.
-  - In `cctl cpumon`, the `STATE` readout dynamically tracks this active threshold:
-    - `▲ PROCHOT THROTTLE` (Red): CPU temperature $\ge$ active PROCHOT limit (87°C or 97°C) or within 3°C of TjMax.
-    - `▲ PL2 LIMIT` (Magenta): Package power $\ge 95\%$ of short-term burst limit (PL2).
-    - `▲ BOOST` (Amber): Package power exceeds sustained ceiling ($> 102\%$ of PL1).
-    - `■ PL1 LIMIT` (Amber): Sustained power wall ($\ge 90\%$ of PL1 under $> 60\%$ utilization).
-    - `■ SOFT THROTTLE` (Amber): Soft frequency throttling when Turbo is disabled (`turbo_on == false`) and CPU utilization is heavy ($\ge 50\%$). The CPU is clamped at base clock and consumes only ~25W (far below 45W PL1) even at 100% load.
-    - `● IDLE` (Cyan): Total CPU utilization $< 10\%$.
-    - `● NORMAL` (Green): Operating normally between 10% and 50% load without hitting thermal or power limits.
-  - **TAU (Time Window):** The TAU value displayed in `cpumon` is **not assumed** — it is live-read directly from `/sys/class/powercap/intel-rapl:0/constraint_0_time_window_us`.
+## Source Layout and Build
 
-- **CPU EPP vs Governor Dependency** — Under the Linux `intel_pstate` driver, manual EPP (Energy Performance Preference) tuning is only supported when the CPU governor is set to `powersave`. When the governor is set to `performance`, the driver/hardware locks EPP to `performance` and rejects sysfs writes for other values (`-EINVAL`). `cctl epp` checks the active governor and directs the user to switch to `powersave` first (`cctl gov powersave`).
-- **Snapshot Restore EPP vs Masked Governor** — During `cctl snapshot restore`, if the snapshot contains an active EPP setting (`power`, `balance_power`, or `balance_performance`) while governor is skipped/masked, and the system's live governor is currently `performance`, `cctl` detects the conflict, alerts the user, and automatically switches the governor to `powersave` so the snapshot's saved EPP can take effect. Users who wish to keep the `performance` governor intact without altering it can mask out EPP (`--mask epp` or `--mask gov,epp`).
-- **Snapshot Restore RAPL PL1 vs EC Profile Code 2** — On this chassis, setting RAPL PL1 above 45W (up to 90W) requires EC profile code 2 (`max` mode). If a snapshot contains PL1 > 45W, but EC profile code 2 is masked (`--mask ec_code`) or not applied, `cctl snapshot restore` alerts the user that EC code 2 is required, safely skips PL1, and restores PL2 alone.
-- **RAPL PL2 > PL1 Invariant Rule** — Burst power limit (PL2) must always exceed the sustained limit (PL1). This is strictly enforced across `cctl rapl` (interactive help displays `PL2 up to 115W (must be > PL1)`, single/double argument validation rejects PL2 $\le$ PL1), user profiles in `/var/lib/cctl/profiles.conf`, snapshot restore, and defense-in-depth within `set_rapl_limits()`.
-- **Destructive deletes** — `snap delete` and `fancurve del` require an explicit interactive `y`/`yes`; non-interactive callers cancel unless they pass `--noconfirm`. The shared prompt lives in `cctl_confirm_delete()` in `cctl_core.inc`.
-- **Max Performance Mode (`cctl set max`) Characteristics** — Switching to `max` mode outputs an advisory note reminding the user that sustained 60–90W CPU package power will push temperatures toward ~98°C under heavy loads, recommending it for heavy tasks like compilation or demanding games, while suggesting `cpuperf` or `balanced` for day-to-day use.
-- **NVIDIA GPU Power Limits in `cctl gpumon`** — On mobile NVIDIA GPUs, `power.limit` often returns `[N/A]`. `cctl gpumon` queries `enforced.power.limit` (the active TDP ceiling, e.g. 70W in Balanced or 80W in Max) and `power.max_limit` (the hardware board ceiling, e.g. 100W). The `PWR IN` box displays `current / limit W` (e.g. `12.5 / 70 W`), and the bar scale normalizes against the active limit so power draw telemetry is visually accurate.
+- `cctl.c` includes subsystem fragments from `src/` in this order: core,
+  controls, platform, keyboard, fan curves, telemetry, runtime, NVIDIA,
+  snapshots, commands, and driver management. They form one translation unit
+  so private hardware helpers can be shared without exporting symbols. Keep
+  subsystem changes in their owning fragment.
+- The Makefile builds `cctl` from `cctl.c`, `src/cctl_cpumon.c`, and
+  `src/cctl_gpumon.c`. The separate monitor programs share code through
+  `src/cctl_monitor_common.h` and `src/cctl_shared.h`. The `experimental`
+  target enables the optional NVIDIA management commands with `CCTL_NVIDIA`.
+- `src/cctl_fancurve.inc` is included before snapshot and command handlers;
+  its private worker and state helpers are available to those subsystems.
 
-- **Direct EC Port I/O Fan Control & Protocol Quirks (Legacy Method)** — `cctl` uses direct port I/O (`ioperm`, `inb`/`outb` on port `0x66` command and `0x62` data) for individual fan control (`cctl fan cpu <pct>`, `cctl fan gpu <pct>`), Max, and Silent modes. This preserves the ability to adjust a single fan independently without kicking the other fan off its automatic EC thermal curve (which the `tuxedo_io` `W_CL_FANSPEED` ioctl cannot do, as it forces all channels into fixed manual mode).
-  - **Hardware Handshake:** All writes require polling Input Buffer Full (IBF, bit 1 of port `0x66`): wait until `((inb(0x66) >> 1) & 1) == 0` before sending each command or data byte.
-  - **Individual Fan Duty:**
-    - Send command `0x99` to port `0x66`, followed by 2 data bytes to port `0x62`:
-      ```
-      { fan_idx, raw_duty }
-      ```
-      where `fan_idx` is `1` (CPU) or `2` (GPU), and `raw_duty = (pct * 255) / 100` (range 25–100%).
-    - Directly writes to that fan's hardware PWM channel without altering or locking the other fan.
-  - **Max Fan Mode:**
-    - Step 1: Send mode command `0x98` to port `0x66` with data byte `0x40` (`FAN_MODE_MAX`) to port `0x62`.
-    - Step 2: Send follow-up command `0x99` for each fan: `{ 0x01 (CPU), 0xFF (FAN_DUTY_AUTO) }` and `{ 0x02 (GPU), 0xFF (FAN_DUTY_AUTO) }`.
-  - **Silent Fan Mode:**
-    - Step 1: Send mode command `0x98` to port `0x66` with data byte `0x20` (`FAN_MODE_SILENT`) to port `0x62`.
-    - Step 2: Send follow-up command `0x99` for each fan: `{ 0x01 (CPU), 0x20 (FAN_MODE_SILENT) }` and `{ 0x02 (GPU), 0x20 (FAN_MODE_SILENT) }`.
-  - **Standalone Auto Restore Quirk (Reversed Byte Order):**
-    - When restoring automatic EC control without a preceding `0x98` mode command, command `0x99` requires **reversed** argument order:
-      ```
-      { 0xFF (FAN_DUTY_AUTO), fan_idx }
-      ```
-    - Notice that `{ fan_idx, 0xFF }` only works as a follow-up after a `0x98` mode command. For standalone auto-restore, passing `{ fan_idx, 0xFF }` is ignored by the firmware; `{ 0xFF, fan_idx }` must be used.
+## EC Profiles, CPU Power, and Thermal Reporting
 
-- **GPU Fan Duty Register** — ACPI `FANINFO1` byte 2 is stuck at ~15% on this model. `cctl` reads GPU fan duty from `FANINFO2` (`0x64`, byte 0) for accurate readings.
+### Live EC profile detection
 
-- **Keyboard Backlight Type Override (`force_backlight_type=6`)** — Why the driver installer forces type 6:
-  - In `drivers/src/clevo_leds.h:clevo_leds_init()` (path within the mirror repo):
-    1. The driver calls `clevo_evaluate_method2(0x0D, 0)` to read the ACPI `_DSM` buffer. `buffer[0x0f]` holds the keyboard type ID. Known IDs include: `0x00` (NONE), `0x01` (FIXED), `0x02` (3ZONE), `0x06` (1ZONE), `0xF3` (PERKEY).
-    2. The Colorful Evol P15 EC returns `0x26`. Because this ID is unknown to the driver, probe switches fail to match, registering no `led_classdev` — resulting in no `/sys/class/leds/*::kbd_backlight` and leaving brightness/color ioctls non-functional.
-    3. `0x26` (`0b00100110`) vs `0x06` (`0b00000110`): the low nibble is identical, while the high bits likely signify a newer revision or flag. The wire protocol (`0x67` + `0xF4000000 | brightness`, zone color) remains standard single-zone RGB.
-    4. Passing module option `force_backlight_type=6` (`tuxedo_keyboard`) bypasses ACPI buffer evaluation directly:
-       ```c
-       if (force_backlight_type >= 0) type = force; else { /* SPECS retry x3 -> 0x52/0x7A fallback */ }
-       ```
-    5. Upstream driver fix would be handling `case 0x26: type = 1ZONE;` or matching `(type & 0x0F) == 0x06`. Until upstreamed, forcing type 6 via modprobe is required.
-  - **Customizing your keyboard type:**
-    If you have a different variant and need to force another keyboard backlight mode, edit `/etc/modprobe.d/tuxedo_keyboard.conf`:
-    ```
-    options tuxedo_keyboard force_backlight_type=<value>
-    ```
-    Known values:
-    * `1` — FIXED white backlight (`0x01`)
-    * `2` — 3-zone RGB (`0x02`)
-    * `6` — 1-zone RGB (`0x06`) *(default configured by this project)*
-    * `243` — Per-key RGB (`0xF3`)
+`cctl_live_ec_state()` reads the recognized TCC offset from processor thermal
+sysfs and falls back to the temperature-target MSR when needed. On the tested
+machine, the offsets map as follows:
 
-  - **Sysfs LED Exposure (`/sys/class/leds`):**
-    All keyboard backlight controls registered by the driver are exposed under `/sys/class/leds`:
-    * For **1-zone RGB (`force_backlight_type=6`)**: A single device entry is created:
-      ```
-      /sys/class/leds/rgb:kbd_backlight/
-      ```
-      (Contains controls like `brightness`, `multi_intensity`, `color`, etc.)
-    * For **3-zone RGB (`force_backlight_type=2`)**: The kernel driver registers 3 separate LED device entries under `/sys/class/leds` corresponding to each keyboard zone (e.g., `rgb:kbd_backlight`, `rgb:kbd_backlight_1`, `rgb:kbd_backlight_2` or separate zone descriptors), allowing each zone's color and brightness to be tuned individually via sysfs.
-    * For **Fixed White (`force_backlight_type=1`)**: A `white:kbd_backlight` directory is exposed for brightness level control.
+| TCC offset | EC code | Profile | PROCHOT temperature |
+| ---: | ---: | --- | ---: |
+| 2°C | 2 | High performance | 98°C |
+| 13°C | 3 | Standard | 87°C |
+| 15°C | 1 | Powersave | 85°C |
+| 10°C | 0 | Silent | 90°C |
 
-    > **Note:** `cctl`'s command implementation currently only supports **1-zone RGB** (using type 6). If your hardware uses 3-zone RGB or per-key RGB, you can manage the zones directly through their respective `/sys/class/leds` folders or adapt `cctl`'s source code (`cctl.c`) to control individual zones.
+`cctl status` prefers a recognized live TCC offset. It falls back to the
+`tuxedo_io` profile cache only when the offset cannot identify a profile. The
+cache records profile writes made through `tuxedo_io` since module load; it
+does not observe Fn-key, firmware, or other driver changes. A cache value of
+`-1` means unknown and is omitted from the status detail. Cache reads are
+version-gated because older drivers silently accept unknown ioctls.
 
-- **GPU Display MUX via UEFI NVRAM (Insyde H2O)** — The laptop features a physical display multiplexer with two BIOS modes:
-  - `MSHybrid` (panel driven by Intel iGPU; NVIDIA dGPU provides render offload).
-  - `dGPU` (panel wired directly to NVIDIA GeForce RTX card; Intel iGPU is unmapped from PCI display class).
-  - The hardware MUX state cannot be flipped on-the-fly inside an active OS session (ACPI `_DSM` methods on this Insyde board hang the display subsystem). Instead, switching is staged via the UEFI NVRAM variable `Setup-a04a27f4-df00-4d42-b552-39511302113d` at file offset 430 (`0x03` = MSHybrid, `0x02` = dGPU). The new mode is latched during POST upon reboot.
-  - **How it works:** `cctl mux switch` writes to the UEFI Setup NVRAM variable (`Setup-a04a27f4-df00-4d42-b552-39511302113d` offset 430). The setting is committed to SPI flash and latched by firmware during POST on the next boot. It includes safety guards: blob length verification (1204 B) and unknown value refusal.
-- **dGPU mode boots at 40 Hz (X11)** — Happens on every boot when dGPU mode is selected, whether selected in BIOS or with `cctl mux switch`; it is not EC state. The panel's EDID is identical in both MUX modes: the base block's first (preferred) DTD is 2560x1440 @ **40 Hz**, while the 165 Hz timing lives in the DisplayID extension. The nvidia X driver takes the base-block preferred timing as the initial mode (boots 40); modesetting over i915 in MSHybrid prefers the DisplayID timing (boots 165). Not a capability problem — xrandr lists both rates in dGPU mode. Run `cctl rr 165` to restore 165 Hz, or add that command to your desktop environment's autostart/startup applications to apply it automatically.
-- **Keyboard effect state (`kbe`)** — Run `cctl kbe` to view the active effect, PID, and preserved base state (it re-elevates automatically — the `/run/cctl_kbe.state` file is root-only; `sudo cat` it directly if you prefer).
+The mode label in `cctl status` is inferred from the EC code and current CPU
+governor/EPP; it is not a separately stored EC mode. The runtime state file
+does not contain an EC profile code.
 
-- **Custom fan-curve worker (`fancurve`)** — `src/cctl_fancurve.inc` stores profiles as JSON with optional `##` comments in `/var/lib/cctl/fancurves/`. `fancurve start` (`set` alias) uses the same single-fork `daemonize()`/`setsid()` helper as `kbe`, takes an exclusive flock on `/run/cctl_curve.lock` (the lock file is persistent; flock ownership is released on close), and writes `/run/cctl_curve.state` with:
-  1. `<pid> <kernel-starttime>` (field 22 of `/proc/<pid>/stat`, so PID reuse cannot impersonate the worker),
-  2. the profile name,
-  3. the start epoch.
-  The worker keeps one `/dev/tuxedo_io` fd open and reads temperatures from the **third byte of `R_CL_FANINFO1` (CPU)** and `R_CL_FANINFO2` (GPU), using the hottest valid value. If a faninfo temperature is unavailable, it falls back to `hwmon` (`coretemp`/`k10temp`/`zenpower`) for the CPU and `nvidia-smi` for the GPU. Duty is written through `W_CL_FANSPEED` with `raw = pct * 255 / 100`; curve points are constrained to 25–100% to match `cctl fan`. On this EC, 13–24% clamps to 25%, while values below 13% drop both fans to 0%, so the 25% profile floor is deliberate.
-  - **Profile format:** the generated template starts with `##` instruction lines and uses quoted `"--"` placeholders. The parser accepts `##` comments and either quoted or unquoted integers for point values, so users can edit `"45"` in place or replace it with `45`. The final point's `fan` may be `"a"` or `"auto"` (stored as `FANCURVE_FAN_AUTO`), which means EC automatic control at or above that point's temperature. Validation enforces 2–16 points, temperatures `0–95 °C` in strictly increasing order, fan `25–100%`, and EC auto only at the final point.
-  - **Interpolation and hysteresis:** linear between numeric points; clamp to the first point below the curve and hold the last numeric value above it. A final EC-auto point is not interpolated: at or above its temperature the worker switches both fans to EC auto, holds while the temperature is at least `auto-temp − hysteresis`, and resumes the curve below that threshold. A new numeric duty is written only when the target differs and the temperature has moved at least `hysteresis` °C since the last write; `interval_ms` controls polling.
-  - **Thermal and fan-control fallback:** above 95 °C, or after three consecutive temperature-read failures, the worker issues `W_CL_FANAUTO` (mask `15`) and keeps running. It reapplies the curve only below 90 °C. After three consecutive `W_CL_FANSPEED` failures it also restores auto, then checks `clevo_acpi` and `tuxedo_io`; missing drivers are loaded with `modprobe clevo_acpi` and `modprobe tuxedo_io`, the device is reopened, and auto is retried. If recovery still fails, it restores auto through the direct EC fan path (`0x99` auto for CPU and GPU) and exits. `fancurve start` refuses to start unless both modules and `/dev/tuxedo_io` are present.
-  - **Lifecycle:** `stop` (alias `off`) waits for the exact PID/start-time instance to exit before restoring EC auto; the persistent lock file is never unlinked while flock may be held. The worker arms the driver's per-open-file close recovery on its own `O_CLOEXEC` descriptor before any manual fan write, and refuses to start unless `tuxedo_io` is at least 0.3.10. SIGTERM restores auto explicitly; any close, including `SIGKILL`, invokes the driver's auto-on-close callback. `del` asks for confirmation (unless `--noconfirm`) and refuses to delete the active profile. `edit` refuses to open the editor while that curve is active. `create` prompts for 2–16 points, opens `$SUDO_EDITOR`/`$VISUAL`/`$EDITOR` on a JSON template, validates it, and only then installs it. Existing names prompt before replacement; names are case-sensitive.
-  - **Driver profile cache:** `R_CL_PERF_PROFILE` reports the last Clevo profile written through `tuxedo_io` since module load, or `-1` if none. It does not observe Fn-key, firmware, or keyboard-driver writes. `cctl status` prefers a recognized EC code inferred from TCC offset, falls back to this cache when the offset is unavailable or unmapped, gates the cache read on the numeric driver version, and omits the cache when its value is `-1`.
-  - **Conflict rules:** plain `cctl fan auto` stops the worker before restoring EC auto. Other fan overrides (`<pct>`, `cpu|gpu <pct>`, `cpu|gpu auto`, `max`, `silent`) warn and refuse while a curve is active. `cctl set` profiles that would set fans auto or silent skip that step and warn, as does turbo-on fan auto; the curve keeps both fans.
-  - **Privilege model:** `create`/`edit` run the editor as the invoking user. When the profile directory is not writable, the validated temp file is handed to the restricted `fancurve __install` helper via passwordless `sudo cctl`; the helper checks the temp file's owner/mode and the JSON before writing under the profile directory.
-- **Release tarball provenance** — The `drivers.tar.gz` attached to releases is fetched straight from the mirror — never rebuilt — and the release workflow refuses to publish if its sha256 drifts from the constant baked into `cctl.c`.
-- **drivers-manage source order** — how `cctl drivers-manage` finds `drivers.tar.gz` (first match wins):
-  1. persistent cache **`/var/lib/cctl/drivers.tar.gz`** — sha-verified; enables fully offline reinstall; stale/corrupt entries are reported, ignored, and replaced on the next verified acquisition
-  2. `drivers.tar.gz` beside the cctl binary — sha-checked on the spot; a stale copy is warned about and skipped
-  3. download from the mirror into a private temp dir — on failure it names the folder for a manual copy
-  4. full path to a `drivers.tar.gz` you already have — checked in place first; staged only if valid
-- **drivers-manage verification** — Every candidate is verified against the sha256 **baked into the cctl binary before extraction** — spoofed or stale files are refused. Whatever passes is also copied to `/var/lib/cctl/` *before* extraction, so the next reinstall or uninstall needs neither internet nor the original file.
+The profile names, TCC offsets, and trip temperatures above are specific to
+the tested EC and CPU. The load-test README uses the live
+`tcc_offset_degree_celsius` value; P-core and E-core frequencies there are in
+MHz.
+
+### `cpumon` thermal state
+
+The `PROCHOT` value in JSON is inferred from the live EC/TCC state. The
+terminal `STATE` label does not classify temperature against those profile
+thresholds. It uses live hardware throttle flags when available and treats
+power readings near RAPL limits as estimates. Current classification order in
+`src/cctl_cpumon.c` is:
+
+1. `THERMAL THROTTLE` when a live thermal-throttle flag is set.
+2. `RECENT THERMAL EVENT` when the package throttle counter increased within
+   the last two seconds.
+3. `POWER LIMIT ACTIVE` when the hardware power-limit flag is set.
+4. `NEAR PL2 (est.)` at 98% of the reported PL2 value or higher.
+5. `ABOVE PL1 (est.)` above 102% of PL1.
+6. `NEAR PL1 (est.)` at 90% of PL1 or higher while total CPU utilization
+   exceeds 60%.
+7. `IDLE` below 10% utilization. Otherwise, `NORMAL` appears only when the
+   hardware status read succeeded; if it failed, the display says `STATUS N/A`.
+
+The monitor reads the RAPL TAU from
+`/sys/class/powercap/intel-rapl:0/constraint_0_time_window_us`; it does not
+assume a fixed time window. Hardware throttle flags come from
+`IA32_PACKAGE_THERM_STATUS`, with per-core `IA32_THERM_STATUS` as fallback.
+The package power-limit status is bit 10; the current thermal status is bit 0.
+Threshold estimates compare sampled package power with the configured RAPL
+limits and do not prove that a limit caused throttling.
+
+### Governor, EPP, and snapshots
+
+- With the tested Intel `intel_pstate` setup, the `performance` governor locks
+  EPP to `performance`. The `powersave` governor allows the configured EPP to
+  guide clock scaling. Built-in profiles therefore use `powersave` and vary
+  EPP.
+- During snapshot restore, a saved EPP that cannot be applied under the live
+  `performance` governor causes cctl to switch to `powersave` when the
+  governor was not itself saved or masked. Masking EPP avoids that adjustment.
+- EC profile codes 2 and 3 require fan-auto safety when applied through
+  `cctl set`; Turbo ON requires it when the current EC code is 2 or 3.
+  `--nosafe` bypasses this. If a fan curve is active, profile and Turbo safety
+  steps are skipped so the curve retains fan control.
+- Snapshot restore follows the same fan-safety policy. It skips the AUTO step
+  while a curve is active; `--dry-run` reports this. Code is in
+  `cctl_snapshot_apply_fan_safety()`.
+
+### RAPL limits
+
+- Writes are restricted to package 0 (`/sys/class/powercap/intel-rapl:0`),
+  after verifying that constraint 0 is `long_term`; PL1 goes to constraint 0
+  and PL2 to constraint 1. Do not write sub-zones or `psys`. On the tested
+  laptop, writing those zones caused an EC conflict and a 0.4 GHz CPU throttle;
+  treat this as a hardware-specific observation.
+- PL1 is limited to 45 W normally and 90 W while EC code 2 is active. The EC
+  may enforce lower defaults in codes 0, 1, and 3. PL2 is capped at 115 W and
+  must remain greater than PL1. The invariant is enforced by the command,
+  custom profile loading, snapshot restore, and `set_rapl_limits()`.
+- If a snapshot requests PL1 above 45 W without applying EC code 2, restore
+  skips PL1 and can still apply PL2.
+- `cctl set max` prints a model-specific advisory that sustained CPU power
+  can reach 60–90 W and temperatures can approach 98°C under heavy load. It
+  recommends `cpuperf` or `balanced` for lighter use.
+
+## GPU Monitoring
+
+- `gpumon` runs `nvidia-smi` telemetry queries only while the dGPU is in PCI
+  power state D0. The `p` key pauses or resumes NVIDIA polling; cctl fan
+  readings continue while polling is paused or the GPU is in D3cold.
+- The effective GPU power limit uses `enforced.power.limit`, then
+  `power.limit`, then `power.max_limit` as fallbacks. `power.max_limit` is
+  retained separately for the gauge scale and JSON output. Avoid hardcoding
+  example wattages; limits vary by profile and hardware.
+- On the tested EC, the GPU fan duty in `FANINFO1` is stuck near 15%. Read GPU
+  duty from the low byte of `FANINFO2` instead.
+
+## Fan Control
+
+Fan control uses two paths:
+
+- `tuxedo_io` handles both-fan duty writes (`W_CL_FANSPEED`) and automatic
+  control (`W_CL_FANAUTO`). The all-fan automatic-control mask is `0x0f`.
+  `W_CL_FANSPEED` sets both channels to manual duty together.
+- Direct EC port I/O handles individual fan duty and the MAX/SILENT modes. The
+  protocol uses command port `0x66`, data port `0x62`, and waits for the input
+  buffer to clear before each write. Individual fan duty uses command `0x99`
+  with `{ fan_index, raw_duty }`, where CPU is 1, GPU is 2, and
+  `raw_duty = percent * 255 / 100`.
+- MAX and SILENT send mode command `0x98` (`0x40` and `0x20` respectively),
+  followed by `0x99` for each fan. In this sequence the arguments are
+  `{ fan_index, value }`. Standalone automatic restore has a firmware quirk:
+  command `0x99` must instead receive `{ 0xff, fan_index }`.
+
+## Fan Curve Worker
+
+Implementation lives in `src/cctl_fancurve.inc`; profiles are stored as JSON
+under `/var/lib/cctl/fancurves/`.
+
+### Profile and temperature behavior
+
+- Profiles require 2–16 points, strictly increasing temperatures from 0–95°C,
+  fan speeds from 25–100%, hysteresis from 0–20°C, and a polling interval
+  from 250–60000 ms. Only the final point may use `"a"` or `"auto"`.
+- Numeric points are interpolated linearly. Below the first point the first
+  speed is used; above the final numeric point the final speed is held. A
+  final AUTO point switches to EC control at its temperature and resumes the
+  curve below `auto_temp - hysteresis`.
+- `interval_ms` sets the worker polling delay. A new duty is written only when
+  the target changes and the temperature has moved by at least `hysteresis`
+  since the previous duty write.
+- The worker controls both fans using the hotter valid CPU/GPU fan-sensor
+  temperature. It reads the third byte of `R_CL_FANINFO1/2`; CPU `hwmon` and
+  NVIDIA `nvidia-smi` temperatures are fallbacks.
+- Above 95°C, after three consecutive temperature-read failures, or after
+  three consecutive fan-duty write failures, the worker attempts to restore EC
+  auto. It retries ioctls, can reload `clevo_acpi` and `tuxedo_io`, and finally
+  falls back to direct EC auto. Following a successful safety handoff, the
+  curve resumes below 90°C. The thermal condition is strictly above 95°C.
+- On this EC, duties 13–24% clamp to 25%, and duties below 13% turn the fans
+  off. The profile minimum is therefore 25%.
+
+### Worker lifecycle and safety
+
+- Starting a curve requires `tuxedo_io` 0.3.10 or newer, both driver modules,
+  and `/dev/tuxedo_io`. The worker arms the driver's per-file close recovery
+  before writing manual duty. Closing the worker's descriptor restores EC
+  automatic control, including after `SIGKILL`; unrelated cctl commands use
+  their own descriptors and do not trigger it.
+- The open descriptor holds a module reference, so unloading `tuxedo_io`
+  fails while the worker is active. Stop the worker before replacing drivers.
+  The current `driverinstall.sh` retries module unload, warns if a module is
+  still in use, then continues with DKMS cleanup/install; it does not stop the
+  fan-curve worker itself.
+- The worker is detached and takes an exclusive `flock` on
+  `/run/cctl_curve.lock`. `/run/cctl_curve.state` records PID, process start
+  time, profile name, and start time. Matching the process start time prevents
+  a reused PID from being mistaken for the worker. `stop` waits for that
+  worker to exit before returning. `set` and `off` remain accepted as aliases
+  for `start` and `stop` for compatibility, though help shows the primary
+  command names.
+- `create` and `edit` open the configured editor as the invoking user. When
+  the profile directory is not writable, a restricted `fancurve __install`
+  helper validates the temporary file and profile before installing it.
+  Replacing an existing profile requires confirmation. Editing or deleting the
+  currently active profile is refused.
+- While active, the curve owns both fans. `cctl fan auto` stops it before
+  restoring EC auto; other fan overrides are refused. `cctl set`, Turbo, and
+  snapshot fan-safety steps skip changes that would take control away from the
+  curve.
+- Fan curves are not included in snapshots and are not started at boot.
+
+### EC profile cache
+
+`R_CL_PERF_PROFILE` reports the last performance profile written through
+`tuxedo_io` since module load, or `-1` when unknown. Fn-key, firmware, and
+other driver writes are outside this cache. `cctl status` uses a recognized
+live TCC-derived code first and the cache as a fallback; it omits cache data
+when the value is `-1`.
+
+## Keyboard Backlight Driver
+
+The installer sets `force_backlight_type=6` for `tuxedo_keyboard`. On the
+tested Colorful Evol P15 the EC reports keyboard type `0x26`, which the driver
+does not recognize. Its low nibble matches the driver's 1-zone RGB type `0x06`;
+the idea that the high bits indicate a newer revision is a hypothesis. The
+override bypasses detection and makes the supported 1-zone controls available.
+
+The driver can also expose fixed-white (`1`), 3-zone RGB (`2`), and per-key
+RGB (`243`) types, but cctl's keyboard commands currently support only 1-zone
+RGB. LEDs are exposed under `/sys/class/leds`; the 1-zone device is
+`rgb:kbd_backlight`.
+
+## Display MUX and Refresh Rate
+
+- The tested Insyde H2O firmware uses UEFI NVRAM for MUX mode. `cctl mux
+  switch` changes `Setup-a04a27f4-df00-4d42-b552-39511302113d` at file offset
+  430 (`0x03` = MSHybrid, `0x02` = dGPU only). The variable is 1204 bytes and
+  the code rejects an unexpected size or mode. It stages the change for the
+  next boot; it cannot switch the physical display MUX during the current
+  session. Other firmware-synchronized bytes are left untouched. When on
+  battery below 10%, switching is refused to reduce the risk of power loss
+  during the NVRAM write.
+- In dGPU mode on this laptop, X11 starts the internal panel at 40 Hz on each
+  boot. The panel EDID lists 40 Hz as its preferred timing and 165 Hz in the
+  DisplayID extension. The NVIDIA X driver starts at 40 Hz; `xrandr` still
+  lists 165 Hz, and `cctl rr 165` selects it. This is a model/driver
+  observation, not a general dGPU behavior.
+
+## Driver Archive and Release Workflow
+
+- The expected archive SHA-256 is `DRIVERS_SHA256` in
+  `src/cctl_drivers_cli.inc`. Keep it synchronized with the verified archive
+  stored under the matching SHA-256 directory in
+  `tuxedo-drivers-cctl-mirror`.
+- The release workflow reads that constant, downloads
+  `<sha256>/drivers.tar.gz` from the mirror without rebuilding it, verifies
+  the checksum, and attaches the verified archive to the release.
+- `drivers-manage` searches for a valid archive in this order: verified
+  `/var/lib/cctl/drivers.tar.gz` cache, a matching archive beside the cctl
+  binary, a fresh mirror download, then a user-provided full path. Every
+  candidate is checked against the embedded hash before extraction. A
+  verified candidate is cached before extraction so later reinstall or
+  uninstall can work offline.

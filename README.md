@@ -146,39 +146,9 @@ Full-load measurements and comparisons are documented in the [EC profile test re
 
 ### Custom Profiles
 
-You can add your own power profiles in `/var/lib/cctl/profiles.conf`. Edit it
-with `cctl editconf`, or manually:
-
-```bash
-sudo nano /var/lib/cctl/profiles.conf
-```
-
-The legacy `/etc/cctl/profiles.conf` location is only kept for migration — copy
-any profiles from there to `/var/lib/cctl/profiles.conf` once.
-
-Add one profile per line, with fields in this order:
-
-```text
-# name ec_profile_code turbo governor epp pl1_watts pl2_watts [refresh_rate]
-quietwork 1 0 powersave balance_power skip skip 40
-highcpu 2 1 performance performance 90 115 165
-```
-
-Each line defines one profile: `name EC-code turbo governor epp [pl1 pl2 [rr]]`. Use `skip` to leave a value unchanged, omit trailing fields (5, 7, or 8), and `skip skip` to set only a refresh rate (e.g. `myprof 3 1 powersave performance skip skip 60`); unset RAPL limits stay as they are, or set them with `cctl rapl <pl1> <pl2>`. Valid values are EC code `0`–`3` (Silent, Powersave, High performance, Standard — modes, not a ranking), Turbo `1`/`0`, governor `powersave`/`performance`, and EPP `performance`/`balance_performance`/`balance_power`/`power`. EC limits: PL1/PL2 90/115W on code `2`, 45/115W on code `3`, and 15/30W on codes `0`/`1` (a higher `cctl rapl` value is written but the EC keeps those codes at 15W/30W); the EC defaults GPU TDP to 70W on codes `0`, `1`, and `3`, and 100W on code `2`.
-
-CPU performance is set by **EPP** alone; the governor only decides how clocks
-are chosen (`powersave` scales on demand with EPP freely selectable,
-`performance` holds clocks high and locks EPP to `performance`). Every built-in
-profile therefore uses `powersave` and expresses its intent through EPP —
-`max`/`cpuperf` → `performance`, `balanced` → `balance_performance`,
-`powersave` → `balance_power`, `silent/eco` → `power`. Full explanation and
-measurements: [EC profile test results](docs/ec-profile-test-results.md#governor-and-epp).
-
-> **Caution:** If a profile line contains a typo or unsupported value, cctl
-> skips it, so the profile will not appear in `cctl set` or `cctl --help`.
-
-Append `--dry-run` to preview changes without applying them. Dry-run is
-available for `set`, `fan`, `turbo`, `gov`, `epp`, `rapl`, and `bat`.
+Create extra power presets with `cctl editconf`, then apply one with
+`cctl set <name>`. The [Custom Profiles guide](docs/custom-profiles.md) shows
+how to choose profile settings and includes examples and safety limits.
 
 ---
 
