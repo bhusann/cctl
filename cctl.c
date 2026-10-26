@@ -38,6 +38,7 @@
 #include <sys/file.h>
 #include <stdarg.h>
 #include <math.h>
+#include <dbus/dbus.h>
 
 #define CCTL_VERSION      "4.8"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
@@ -46,7 +47,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100108
+#define CCTL_MICROVERSION 100109
 #endif
 
 

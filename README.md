@@ -130,7 +130,7 @@ silent/eco 0       OFF    powersave    power               15/30W              -
 ```
 
 > [!NOTE]
-> Applying the built-in `powersave` profile sets both fans to **SILENT** (just like `silent/eco` mode) and automatically switches the internal display to the lowest supported refresh rate when running under X11 (e.g. 40 Hz) to maximize battery runtime. You can adjust the refresh rate anytime using `cctl rr`.
+> The built-in `powersave` profile and `silent/eco` leave fan control unchanged. `powersave` also selects the lowest supported internal display refresh rate under X11 (e.g. 40 Hz) to maximize battery runtime. You can adjust the refresh rate anytime using `cctl rr`.
 
 > [!CAUTION]
 > Silent fan mode and manual fan duty may keep fans quiet or fixed regardless of
@@ -158,7 +158,7 @@ Command names:
 - Profiles and setup: `set`, `editconf`, `install`, `uninstall`, `drivers-manage`
 - Keyboard and fans: `kbc`, `kbb`, `kbe`, `fn`, `fan`, `fancurve`
 - GPU and privacy: `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic`
-- Battery and system info: `bat`, `status`, `capabilities`, `--version`
+- Battery and system info: `bat`, `status`, `--version`
 - Monitors: `cpumon`, `gpumon`
 - Display: `rr`, `scale`
 - CPU controls: `turbo`, `gov`, `epp`, `rapl`

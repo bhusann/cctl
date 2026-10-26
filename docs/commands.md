@@ -5,10 +5,27 @@
 cctl kbc <color>                # Set keyboard color: R G B (0-255) or preset name
 cctl kbb <pct>                  # Brightness (0-100%)
 cctl kbe [effect|stop]          # Start an effect, stop & restore original color/brightness, or show status & list effects
+cctl kbn <flash|pulse|sos> <color> [times] # Play a notification, then restore the keyboard
+cctl kbn police [<color1> <color2> [times]] # Police lights (default: red and blue)
 cctl fn [lock|unlock]          # Toggle or set Fn Lock (no arg toggles, or lock/unlock)
 ```
 
 Color presets: `azure` `blue` `coral` `cyan` `green` `lime` `orange` `pink` `purple` `red` `white` `yellow` `off`
+
+`kbn` accepts preset names or quoted hex colors such as `'#ff3040'`. The repeat
+count is optional (default `1`) and can be from 1 to 20. Each repeat is one flash
+burst, heartbeat pulse, police-light cycle, or complete SOS signal. Repeated
+flash and pulse cycles have a short pause between them. Police uses red and blue
+by default; provide two colors to customize the alternating lights. The command
+waits for the notification to finish, restores the previous keyboard color and
+brightness, and resumes an effect that was already running.
+
+```bash
+cctl kbn pulse red 2
+cctl kbn police
+cctl kbn police orange pink 2
+cctl kbn flash '#ff3040' 1
+```
 
 Effect presets (single zone): `breathe` `breathe-cycle` `cycle` `flash` `flash-cycle` `candle` `pulse` `pulse-cycle` `police` `fire` `aurora` `storm` `temp` `ram` `sos` `firecrackers`
 
@@ -41,11 +58,16 @@ cctl fancurve view <name>             # Check and display a curve
 cctl fancurve edit <name>             # Edit a saved curve
 cctl fancurve start <name>            # Start or restart a curve
 cctl fancurve stop                    # Stop the curve and return fans to automatic control
+cctl fancurve log                     # Stream colored diagnostics from the active curve
 cctl fancurve del <name> [--noconfirm] # Delete a saved curve
 ```
 
 Short forms: `s` for `start`, `c` for `create`, `v` for `view`, and `e` for
 `edit`.
+
+`log` shows new activity from the running curve, with colors for failures,
+safety actions, and fan-speed changes. Earlier messages are not saved; press
+Ctrl-C to stop viewing.
 
 `create` asks how many points to add, then opens an example for you to edit.
 Each point pairs a temperature with a fan speed. For example:
@@ -88,6 +110,10 @@ and returns the fans to automatic control.
 You cannot edit or delete the curve that is currently running; stop it first.
 Deleting a saved curve asks for confirmation; add `--noconfirm` to skip the
 prompt. Curves run only for the current boot and are not included in snapshots.
+When a login manager supports sleep notifications, cctl returns fans to
+automatic control before sleep and resumes the curve after wake. If the wake
+notification is missed, cctl keeps EC automatic control and resumes the curve
+if a monitored temperature rises above 85 °C.
 
 ### GPU MUX Switching
 Switches between **MSHybrid** (iGPU + dGPU) and **dGPU** (NVIDIA GPU only). A reboot is required to apply the change.
@@ -117,8 +143,7 @@ cctl bat standard               # Select Standard charge mode
 cctl status [--json]            # Print all current settings; --json emits a JSON object
 cctl cpumon [--json]            # Live CPU, RAM, temperature, power, and fan monitor; JSON streams one sample per line
 cctl gpumon [--json]            # Live NVIDIA GPU monitor; --json emits one sample per line
-cctl capabilities [--json]      # Show controls detected on this system
-cctl --version                  # Print version and exit (also -V)
+cctl --version                  # Print version and exit (also -V, -v)
 ```
 
 ### Snapshots
@@ -201,7 +226,9 @@ Application settings persist across reboots in `/var/lib/cctl/settings`:
 cctl options                            # Show current cctl settings
 cctl options streamtext <on|off>        # Show output as it appears, or print it immediately
 cctl options default <help|status>      # Action when running bare 'cctl' without arguments (default: help)
+cctl options experimental-fan <on|off>  # Enable or disable experimental fan controls
 ```
 
 - **`streamtext`**: When `on`, cctl shows command output as it appears, character-by-character or line-by-line depending on the command. Set it to `off` to print output immediately.
 - **`default`**: By default (`help`), typing bare `cctl` prints the full help menu. Setting this to `status` makes typing bare `cctl` execute `cctl status` directly. The full help menu can always still be accessed via `cctl --help` or `cctl help`.
+- **`experimental-fan`**: Defaults to `off`, which hides and disables the experimental fan commands. Set it to `on` to show the help section and enable those commands. The regular `cctl fan auto` and `cctl fan max` commands remain available either way.

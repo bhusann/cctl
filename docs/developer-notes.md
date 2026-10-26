@@ -15,6 +15,8 @@ otherwise, hardware observations refer to the tested Colorful Evol P15.
   `src/cctl_gpumon.c`. The separate monitor programs share code through
   `src/cctl_monitor_common.h` and `src/cctl_shared.h`. The `experimental`
   target enables the optional NVIDIA management commands with `CCTL_NVIDIA`.
+  Building requires `pkg-config` and the `dbus-1` development library for
+  fan-curve suspend notifications; this does not require systemd as PID 1.
 - `src/cctl_fancurve.inc` is included before snapshot and command handlers;
   its private worker and state helpers are available to those subsystems.
 
@@ -128,16 +130,21 @@ Fan control uses two paths:
 
 - `tuxedo_io` handles both-fan duty writes (`W_CL_FANSPEED`) and automatic
   control (`W_CL_FANAUTO`). The all-fan automatic-control mask is `0x0f`.
-  `W_CL_FANSPEED` sets both channels to manual duty together.
-- Direct EC port I/O handles individual fan duty and the MAX/SILENT modes. The
+  `W_CL_FANSPEED` sets both channels to manual duty together. `cctl fan max`
+  uses this ioctl with raw duty `255` (100%); if it fails, cctl falls back to
+  the EC MAX mode sequence.
+- Direct EC port I/O handles individual fan duty, SILENT mode, and the MAX
+  fallback. The
   protocol uses command port `0x66`, data port `0x62`, and waits for the input
   buffer to clear before each write. Individual fan duty uses command `0x99`
   with `{ fan_index, raw_duty }`, where CPU is 1, GPU is 2, and
   `raw_duty = percent * 255 / 100`.
-- MAX and SILENT send mode command `0x98` (`0x40` and `0x20` respectively),
-  followed by `0x99` for each fan. In this sequence the arguments are
+- MAX fallback and SILENT send mode command `0x98` (`0x40` and `0x20`
+  respectively), followed by `0x99` for each fan. In this sequence the arguments are
   `{ fan_index, value }`. Standalone automatic restore has a firmware quirk:
   command `0x99` must instead receive `{ 0xff, fan_index }`.
+- `cctl fan auto` first uses `W_CL_FANAUTO`; if that fails, it restores each
+  fan through the direct EC standalone-auto sequence described above.
 
 ## Fan Curve Worker
 
@@ -196,6 +203,24 @@ under `/var/lib/cctl/fancurves/`.
   snapshot fan-safety steps skip changes that would take control away from the
   curve.
 - Fan curves are not included in snapshots and are not started at boot.
+- The worker listens for login1 `PrepareForSleep` signals over the system D-Bus
+  and holds a delay inhibitor while active. On suspend it closes its armed
+  `tuxedo_io` descriptor, triggering the driver's EC-auto close recovery; on
+  resume it reacquires the inhibitor, reopens the driver, arms close recovery
+  again, and forces a fresh curve write. This works with systemd-logind or
+  elogind regardless of init system. If no login1-compatible manager is
+  available, the curve runs without suspend auto-restore and cctl notes that
+  when starting it.
+- After a suspend request, the worker stays in EC auto and polls temperatures
+  without writing fan duty. While the machine is actually suspended, user space
+  cannot run; polling continues once execution resumes. If the login1 wake
+  signal was missed, the worker resumes the curve when a valid CPU/GPU reading
+  exceeds `FANCURVE_SLEEP_RESUME_TEMP` (85 C). If the worker exits entirely,
+  the driver's close recovery leaves fans in EC auto; no detached worker can
+  resume after process exit.
+- On the tested EC, the CPU fan-info temperature may read `1 C` immediately
+  after resume. Treat that reading as invalid and use the CPU hwmon fallback
+  before selecting the hottest temperature for the curve.
 
 ### EC profile cache
 

@@ -864,13 +864,13 @@ static void cctl_snapshot_apply_fan_safety(const char *target, int nosafe,
 
     struct fancurve_state curve_st;
     if (fc_is_running(&curve_st)) {
-        printf("  Fan curve '%s' is active; leaving fan control to the curve.\n",
+        printf("  Fan curve '%s' active; keeping curve control.\n",
                curve_st.name);
         *fan_safety_bypassed = 1;
         return;
     }
 
-    printf("  Setting both fans to AUTO for %s...\n", target);
+    printf("  Setting fans to AUTO for %s...\n", target);
     if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), errors) == 0)
         *fans_auto_applied = 1;
 }

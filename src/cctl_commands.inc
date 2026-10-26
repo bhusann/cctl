@@ -136,16 +136,22 @@ static int cmd_options(int argc, char **argv)
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
         printf("%sCCTL-specific settings:%s\n", C_YLW, C_RST);
-        printf("  %s%-12s%s %s%-6s%s  Stream output character-by-character or by line\n",
+        printf("  %s%-18s%s %s%-6s%s  Stream output character-by-character or by line\n",
                C_CYN, "streamtext", C_RST,
                settings.streamtext_enabled ? C_GRN : C_DIM,
                settings.streamtext_enabled ? "on" : "off", C_RST);
-        printf("  %s%-12s%s %s%-6s%s  What bare 'cctl' shows: help or status\n",
+        printf("  %s%-18s%s %s%-6s%s  What bare 'cctl' shows: help or status\n",
                C_CYN, "default", C_RST, C_GRN,
                settings.default_is_status ? "status" : "help", C_RST);
+        printf("  %s%-18s%s %s%-6s%s  Enable experimental fan controls and show in help\n",
+               C_CYN, "experimental-fan", C_RST,
+               settings.experimental_fan_enabled ? C_GRN : C_DIM,
+               settings.experimental_fan_enabled ? "on" : "off", C_RST);
         printf("\n%sUsage:%s %scctl options streamtext <on|off>%s\n",
                C_BLD, C_RST, C_CYN, C_RST);
         printf("       %scctl options default <help|status>%s\n",
+               C_CYN, C_RST);
+        printf("       %scctl options experimental-fan <on|off>%s\n",
                C_CYN, C_RST);
         g_stream_mode = prev_mode;
         g_stream_line = prev_line;
@@ -161,7 +167,7 @@ static int cmd_options(int argc, char **argv)
         opt_name = "default";
         opt_val = argv[2];
     } else {
-        return fail("Usage: cctl options streamtext <on|off>\n       cctl options default <help|status>");
+        return fail("Usage: cctl options streamtext <on|off>\n       cctl options default <help|status>\n       cctl options experimental-fan <on|off>");
     }
 
     require_root(argc, argv);
@@ -192,7 +198,19 @@ static int cmd_options(int argc, char **argv)
         return 0;
     }
 
-    return fail("Unknown setting '%s'. Available: streamtext, default", opt_name);
+    if (strcmp(opt_name, "experimental-fan") == 0) {
+        if (strcmp(opt_val, "on") != 0 && strcmp(opt_val, "off") != 0)
+            return fail("Usage: cctl options experimental-fan <on|off>");
+        settings.experimental_fan_enabled = (strcmp(opt_val, "on") == 0);
+        if (cctl_settings_write(&settings) != 0)
+            return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
+        printf("Experimental fan controls %s and %s in help.\n",
+               settings.experimental_fan_enabled ? "enabled" : "disabled",
+               settings.experimental_fan_enabled ? "shown" : "hidden");
+        return 0;
+    }
+
+    return fail("Unknown setting '%s'. Available: streamtext, default, experimental-fan", opt_name);
 }
 
 static int cmd_mic(int argc, char **argv)
@@ -218,42 +236,11 @@ static int cmd_cpumon(int argc, char **argv)
     return cctl_cpumon(argc, argv);
 }
 
-static int cmd_capabilities(int argc, char **argv)
+static int experimental_fan_controls_enabled(void)
 {
-    int as_json = argc == 3 && strcmp(argv[2], "--json") == 0;
-    if (argc > 3 || (argc == 3 && !as_json))
-        return fail("Usage: cctl capabilities [--json]");
-
-    char battery[32] = "";
-    int have_battery = power_supply_find_type("Battery", battery, sizeof(battery)) == 0;
-    /* Use an explicit path buffer to keep the capability check easy to audit. */
-    char battery_path[512];
-    snprintf(battery_path, sizeof(battery_path),
-             "/sys/class/power_supply/%s/charge_control_end_threshold", battery);
-    int battery_control = have_battery && access(battery_path, F_OK) == 0;
-
-    struct capability { const char *name; int available; } caps[] = {
-        { "fan_control", access("/dev/tuxedo_io", F_OK) == 0 },
-        { "keyboard_backlight", access(KBD_PATH "/brightness", F_OK) == 0 },
-        { "battery_thresholds", battery_control },
-        { "gpu_mux", access(MUX_VAR_PATH, F_OK) == 0 },
-        { "x11_display", has_display_support() },
-        { "nvidia_gpu", nvidia_find_pci_address(battery_path, sizeof(battery_path)) == 0 },
-    };
-    if (as_json) {
-        int old_json = json_output;
-        json_output = 1;
-        json_first_field = 1;
-        putchar('{');
-        for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++)
-            json_field(caps[i].name, caps[i].available ? "available" : "unavailable");
-        puts("}");
-        json_output = old_json;
-    } else {
-        for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++)
-            printf("%-22s %s\n", caps[i].name, caps[i].available ? "available" : "unavailable");
-    }
-    return 0;
+    struct cctl_settings settings;
+    (void)cctl_settings_read(&settings);
+    return settings.experimental_fan_enabled;
 }
 
 static int create_profile_conf(void)
@@ -326,9 +313,7 @@ static int cmd_editconf(int argc, char **argv)
 
 static void print_max_profile_note(void)
 {
-    printf("\n%sNote:%s 'max' is extreme performance mode; CPU will draw sustained 60–90W (vs normal 45W) and reach ~98°C.\n"
-           "      Recommended for heavy tasks like compiling or demanding games.\n"
-           "      For day-to-day use or lighter gaming, prefer 'cpuperf' or 'balanced'.\n",
+    printf("\n%sNote:%s 'max' can sustain 60–90W and reach ~98°C; use for demanding workloads.\n",
            C_YLW, C_RST);
 }
 
@@ -415,11 +400,6 @@ static int cmd_set(int argc, char **argv)
                 stream_printf(STREAM_DELAY_US, "  Fans: left to the active fan curve (auto safety skipped)\n");
             else
                 stream_printf(STREAM_DELAY_US, "  Fans: restore automatic control (safety default)\n");
-        } else if (strcmp(p->name, "silent") == 0 || strcmp(p->name, "powersave") == 0) {
-            if (curve_active)
-                stream_printf(STREAM_DELAY_US, "  Fans: left to the active fan curve (silent override skipped)\n");
-            else
-                stream_printf(STREAM_DELAY_US, "  Fans: set both to SILENT\n");
         }
         if (strcmp(p->name, "max") == 0) {
             int prev = g_stream_mode;
@@ -436,24 +416,15 @@ static int cmd_set(int argc, char **argv)
     struct fancurve_state curve_st;
     int curve_active = fc_is_running(&curve_st);
     int wants_auto = profile_requires_fan_auto(p) && !nosafe;
-    int wants_silent = strcmp(p->name, "silent") == 0 ||
-                       strcmp(p->name, "powersave") == 0;
 
     if (curve_active && wants_auto)
-        fc_warn_active(&curve_st, "the profile's fan auto safety");
-    else if (curve_active && wants_silent)
-        fc_warn_active(&curve_st, "the profile's silent fan setting");
+        fc_warn_active(&curve_st);
 
     if (wants_auto && !curve_active) {
-        printf("Setting both fans to AUTO (safety default; use --nosafe to bypass)...\n");
+        printf("Setting fans to AUTO...\n");
         fan_auto_all();
     }
     int rc = profile_apply(p);
-    if (rc == 0 && wants_silent && !curve_active) {
-        printf("Setting both fans to SILENT...\n");
-        if (fan_silent_all() < 0)
-            rc = -1;
-    }
 
     ec_release_ports();
     if (rc == 0) {
@@ -490,6 +461,7 @@ static int cmd_fan(int argc, char **argv)
         }
     }
 
+    int experimental_enabled = experimental_fan_controls_enabled();
     if (npos == 0) {
         int prev = g_stream_mode;
         g_stream_mode = STREAM_MODE_LINE;
@@ -497,18 +469,40 @@ static int cmd_fan(int argc, char **argv)
         printf("%sUsage:%s %scctl fan <mode> [pct] [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         printf("%sValid Modes:%s\n", C_YLW, C_RST);
-        printf("  %s%-18s%s Automatic EC fan control (both fans, or cpu/gpu)\n", C_CYN, "auto [cpu|gpu]", C_RST);
+        printf("  %s%-18s%s Automatic EC fan control for both fans\n", C_CYN, "auto", C_RST);
         printf("  %s%-18s%s Full 100%% fan speed\n", C_CYN, "max", C_RST);
-        printf("  %s%-18s%s Quiet mode (forces silent/eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
-        printf("  %s%-18s%s Set both fans to duty 25-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
-        printf("  %s%-18s%s Set CPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "cpu <pct|auto>", C_RST);
-        printf("  %s%-18s%s Set GPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "gpu <pct|auto>", C_RST);
+        if (experimental_enabled) {
+            printf("  %s%-18s%s Quiet mode (forces silent/eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
+            printf("  %s%-18s%s Set both fans to duty 25-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
+            printf("  %s%-18s%s Set CPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "cpu <pct|auto>", C_RST);
+            printf("  %s%-18s%s Set GPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "gpu <pct|auto>", C_RST);
+            printf("  %sManual fan control is experimental and can ignore temperature safeguards.%s\n",
+                   C_YLW, C_RST);
+        } else {
+            printf("  %sExperimental fan controls are hidden. Enable with:%s cctl options experimental-fan on\n",
+                   C_DIM, C_RST);
+        }
         g_stream_mode = prev;
         return 0;
     }
 
     const char *mode = pos[0];
     const char *val_str = (npos >= 2) ? pos[1] : NULL;
+
+    int experimental_request = strcmp(mode, "silent") == 0;
+    if ((strcmp(mode, "cpu") == 0 || strcmp(mode, "gpu") == 0) && val_str) {
+        int pct;
+        experimental_request = strcmp(val_str, "auto") == 0 ||
+                               safe_atoi(val_str, &pct) == 0;
+    } else if (strcmp(mode, "auto") == 0 && val_str) {
+        experimental_request = strcmp(val_str, "cpu") == 0 || strcmp(val_str, "gpu") == 0;
+    } else {
+        int pct;
+        if (safe_atoi(mode, &pct) == 0)
+            experimental_request = 1;
+    }
+    if (experimental_request && !experimental_enabled)
+        return fail("Experimental fan controls are disabled. Enable them with 'cctl options experimental-fan on'.");
 
     require_root(argc, argv);
 
@@ -663,9 +657,9 @@ static int cmd_turbo(int argc, char **argv)
     if (enabled && !nosafe && ec_profile_needs_fan_auto(live_ec_code)) {
         struct fancurve_state curve_st;
         if (fc_is_running(&curve_st)) {
-            fc_warn_active(&curve_st, "turbo's fan auto safety");
+            fc_warn_active(&curve_st);
         } else {
-            stream_printf(STREAM_DELAY_US, "Setting both fans to AUTO (safety default for turbo; use --nosafe to bypass)...\n");
+            stream_printf(STREAM_DELAY_US, "Setting fans to AUTO...\n");
             fan_auto_all();
         }
     }
@@ -978,6 +972,50 @@ static int cmd_kbe(int argc, char **argv)
     }
 
     return kbe_start(fx->name);
+}
+
+static int cmd_kbn(int argc, char **argv)
+{
+    if (argc < 3)
+        return fail("Usage: cctl kbn <flash|pulse|sos> <color> [times]\n       cctl kbn police [<color1> <color2> [times]]");
+    const char *effect = argv[2];
+    int r = 255, g = 0, b = 0, alt_r = 0, alt_g = 0, alt_b = 255;
+    int times = 1;
+    int police = strcmp(effect, "police") == 0;
+
+    if (police) {
+        if (argc == 3) {
+            /* Default police colors: red and blue. */
+        } else if (argc == 5 || argc == 6) {
+            if (kbn_parse_color(argv[3], &r, &g, &b) < 0)
+                return fail("Unknown color '%s'; use a kbc preset or #RRGGBB", argv[3]);
+            if (kbn_parse_color(argv[4], &alt_r, &alt_g, &alt_b) < 0)
+                return fail("Unknown color '%s'; use a kbc preset or #RRGGBB", argv[4]);
+            if (argc == 6 &&
+                (safe_atoi(argv[5], &times) < 0 || times < 1 || times > 20))
+                return fail("Times must be a whole number from 1 to 20");
+        } else {
+            return fail("Usage: cctl kbn police [<color1> <color2> [times]]");
+        }
+    } else {
+        if (strcmp(effect, "flash") != 0 && strcmp(effect, "pulse") != 0 &&
+            strcmp(effect, "sos") != 0)
+            return fail("Unknown notification effect '%s'; use flash, pulse, sos, or police", effect);
+        if (argc != 4 && argc != 5)
+            return fail("Usage: cctl kbn <flash|pulse|sos> <color> [times]");
+        if (kbn_parse_color(argv[3], &r, &g, &b) < 0)
+            return fail("Unknown color '%s'; use a kbc preset or #RRGGBB", argv[3]);
+        if (argc == 5 &&
+            (safe_atoi(argv[4], &times) < 0 || times < 1 || times > 20))
+            return fail("Times must be a whole number from 1 to 20");
+    }
+
+    if ((r == 0 && g == 0 && b == 0) ||
+        (police && alt_r == 0 && alt_g == 0 && alt_b == 0))
+        return fail("Notification colors must be visible; 'off' and #000000 cannot be used");
+
+    require_root(argc, argv);
+    return kbn_notify(effect, r, g, b, alt_r, alt_g, alt_b, times);
 }
 
 static int cmd_webcam(int argc, char **argv)

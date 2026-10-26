@@ -885,12 +885,14 @@ static int mode_runtime_write(const struct mode_runtime_data *data)
 struct cctl_settings {
     int streamtext_enabled;
     int default_is_status;
+    int experimental_fan_enabled;
 };
 
 static void cctl_settings_init(struct cctl_settings *settings)
 {
     settings->streamtext_enabled = 1;
     settings->default_is_status = 0;
+    settings->experimental_fan_enabled = 0;
 }
 
 static int cctl_settings_read(struct cctl_settings *settings)
@@ -920,6 +922,10 @@ static int cctl_settings_read(struct cctl_settings *settings)
             settings->default_is_status = 1;
         else if (strcmp(line, "default=help") == 0 || strcmp(line, "default_action=help") == 0)
             settings->default_is_status = 0;
+        else if (strcmp(line, "experimental-fan=on") == 0)
+            settings->experimental_fan_enabled = 1;
+        else if (strcmp(line, "experimental-fan=off") == 0)
+            settings->experimental_fan_enabled = 0;
     }
     fclose(fp);
     return 0;
@@ -950,8 +956,11 @@ static int cctl_settings_write(const struct cctl_settings *settings)
 
     const char *st_val = settings->streamtext_enabled ? "on" : "off";
     const char *def_val = settings->default_is_status ? "status" : "help";
-    char buf[128];
-    int len = snprintf(buf, sizeof(buf), "streamtext=%s\ndefault=%s\n", st_val, def_val);
+    const char *experimental_fan_val = settings->experimental_fan_enabled ? "on" : "off";
+    char buf[160];
+    int len = snprintf(buf, sizeof(buf),
+                       "streamtext=%s\ndefault=%s\nexperimental-fan=%s\n",
+                       st_val, def_val, experimental_fan_val);
     size_t offset = 0;
     while (len > 0 && offset < (size_t)len) {
         ssize_t written = write(fd, buf + offset, (size_t)len - offset);

@@ -7,7 +7,9 @@
 # are always applied via override so they cannot be accidentally dropped.
 
 CC       ?= gcc
-LDLIBS   += -lm -pthread
+DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1)
+DBUS_LIBS   := $(shell pkg-config --libs dbus-1)
+LDLIBS   += -lm -pthread $(DBUS_LIBS)
 
 # Default optimisation (overridable: `make CFLAGS="-O2 -g"`)
 CFLAGS   ?= -Os
@@ -15,7 +17,7 @@ CFLAGS   ?= -Os
 # Hardening — always present regardless of user overrides
 override CFLAGS  += -Wall -Wextra -Wshadow \
                     -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 \
-                    -fstack-protector-strong -fPIE -Wformat-security
+                    -fstack-protector-strong -fPIE -Wformat-security $(DBUS_CFLAGS)
 override LDFLAGS += -pie -Wl,-z,relro -Wl,-z,now
 
 # Release builds strip by default; pass STRIP=0 to keep debug symbols

@@ -317,7 +317,8 @@ static int set_gpu_profile(int profile)
  * - Both fans duty: tuxedo_io ioctl W_CL_FANSPEED (packed raw1 | raw2<<8)
  * - Individual fan duty: direct EC port I/O (cmd 0x99) — leaves the other
  *   fan on its automatic thermal curve without locking it
- * - Max & Silent modes: legacy direct EC port I/O (cmd 0x98 mode + cmd 0x99)
+ * - Max mode: tuxedo_io 100% duty, with legacy direct EC mode fallback
+ * - Silent mode: legacy direct EC port I/O (cmd 0x98 mode + cmd 0x99)
  * ======================================================================== */
 
 #define FAN_CPU 1
@@ -351,7 +352,7 @@ static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
     int32_t arg = (int32_t)raw_fan1 | ((int32_t)raw_fan2 << 8);
     int res = tuxedo_ioctl(W_CL_FANSPEED, &arg);
     if (res < 0) {
-        perror("Error: ioctl W_CL_FANSPEED failed");
+        perror("Error: tuxedo_io fan duty request failed");
         return -1;
     }
     return 0;
@@ -368,7 +369,7 @@ static int fan_auto_tuxedo(int32_t mask)
     int32_t arg = mask ? mask : 15;
     int res = tuxedo_ioctl(W_CL_FANAUTO, &arg);
     if (res < 0) {
-        perror("Error: ioctl W_CL_FANAUTO failed");
+        perror("Error: tuxedo_io fan auto request failed");
         return -1;
     }
     return 0;
@@ -380,15 +381,29 @@ static int fan_auto(int fan_idx)
     return fan_auto_tuxedo(mask);
 }
 
+static int legacy_fan_auto(int fan_idx);
+
 static int fan_auto_all(void)
 {
-    return fan_auto(0);
+    if (fan_auto(0) == 0)
+        return 0;
+
+    fprintf(stderr, "Warning: tuxedo_io fan auto failed; restoring fans through direct EC control\n");
+    if (legacy_fan_auto(FAN_CPU) < 0)
+        return -1;
+    return legacy_fan_auto(FAN_GPU);
 }
 
-/* --- Legacy direct EC implementations (Max & Silent) --- */
+/* --- Legacy direct EC implementations (fallback Max and Silent) --- */
 
 static int fan_max_all(void)
 {
+    /* tuxedo_io exposes a both-fan duty ioctl, but no distinct max-mode ioctl.
+     * Raw 255 is 100%; retain the EC max-mode sequence as the fallback. */
+    if (fan_set_speeds_tuxedo(FAN_MAX_RAW, FAN_MAX_RAW) == 0)
+        return 0;
+
+    fprintf(stderr, "Warning: tuxedo_io max duty failed; trying direct EC max mode\n");
     uint8_t mode = FAN_MODE_MAX;
     if (send_ec_cmd(EC_CMD_FAN_MODE, &mode, 1) < 0) return -1;
 

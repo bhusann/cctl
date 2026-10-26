@@ -556,6 +556,7 @@ static const struct command commands[] = {
     { "kbc",            0, cmd_kbc,             SEC_KEYBOARD,  "<R G B | preset>",                "Set keyboard color (no arg: list presets)", NULL },
     { "kbb",            0, cmd_kbb,             SEC_KEYBOARD,  "<pct>",                           "Set brightness (0-100%)", NULL },
     { "kbe",            0, cmd_kbe,             SEC_KEYBOARD,  "[effect|stop]",                   "Keyboard backlight effects (no arg: list preset & status)", NULL },
+    { "kbn",            0, cmd_kbn,             SEC_KEYBOARD,  "<effect> [colors] [n]",           "Play a temporary keyboard notification", NULL },
     { "fn",             1, cmd_fnlock,          SEC_KEYBOARD,  "[lock|unlock]",                   "Toggle/set Fn Lock", NULL },
 
     /* Fan */
@@ -584,7 +585,6 @@ static const struct command commands[] = {
     { "status",         1, cmd_status,          SEC_INFO,      "[--json]",                        "Show current settings", NULL },
     { "cpumon",         1, cmd_cpumon,          SEC_INFO,      "[--json] [--interval SEC] [--once]", "Live CPU, memory, power, and fan monitor", NULL },
     { "gpumon",         1, cmd_gpumon,          SEC_INFO,      "[--json]",                        "Live NVIDIA GPU monitor", NULL },
-    { "capabilities",   0, cmd_capabilities,    SEC_INFO,      "[--json]",                        "Show controls available on this system", NULL },
 
     /* NVIDIA */
 #ifdef CCTL_NVIDIA
@@ -633,7 +633,7 @@ static const struct section_def sections[] = {
     { SEC_NVIDIA,    "NVIDIA",                      PROF_COL_RED,     NULL },
     { SEC_DISPLAY,   "DISPLAY",                     PROF_COL_BLU,     "(X11 detected)" },
     { SEC_OVERRIDES, "PROFILE INDIVIDUAL OVERRIDES", PROF_COL_YLW,     NULL },
-    { SEC_EXPERIMENTAL, "EXPERIMENTAL",              PROF_COL_YLW,     "(Manual fan settings stay fixed and won't rise with heat or throttling; use auto for EC control)" },
+    { SEC_EXPERIMENTAL, "EXPERIMENTAL-FAN",          PROF_COL_YLW,     "(Manual fan settings stay fixed and won't rise with heat or throttling; experimental purpose only)" },
     { SEC_SYSTEM,    "SYSTEM",                      PROF_COL_CYN_BLD, NULL },
 };
 
@@ -656,6 +656,8 @@ static void print_help_command_indent(const struct command *cmd, int indent)
         target_col = 36;
     else if (strcmp(cmd->name, "fancurve") == 0)
         target_col = 36;
+    else if (strcmp(cmd->name, "kbn") == 0)
+        target_col = 38;
 
     int col = indent;
     printf("%*s%s%s%s", indent, "", C_BLD, cmd->name, C_RST);
@@ -717,9 +719,14 @@ static void print_usage(const char *prog)
 
     printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
 
+    struct cctl_settings help_settings;
+    (void)cctl_settings_read(&help_settings);
+
     for (size_t s = 0; s < sizeof(sections) / sizeof(sections[0]); s++) {
         const struct section_def *sec = &sections[s];
         if (sec->section == SEC_DISPLAY && !has_display_support())
+            continue;
+        if (sec->section == SEC_EXPERIMENTAL && !help_settings.experimental_fan_enabled)
             continue;
 
         if (sec->subtitle)
@@ -764,8 +771,7 @@ static void print_usage(const char *prog)
         printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
     }
 
-    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n", C_DIM, C_RST);
-    printf("  %ssnap del and fancurve del ask before deleting; append --noconfirm to skip.%s\n\n", C_DIM, C_RST);
+    printf("  %sAppend --dry-run to supported commands; snapshot restore can preview saved settings.%s\n\n", C_DIM, C_RST);
     printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
     g_stream_output = prev_stream;
 }
@@ -905,7 +911,8 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0) {
+    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0 ||
+        strcmp(argv[1], "-v") == 0) {
         printf("cctl %s\n", CCTL_VERSION);
         return 0;
     }

@@ -475,6 +475,8 @@ static int kbe_worker_begin(struct kbe_worker_ctx *ctx, const char *effect,
                             const char *resume_effect)
 {
     pin_to_e_cores();
+    ctx->fd_col = -1;
+    ctx->fd_bri = -1;
 
     ctx->lock_fd = kbe_acquire_worker_lock();
     if (ctx->lock_fd < 0) return -1;
@@ -499,6 +501,17 @@ static int kbe_worker_begin(struct kbe_worker_ctx *ctx, const char *effect,
     ctx->orig_bri = orig_bri;
     ctx->fd_col = open(KBD_PATH "/multi_intensity", O_WRONLY);
     ctx->fd_bri = open(KBD_PATH "/brightness", O_WRONLY);
+    if (ctx->fd_col < 0 || ctx->fd_bri < 0) {
+        if (ctx->fd_col >= 0) close(ctx->fd_col);
+        if (ctx->fd_bri >= 0) close(ctx->fd_bri);
+        ctx->fd_col = -1;
+        ctx->fd_bri = -1;
+        unlink(KBE_STATE_PATH);
+        flock(ctx->lock_fd, LOCK_UN);
+        close(ctx->lock_fd);
+        ctx->lock_fd = -1;
+        return -1;
+    }
     return 0;
 }
 
@@ -1129,4 +1142,155 @@ static void kbe_profile_pulse(const char *profile)
 
     kbe_profile_pulse_worker(pr, pg, pb, resume_effect, orig_r, orig_g, orig_b, orig_bri);
     exit(0);
+}
+
+static int kbn_parse_color(const char *text, int *r, int *g, int *b)
+{
+    if (!text || !r || !g || !b) return -1;
+    if (text[0] == '#' && strlen(text) == 7) {
+        for (size_t i = 1; i < 7; i++)
+            if (!isxdigit((unsigned char)text[i])) return -1;
+        char *end = NULL;
+        errno = 0;
+        unsigned long rgb = strtoul(text + 1, &end, 16);
+        if (errno || !end || *end) return -1;
+        *r = (int)((rgb >> 16) & 0xff);
+        *g = (int)((rgb >> 8) & 0xff);
+        *b = (int)(rgb & 0xff);
+        return 0;
+    }
+
+    char lower[64];
+    size_t i;
+    for (i = 0; i < sizeof(lower) - 1 && text[i]; i++)
+        lower[i] = (char)tolower((unsigned char)text[i]);
+    lower[i] = '\0';
+    for (const struct kbd_preset *p = kbd_presets; p->name; p++) {
+        if (strcmp(p->name, lower) == 0) {
+            *r = p->r;
+            *g = p->g;
+            *b = p->b;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void kbn_sleep_ms(int ms)
+{
+    while (ms > 0 && g_kbe_running) {
+        int chunk = ms > 25 ? 25 : ms;
+        usleep((useconds_t)chunk * 1000);
+        ms -= chunk;
+    }
+}
+
+static void kbn_flash_once(int fd, int r, int g, int b)
+{
+    for (int i = 0; i < 3 && g_kbe_running; i++) {
+        kbe_write_frame(fd, r, g, b);
+        kbn_sleep_ms(70);
+        if (!g_kbe_running) break;
+        kbe_write_frame(fd, 0, 0, 0);
+        if (i < 2) kbn_sleep_ms(70);
+    }
+}
+
+static void kbn_pulse_once(int fd, int r, int g, int b)
+{
+    for (size_t i = 0; i < sizeof(kbe_pulse_wave) && g_kbe_running; i++) {
+        int val = kbe_pulse_wave[i];
+        kbe_write_frame(fd, (r * val) / 255, (g * val) / 255,
+                        (b * val) / 255);
+        kbn_sleep_ms(22);
+    }
+}
+
+static void kbn_sos_once(int fd, int r, int g, int b)
+{
+    int step = 0;
+    for (int i = 0; i < 170 && g_kbe_running; i++)
+        kbe_sos_step(fd, r, g, b, &step);
+}
+
+static void kbn_police_once(int fd, int r, int g, int b,
+                            int alt_r, int alt_g, int alt_b)
+{
+    const int colors[2][3] = { { r, g, b }, { alt_r, alt_g, alt_b } };
+    for (int c = 0; c < 2 && g_kbe_running; c++) {
+        for (int flash = 0; flash < 2 && g_kbe_running; flash++) {
+            kbe_write_frame(fd, colors[c][0], colors[c][1], colors[c][2]);
+            kbn_sleep_ms(60);
+            if (!g_kbe_running) break;
+            kbe_write_frame(fd, 0, 0, 0);
+            kbn_sleep_ms(50);
+        }
+        if (c == 0) kbn_sleep_ms(70);
+    }
+}
+
+static int kbn_notify(const char *effect, int r, int g, int b,
+                      int alt_r, int alt_g, int alt_b, int times)
+{
+    if (access(KBD_PATH "/multi_intensity", F_OK) != 0 ||
+        access(KBD_PATH "/brightness", F_OK) != 0)
+        return fail("Keyboard backlight interface not found (is tuxedo_keyboard loaded?)");
+
+    struct kbe_state previous;
+    int had_effect = kbe_is_running(&previous);
+    char resume_effect[32] = {0};
+    if (had_effect) {
+        if (strcmp(previous.effect, "kbn-notification") == 0)
+            return fail("A keyboard notification is already running");
+        if (kbe_find_effect(previous.effect))
+            snprintf(resume_effect, sizeof(resume_effect), "%s", previous.effect);
+        if (kbe_stop(1) != 0)
+            return fail("Could not pause the active keyboard effect");
+    }
+
+    int orig_r = 255, orig_g = 255, orig_b = 255, orig_bri = 255;
+    if (kbd_get_color(&orig_r, &orig_g, &orig_b) < 0 ||
+        kbd_get_raw_brightness(&orig_bri) < 0) {
+        if (resume_effect[0])
+            (void)kbe_start_ext(resume_effect, NULL, 1);
+        return fail("Could not read the current keyboard state");
+    }
+
+    g_kbe_running = 1;
+    struct kbe_worker_ctx ctx = { .lock_fd = -1, .fd_col = -1, .fd_bri = -1 };
+    if (kbe_worker_begin(&ctx, "kbn-notification", orig_r, orig_g, orig_b,
+                         orig_bri, resume_effect) < 0) {
+        kbd_restore_state(orig_r, orig_g, orig_b, orig_bri);
+        if (resume_effect[0])
+            (void)kbe_start_ext(resume_effect, NULL, 1);
+        return fail("Could not take control of the keyboard backlight");
+    }
+
+    if (orig_bri <= 0)
+        kbe_write_bri(ctx.fd_bri, 255);
+    for (int i = 0; i < times && g_kbe_running; i++) {
+        if (strcmp(effect, "flash") == 0)
+            kbn_flash_once(ctx.fd_col, r, g, b);
+        else if (strcmp(effect, "pulse") == 0)
+            kbn_pulse_once(ctx.fd_col, r, g, b);
+        else if (strcmp(effect, "sos") == 0)
+            kbn_sos_once(ctx.fd_col, r, g, b);
+        else
+            kbn_police_once(ctx.fd_col, r, g, b, alt_r, alt_g, alt_b);
+        if (i + 1 < times &&
+            (strcmp(effect, "flash") == 0 || strcmp(effect, "pulse") == 0))
+            kbn_sleep_ms(750);
+    }
+
+    int completed = g_kbe_running;
+    kbe_worker_end(&ctx, 1);
+    if (resume_effect[0]) {
+        g_kbe_running = 1;
+        (void)kbe_start_ext(resume_effect, NULL, 1);
+    }
+    if (!completed)
+        return fail("Keyboard notification interrupted; previous keyboard state restored");
+    printf("Keyboard notification complete (%s, %d time%s).\n", effect,
+           times, times == 1 ? "" : "s");
+    return 0;
 }
