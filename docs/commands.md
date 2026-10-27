@@ -141,8 +141,8 @@ cctl bat standard               # Select Standard charge mode
 ### Info
 ```bash
 cctl status [--json]            # Print all current settings; --json emits a JSON object
-cctl cpumon [--json]            # Live CPU, RAM, temperature, power, and fan monitor; JSON streams one sample per line
-cctl gpumon [--json]            # Live NVIDIA GPU monitor; --json emits one sample per line
+cctl cpumon [--json] [--live]   # --json prints one sample; --live streams JSON (implies --json)
+cctl gpumon [--json] [--live]   # --json prints one sample; --live streams JSON (implies --json)
 cctl --version                  # Print version and exit (also -V, -v)
 ```
 
@@ -179,7 +179,7 @@ display settings. Fan settings are not saved or restored.
 
 ### NVIDIA GPU
 ```bash
-cctl gpumon [--json]                     # Live GPU telemetry and power state
+cctl gpumon [--json] [--live]            # GPU telemetry; --json prints once, --live streams JSON
 cctl nvidia clock [min] <max> | reset   # Lock/unlock GPU clocks (no arg shows max clock; min defaults to 0)
 cctl nvidia memclock [min] <max> | reset # Lock/unlock memory clocks (no arg shows max clock; min defaults to 0)
 ```
@@ -212,8 +212,8 @@ cctl rr 60 --2
 ### Profile Individual Overrides
 ```bash
 cctl turbo on|off [--nosafe]    # Turbo ON sets fans to auto only in EC code 2/3
-cctl gov powersave|performance  # CPU scaling governor
-cctl epp <preference>           # performance, balance_performance, balance_power, power
+cctl gov <governor>             # Available governors are read from the CPU driver
+cctl epp <preference>           # Available EPP choices are read from the CPU driver
 cctl rapl <pl1> <pl2>           # Set PL1/PL2 in watts (use 'skip' to omit one)
 ```
 >

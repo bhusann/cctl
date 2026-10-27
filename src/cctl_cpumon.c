@@ -2,7 +2,7 @@
  * cctl_cpumon.c - live terminal CPU monitor for `cctl cpumon`.
  *
  * Build:   make
- * Run:     cctl cpumon [--json] [--interval SEC] [--once]
+ * Run:     cctl cpumon [--json] [--live] [--interval SEC]
  *          Press q or Ctrl-C to quit the visual monitor.
  *
  * Needs a terminal of at least 118x36 with truecolor + UTF-8.
@@ -66,8 +66,6 @@ extern int cctl_live_ec_state(int *tcc_offset, int *prochot_c);
 #define MAX_CPU 128
 #define FAN_MAX_RPM 5800.0        /* scales fan spin speed */
 #define FRAME_SEC 0.05            /* 20 fps */
-#define EC_RAM_PATH "/sys/kernel/debug/ec/ec0/io"
-#define EC_FAN_RPM_DIVISOR 2156220
 #define R_HWCHECK_CL 0x8008EC05
 #define R_CL_FANINFO1 0x8008ED10
 #define R_CL_FANINFO2 0x8008ED11
@@ -126,7 +124,7 @@ typedef struct {
 } CpuSnapshot;
 
 typedef struct {
-    bool   once, json;
+    bool   live, json;
     double interval;
 } Config;
 
@@ -1209,41 +1207,115 @@ static void clean_cpu_name(char *s)
     size_t l = strlen(s); while (l && s[l - 1] == ' ') s[--l] = 0;
 }
 
+static bool sysfs_join(char *dst, size_t cap, const char *base, const char *leaf)
+{
+    size_t base_len = strlen(base), leaf_len = strlen(leaf);
+    if (base_len + (base_len > 0 && base[base_len - 1] != '/') + leaf_len + 1 > cap)
+        return false;
+    memmove(dst, base, base_len);
+    if (base_len > 0 && base[base_len - 1] != '/') dst[base_len++] = '/';
+    memcpy(dst + base_len, leaf, leaf_len + 1);
+    return true;
+}
+
 static void find_temp_sensor(void)
 {
-    for (int i = 0; i < 40 && !T.temp_path[0]; i++) {
-        char p[256], nm[64];
-        snprintf(p, sizeof p, "/sys/class/hwmon/hwmon%d/name", i);
-        if (!read_first_line(p, nm, sizeof nm)) continue;
-        bool intel = !strcmp(nm, "coretemp"), amd = !strcmp(nm, "k10temp") || !strcmp(nm, "zenpower");
-        if (!intel && !amd) continue;
-        int pick = 0;
-        for (int j = 1; j <= 16; j++) {
-            char lp[256], lb[64];
-            snprintf(lp, sizeof lp, "/sys/class/hwmon/hwmon%d/temp%d_label", i, j);
-            if (!read_first_line(lp, lb, sizeof lb)) continue;
-            if ((intel && !strcmp(lb, "Package id 0")) || (amd && (!strcmp(lb, "Tctl") || !strcmp(lb, "Tdie")))) { pick = j; if (intel || !strcmp(lb, "Tctl")) break; }
+    /* For CPU telemetry, prefer an identified package sensor. Only inspect
+     * coretemp/k10temp/zenpower; if labels are absent, use that CPU driver's
+     * first exposed input. The thermal-zone fallback is restricted to the
+     * explicitly named x86 package sensor. No match leaves temp_ok false so
+     * the monitor reports the temperature as unavailable. */
+    DIR *hwmon = opendir("/sys/class/hwmon");
+    if (hwmon) {
+        struct dirent *ent;
+        while (!T.temp_path[0] && (ent = readdir(hwmon)) != NULL) {
+            if (strncmp(ent->d_name, "hwmon", 5) != 0) continue;
+            char p[PATH_MAX], nm[64];
+            if (!sysfs_join(p, sizeof p, "/sys/class/hwmon", ent->d_name)) continue;
+            if (!sysfs_join(p, sizeof p, p, "name")) continue;
+            if (!read_first_line(p, nm, sizeof nm)) continue;
+            bool intel = !strcmp(nm, "coretemp");
+            bool amd = !strcmp(nm, "k10temp") || !strcmp(nm, "zenpower");
+            if (!intel && !amd) continue;
+
+            char dirpath[PATH_MAX];
+            if (!sysfs_join(dirpath, sizeof dirpath, "/sys/class/hwmon", ent->d_name)) continue;
+            DIR *sensors = opendir(dirpath);
+            if (!sensors) continue;
+            int pick = 0;
+            struct dirent *sensor;
+            while ((sensor = readdir(sensors)) != NULL) {
+                int index = 0;
+                char suffix = '\0';
+                if (sscanf(sensor->d_name, "temp%d_label%c", &index, &suffix) != 1 || index < 1)
+                    continue;
+                if (!sysfs_join(p, sizeof p, dirpath, sensor->d_name)) continue;
+                char label[64];
+                if (!read_first_line(p, label, sizeof label)) continue;
+                if ((intel && strcmp(label, "Package id 0") == 0) ||
+                    (amd && (strcmp(label, "Tctl") == 0 || strcmp(label, "Tdie") == 0))) {
+                    pick = index;
+                    if (intel || strcmp(label, "Tctl") == 0) break;
+                }
+            }
+            closedir(sensors);
+
+            if (!pick) {
+                sensors = opendir(dirpath);
+                if (!sensors) continue;
+                while ((sensor = readdir(sensors)) != NULL) {
+                    int index = 0;
+                    char suffix = '\0';
+                    if (sscanf(sensor->d_name, "temp%d_input%c", &index, &suffix) == 1 && index > 0) {
+                        pick = index;
+                        break;
+                    }
+                }
+                closedir(sensors);
+            }
+            if (!pick) continue;
+            char leaf[32];
+            snprintf(leaf, sizeof leaf, "temp%d_input", pick);
+            sysfs_join(T.temp_path, sizeof T.temp_path, dirpath, leaf);
+            snprintf(leaf, sizeof leaf, "temp%d_crit", pick);
+            sysfs_join(T.crit_path, sizeof T.crit_path, dirpath, leaf);
         }
-        if (!pick) pick = 1;
-        snprintf(T.temp_path, sizeof T.temp_path, "/sys/class/hwmon/hwmon%d/temp%d_input", i, pick);
-        snprintf(T.crit_path, sizeof T.crit_path, "/sys/class/hwmon/hwmon%d/temp%d_crit", i, pick);
+        closedir(hwmon);
     }
-    for (int i = 0; i < 40 && !T.temp_path[0]; i++) {          /* fallback: thermal zone */
-        char p[256], ty[64];
-        snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", i);
-        if (!read_first_line(p, ty, sizeof ty)) continue;
-        if (!strcmp(ty, "x86_pkg_temp")) snprintf(T.temp_path, sizeof T.temp_path, "/sys/class/thermal/thermal_zone%d/temp", i);
+    if (!T.temp_path[0]) {
+        DIR *zones = opendir("/sys/class/thermal");
+        if (zones) {
+            struct dirent *ent;
+            while (!T.temp_path[0] && (ent = readdir(zones)) != NULL) {
+                if (strncmp(ent->d_name, "thermal_zone", 12) != 0) continue;
+                char p[PATH_MAX], type[64];
+                if (!sysfs_join(p, sizeof p, "/sys/class/thermal", ent->d_name)) continue;
+                if (!sysfs_join(p, sizeof p, p, "type")) continue;
+                if (!read_first_line(p, type, sizeof type) || strcmp(type, "x86_pkg_temp") != 0)
+                    continue;
+                if (!sysfs_join(T.temp_path, sizeof T.temp_path,
+                                "/sys/class/thermal", ent->d_name)) continue;
+                sysfs_join(T.temp_path, sizeof T.temp_path, T.temp_path, "temp");
+            }
+            closedir(zones);
+        }
     }
 }
 
 static void find_rapl(void)
 {
-    for (int i = 0; i < 4 && !T.rapl[0]; i++) {
-        char p[256], nm[64];
-        snprintf(p, sizeof p, "/sys/class/powercap/intel-rapl:%d/name", i);
-        if (read_first_line(p, nm, sizeof nm) && !strncmp(nm, "package", 7))
-            snprintf(T.rapl, sizeof T.rapl, "/sys/class/powercap/intel-rapl:%d", i);
+    DIR *powercap = opendir("/sys/class/powercap");
+    if (!powercap) return;
+    struct dirent *ent;
+    while (!T.rapl[0] && (ent = readdir(powercap)) != NULL) {
+        if (strncmp(ent->d_name, "intel-rapl:", 11) != 0) continue;
+        char p[PATH_MAX], name[64];
+        if (!sysfs_join(p, sizeof p, "/sys/class/powercap", ent->d_name)) continue;
+        if (!sysfs_join(p, sizeof p, p, "name")) continue;
+        if (read_first_line(p, name, sizeof name) && !strncmp(name, "package", 7))
+            sysfs_join(T.rapl, sizeof T.rapl, "/sys/class/powercap", ent->d_name);
     }
+    closedir(powercap);
 }
 
 static void topology_init(void)
@@ -1266,6 +1338,10 @@ static void topology_init(void)
     clean_cpu_name(T.name);
 
     long nconf = sysconf(_SC_NPROCESSORS_CONF);
+    if (nconf > MAX_CPU)
+        fprintf(stderr,
+                "Warning: CPU monitor supports %d logical CPUs; system reports %ld, so per-CPU readings will be limited.\n",
+                MAX_CPU, nconf);
     T.ncpu = (int)(nconf < 1 ? 1 : (nconf > MAX_CPU ? MAX_CPU : nconf));
 
     bool pm[MAX_CPU] = {0}, em[MAX_CPU] = {0};
@@ -1326,25 +1402,6 @@ static bool read_proc_stat(CpuSnapshot *s)
     return true;
 }
 
-static int ensure_ec_sys(void)
-{
-    if (access(EC_RAM_PATH, F_OK) == 0) return 0;
-    if (geteuid() != 0) return -1;
-    static int attempted;
-    if (attempted) return -1;
-    attempted = 1;
-    pid_t child = fork();
-    if (child == 0) {
-        execlp("modprobe", "modprobe", "ec_sys", (char *)NULL);
-        _exit(127);
-    }
-    if (child < 0) return -1;
-    int status;
-    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
-    usleep(200000);
-    return access(EC_RAM_PATH, F_OK) == 0 ? 0 : -1;
-}
-
 /* Duty comes from tuxedo_io; RPM comes from EC RAM, matching cctl monitor. */
 static bool read_cpu_fan(double *duty_pct, double *rpm)
 {
@@ -1361,8 +1418,8 @@ static bool read_cpu_fan(double *duty_pct, double *rpm)
         close(fd);
     }
 
-    (void)ensure_ec_sys();
-    int ec_fd = open(EC_RAM_PATH, O_RDONLY);
+    (void)cctl_ensure_ec_sys();
+    int ec_fd = open(CCTL_EC_RAM_PATH, O_RDONLY);
     if (ec_fd < 0) return got_duty;
     unsigned char ram[256] = {0};
     ssize_t n = read(ec_fd, ram, sizeof ram);
@@ -1375,7 +1432,7 @@ static bool read_cpu_fan(double *duty_pct, double *rpm)
         *duty_pct = (cpu_raw * 100) / 255.0;
     }
     unsigned int raw = ((unsigned int)ram[0xD0] << 8) | ram[0xD1];
-    *rpm = raw ? (double)EC_FAN_RPM_DIVISOR / raw : 0;
+    *rpm = raw ? (double)CCTL_EC_FAN_RPM_DIVISOR / raw : 0;
     return true;
 }
 
@@ -1553,10 +1610,10 @@ static void handle_keys(void)
 
 static void usage(void)
 {
-    printf("Usage: cctl cpumon [--json] [--interval SEC] [--once]\n"
-           "  --json          Stream live readings as newline-delimited JSON\n"
+    printf("Usage: cctl cpumon [--json] [--live] [--interval SEC]\n"
+           "  --json          Print one reading as a JSON object\n"
+           "  --live          Stream JSON readings continuously (implies --json)\n"
            "  --interval SEC  Set live polling interval (default 0.5 seconds)\n"
-           "  --once          Show one live frame and exit\n"
            "  -h, --help      Show this help\n"
            "Press q to quit, t to toggle cores/threads.\n");
 }
@@ -1605,9 +1662,10 @@ static void print_json_snapshot(const CpuSnapshot *s)
 int cctl_cpumon(int argc, char **argv)
 {
     for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "--once")) {
-            g_cfg.once = true;
-        } else if (!strcmp(argv[i], "--json")) {
+        if (!strcmp(argv[i], "--json")) {
+            g_cfg.json = true;
+        } else if (!strcmp(argv[i], "--live")) {
+            g_cfg.live = true;
             g_cfg.json = true;
         } else if (!strcmp(argv[i], "--interval") && i + 1 < argc) {
             char *end = NULL;
@@ -1625,27 +1683,13 @@ int cctl_cpumon(int argc, char **argv)
             return 2;
         }
     }
-
-    static char out[1 << 19];
-    Buf b = { out, 0, sizeof out };
-    static Ui ui;
-    memset(&ui, 0, sizeof ui);
-    g_t0 = now_s();
-
-    if (g_cfg.once) {
-        static CpuSnapshot s;
+    if (g_cfg.json && !g_cfg.live) {
+        CpuSnapshot s;
         init_snapshot(&s);
         live_poll(&s);
-        sleep_s(0.4);
+        sleep_s(g_cfg.interval);
         live_poll(&s);
-        for (int k = 0; k < 40; k++) ui_update(&ui, &s, 0.25);       /* jump straight to steady state */
-        if (g_cfg.json) {
-            print_json_snapshot(&s);
-        } else {
-            render(&s, &ui, 0);
-            emit_frame(&b, 0, 0, false);
-            write_all(b.p, b.n);
-        }
+        print_json_snapshot(&s);
         return 0;
     }
 
@@ -1669,6 +1713,12 @@ int cctl_cpumon(int argc, char **argv)
         pthread_join(th, NULL);
         return 0;
     }
+
+    static char out[1 << 19];
+    Buf b = { out, 0, sizeof out };
+    static Ui ui;
+    memset(&ui, 0, sizeof ui);
+    g_t0 = now_s();
 
     term_enter();
     double last = now_s();

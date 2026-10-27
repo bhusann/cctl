@@ -296,11 +296,11 @@ static int cctl_snapshot_list(void)
     if (count > 1)
         qsort(names, count, sizeof(*names), cctl_snapshot_compare_names);
 
-    printf("Saved snapshots: ");
-    if (count == 0) printf("none");
+    cctl_stream_printf("Saved snapshots: ");
+    if (count == 0) cctl_stream_printf("none");
     for (size_t i = 0; i < count; i++)
-        printf("%s%s", i == 0 ? "" : ", ", names[i]);
-    putchar('\n');
+        cctl_stream_printf("%s%s", i == 0 ? "" : ", ", names[i]);
+    cctl_stream_putchar('\n');
     for (size_t i = 0; i < count; i++) free(names[i]);
     free(names);
     return 0;
@@ -383,16 +383,16 @@ static void cctl_snapshot_read_current(struct cctl_snapshot_data *st)
 
 static int cctl_snapshot_write_int(FILE *fp, const char *key, int value)
 {
-    if (value < 0) return fprintf(fp, "%s=skip\n", key) < 0 ? -1 : 0;
-    return fprintf(fp, "%s=%d\n", key, value) < 0 ? -1 : 0;
+    if (value < 0) return cctl_stream_fprintf(fp, "%s=skip\n", key) < 0 ? -1 : 0;
+    return cctl_stream_fprintf(fp, "%s=%d\n", key, value) < 0 ? -1 : 0;
 }
 
 static int cctl_snapshot_write_clock(FILE *fp, const char *key, int known, int is_set,
                                   int min, int max)
 {
-    if (known < 0) return fprintf(fp, "%s=skip\n", key) < 0 ? -1 : 0;
-    if (!is_set) return fprintf(fp, "%s=none\n", key) < 0 ? -1 : 0;
-    return fprintf(fp, "%s=%d,%d\n", key, min, max) < 0 ? -1 : 0;
+    if (known < 0) return cctl_stream_fprintf(fp, "%s=skip\n", key) < 0 ? -1 : 0;
+    if (!is_set) return cctl_stream_fprintf(fp, "%s=none\n", key) < 0 ? -1 : 0;
+    return cctl_stream_fprintf(fp, "%s=%d,%d\n", key, min, max) < 0 ? -1 : 0;
 }
 
 static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot_data *st)
@@ -412,7 +412,7 @@ static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot
         int e = errno; close(fd); unlink(temp_path); errno = e; return -1;
     }
 
-    int failed = fprintf(fp, "# cctl saved snapshot format 2\nversion=2\n") < 0;
+    int failed = cctl_stream_fprintf(fp, "# cctl saved snapshot format 2\nversion=2\n") < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "ec_profile_code", st->ec_profile_code) < 0;
     if (!failed) failed = cctl_snapshot_write_clock(fp, "nvidia_clock", st->core_clock_known,
                                                   st->core_clock_set, st->core_clock_min,
@@ -421,24 +421,24 @@ static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot
                                                   st->mem_clock_set, st->mem_clock_min,
                                                   st->mem_clock_max) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "turbo", st->turbo) < 0;
-    if (!failed) failed = fprintf(fp, "governor=%s\nepp=%s\n", st->governor, st->epp) < 0;
+    if (!failed) failed = cctl_stream_fprintf(fp, "governor=%s\nepp=%s\n", st->governor, st->epp) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "pl1_watts", st->pl1) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "pl2_watts", st->pl2) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "keyboard_r", st->kbd_r) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "keyboard_g", st->kbd_g) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "keyboard_b", st->kbd_b) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "keyboard_brightness_raw", st->kbd_brightness) < 0;
-    if (!failed) failed = fprintf(fp, "keyboard_effect=%s\n", st->kbd_effect) < 0;
+    if (!failed) failed = cctl_stream_fprintf(fp, "keyboard_effect=%s\n", st->kbd_effect) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "fn_lock", st->fn_lock) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "webcam", st->webcam) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "microphone", st->microphone) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "battery_start", st->battery_start) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "battery_stop", st->battery_stop) < 0;
-    if (!failed) failed = fprintf(fp, "display_rate=%s\n", st->display_rate) < 0;
+    if (!failed) failed = cctl_stream_fprintf(fp, "display_rate=%s\n", st->display_rate) < 0;
     if (!failed) {
         const char *scale = st->display_scale_known < 0 ? "skip" :
                             st->display_scale_set ? st->display_scale : "none";
-        failed = fprintf(fp, "display_scale=%s\n", scale) < 0;
+        failed = cctl_stream_fprintf(fp, "display_scale=%s\n", scale) < 0;
     }
 
     if (!failed && fflush(fp) != 0) failed = 1;
@@ -624,17 +624,17 @@ static void cctl_snapshot_preview_restore(const char *name,
                                           int nosafe)
 {
     char value[96];
-    printf("Dry run: snapshot '%s' would restore these settings; nothing was changed.\n",
+    cctl_stream_printf("Dry run: snapshot '%s' would restore these settings; nothing was changed.\n",
            name);
 #define SNAPSHOT_PREVIEW(label, expression) do { \
     snprintf(value, sizeof(value), "%s", (expression)); \
-    printf("  %-22s %s\n", label, value); \
+    cctl_stream_printf("  %-22s %s\n", label, value); \
 } while (0)
 
     if (st->ec_profile_code >= 0) {
         snprintf(value, sizeof(value), "%s (%d)", gpu_profile_name(st->ec_profile_code),
                  st->ec_profile_code);
-        printf("  %-22s %s\n", "EC profile code", value);
+        cctl_stream_printf("  %-22s %s\n", "EC profile code", value);
     } else SNAPSHOT_PREVIEW("EC profile code", "skip (not saved)");
     if (st->turbo >= 0) SNAPSHOT_PREVIEW("Turbo", st->turbo ? "on" : "off");
     else SNAPSHOT_PREVIEW("Turbo", "skip (not saved)");
@@ -648,7 +648,7 @@ static void cctl_snapshot_preview_restore(const char *name,
             snprintf(value, sizeof(value), "%dW (skipped: requires EC profile code 2)", st->pl1);
         else
             snprintf(value, sizeof(value), "%dW", st->pl1);
-        printf("  %-22s %s\n", "PL1", value);
+        cctl_stream_printf("  %-22s %s\n", "PL1", value);
     } else SNAPSHOT_PREVIEW("PL1", "skip (not saved)");
     if (st->pl2 >= 0) {
         int eff_p1 = (st->pl1 >= 0 && !(st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2))
@@ -658,27 +658,27 @@ static void cctl_snapshot_preview_restore(const char *name,
                      st->pl1 < 0 ? "current" : "effective", eff_p1);
         else
             snprintf(value, sizeof(value), "%dW", st->pl2);
-        printf("  %-22s %s\n", "PL2", value);
+        cctl_stream_printf("  %-22s %s\n", "PL2", value);
     } else SNAPSHOT_PREVIEW("PL2", "skip (not saved)");
 
     if (st->core_clock_known < 0) SNAPSHOT_PREVIEW("NVIDIA core clock", "skip (not saved)");
     else if (st->core_clock_set) {
         snprintf(value, sizeof(value), "%d-%d MHz", st->core_clock_min, st->core_clock_max);
-        printf("  %-22s %s\n", "NVIDIA core clock", value);
+        cctl_stream_printf("  %-22s %s\n", "NVIDIA core clock", value);
     } else SNAPSHOT_PREVIEW("NVIDIA core clock", "reset/unlocked");
     if (st->mem_clock_known < 0) SNAPSHOT_PREVIEW("NVIDIA memory clock", "skip (not saved)");
     else if (st->mem_clock_set) {
         snprintf(value, sizeof(value), "%d-%d MHz", st->mem_clock_min, st->mem_clock_max);
-        printf("  %-22s %s\n", "NVIDIA memory clock", value);
+        cctl_stream_printf("  %-22s %s\n", "NVIDIA memory clock", value);
     } else SNAPSHOT_PREVIEW("NVIDIA memory clock", "reset/unlocked");
 
     if (st->kbd_r >= 0 && st->kbd_g >= 0 && st->kbd_b >= 0) {
         snprintf(value, sizeof(value), "RGB(%d, %d, %d)", st->kbd_r, st->kbd_g, st->kbd_b);
-        printf("  %-22s %s\n", "Keyboard color", value);
+        cctl_stream_printf("  %-22s %s\n", "Keyboard color", value);
     } else SNAPSHOT_PREVIEW("Keyboard color", "skip (not saved)");
     if (st->kbd_brightness >= 0) {
         snprintf(value, sizeof(value), "%d%%", (st->kbd_brightness * 100 + 127) / 255);
-        printf("  %-22s %s\n", "Keyboard brightness", value);
+        cctl_stream_printf("  %-22s %s\n", "Keyboard brightness", value);
     } else SNAPSHOT_PREVIEW("Keyboard brightness", "skip (not saved)");
     SNAPSHOT_PREVIEW("Keyboard effect", strcmp(st->kbd_effect, "skip") == 0 ? "skip (not saved)" : st->kbd_effect);
     if (st->fn_lock >= 0) SNAPSHOT_PREVIEW("Fn Lock", st->fn_lock ? "on" : "off");
@@ -700,7 +700,7 @@ static void cctl_snapshot_preview_restore(const char *name,
             snprintf(stop, sizeof(stop), "%d%%", current_stop);
         else
             snprintf(stop, sizeof(stop), "unavailable");
-        printf("  %-22s start %s, stop %s\n", "Battery thresholds", start, stop);
+        cctl_stream_printf("  %-22s start %s, stop %s\n", "Battery thresholds", start, stop);
     } else SNAPSHOT_PREVIEW("Battery thresholds", "skip (not saved)");
     SNAPSHOT_PREVIEW("Refresh rate", strcmp(st->display_rate, "skip") == 0 ? "skip (not saved)" : st->display_rate);
     if (st->display_scale_known < 0) SNAPSHOT_PREVIEW("Display scale", "skip (not saved)");
@@ -712,15 +712,15 @@ static void cctl_snapshot_preview_restore(const char *name,
     if (!nosafe && needs_fan_auto && curve_active) {
         char curve_label[160];
         fc_active_label(&curve_st, curve_label, sizeof(curve_label));
-        printf("Fan safety: skipped; %s keeps control of the fans.\n", curve_label);
+        cctl_stream_printf("Fan safety: skipped; %s keeps control of the fans.\n", curve_label);
     } else if (!nosafe && needs_fan_auto) {
-        puts("Fan safety: fans would be set to AUTO (use --mask nosafe to bypass).");
+        cctl_stream_puts("Fan safety: fans would be set to AUTO (use --mask nosafe to bypass).");
     } else if (nosafe && needs_fan_auto) {
-        puts("Fan safety: automatic fan change bypassed (--mask nosafe).");
+        cctl_stream_puts("Fan safety: automatic fan change bypassed (--mask nosafe).");
     } else {
-        puts("Fan safety: no automatic fan change for these targets.");
+        cctl_stream_puts("Fan safety: no automatic fan change for these targets.");
     }
-    puts("Fan settings are not saved in snapshots.");
+    cctl_stream_puts("Fan settings are not saved in snapshots.");
 }
 
 static const char *cctl_snapshot_value(int value, char *buf, size_t size)
@@ -736,40 +736,40 @@ static void cctl_snapshot_view(const char *name, const struct cctl_snapshot_data
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
     char buf[64];
-    printf("Snapshot '%s':\n", name);
+    cctl_stream_printf("Snapshot '%s':\n", name);
     if (st->ec_profile_code < 0)
-        printf("  EC profile code: --\n");
+        cctl_stream_printf("  EC profile code: --\n");
     else
-        printf("  EC profile code: %s (%d)\n", gpu_profile_name(st->ec_profile_code), st->ec_profile_code);
-    if (st->core_clock_known < 0) printf("  NVIDIA core clock: --\n");
-    else if (!st->core_clock_set) printf("  NVIDIA core clock: reset/unlocked\n");
-    else printf("  NVIDIA core clock: %d–%d MHz\n", st->core_clock_min, st->core_clock_max);
-    if (st->mem_clock_known < 0) printf("  NVIDIA memory clock: --\n");
-    else if (!st->mem_clock_set) printf("  NVIDIA memory clock: reset/unlocked\n");
-    else printf("  NVIDIA memory clock: %d–%d MHz\n", st->mem_clock_min, st->mem_clock_max);
-    printf("  Turbo: %s\n", st->turbo < 0 ? "--" : (st->turbo ? "ON" : "OFF"));
-    printf("  Governor: %s\n", strcmp(st->governor, "skip") == 0 ? "--" : st->governor);
-    printf("  EPP: %s\n", strcmp(st->epp, "skip") == 0 ? "--" : st->epp);
-    if (st->pl1 < 0) printf("  PL1: --\n");
-    else printf("  PL1: %dW\n", st->pl1);
-    if (st->pl2 < 0) printf("  PL2: --\n");
-    else printf("  PL2: %dW\n", st->pl2);
-    if (st->kbd_r < 0) printf("  Keyboard color: --\n");
-    else printf("  Keyboard color: RGB(%d, %d, %d)\n", st->kbd_r, st->kbd_g, st->kbd_b);
-    if (st->kbd_brightness < 0) printf("  Keyboard brightness: --\n");
-    else printf("  Keyboard brightness: %d%%\n", (st->kbd_brightness * 100 + 127) / 255);
-    printf("  Keyboard effect: %s\n", strcmp(st->kbd_effect, "skip") == 0 ? "--" : st->kbd_effect);
-    printf("  Fn Lock: %s\n", st->fn_lock < 0 ? "--" : (st->fn_lock ? "ON" : "OFF"));
-    printf("  Webcam: %s\n", st->webcam < 0 ? "--" : (st->webcam ? "ON" : "OFF"));
-    printf("  Microphone: %s\n", st->microphone < 0 ? "--" : (st->microphone ? "ON" : "OFF"));
-    printf("  Battery thresholds: %s%% → %s%%\n",
+        cctl_stream_printf("  EC profile code: %s (%d)\n", gpu_profile_name(st->ec_profile_code), st->ec_profile_code);
+    if (st->core_clock_known < 0) cctl_stream_printf("  NVIDIA core clock: --\n");
+    else if (!st->core_clock_set) cctl_stream_printf("  NVIDIA core clock: reset/unlocked\n");
+    else cctl_stream_printf("  NVIDIA core clock: %d–%d MHz\n", st->core_clock_min, st->core_clock_max);
+    if (st->mem_clock_known < 0) cctl_stream_printf("  NVIDIA memory clock: --\n");
+    else if (!st->mem_clock_set) cctl_stream_printf("  NVIDIA memory clock: reset/unlocked\n");
+    else cctl_stream_printf("  NVIDIA memory clock: %d–%d MHz\n", st->mem_clock_min, st->mem_clock_max);
+    cctl_stream_printf("  Turbo: %s\n", st->turbo < 0 ? "--" : (st->turbo ? "ON" : "OFF"));
+    cctl_stream_printf("  Governor: %s\n", strcmp(st->governor, "skip") == 0 ? "--" : st->governor);
+    cctl_stream_printf("  EPP: %s\n", strcmp(st->epp, "skip") == 0 ? "--" : st->epp);
+    if (st->pl1 < 0) cctl_stream_printf("  PL1: --\n");
+    else cctl_stream_printf("  PL1: %dW\n", st->pl1);
+    if (st->pl2 < 0) cctl_stream_printf("  PL2: --\n");
+    else cctl_stream_printf("  PL2: %dW\n", st->pl2);
+    if (st->kbd_r < 0) cctl_stream_printf("  Keyboard color: --\n");
+    else cctl_stream_printf("  Keyboard color: RGB(%d, %d, %d)\n", st->kbd_r, st->kbd_g, st->kbd_b);
+    if (st->kbd_brightness < 0) cctl_stream_printf("  Keyboard brightness: --\n");
+    else cctl_stream_printf("  Keyboard brightness: %d%%\n", (st->kbd_brightness * 100 + 127) / 255);
+    cctl_stream_printf("  Keyboard effect: %s\n", strcmp(st->kbd_effect, "skip") == 0 ? "--" : st->kbd_effect);
+    cctl_stream_printf("  Fn Lock: %s\n", st->fn_lock < 0 ? "--" : (st->fn_lock ? "ON" : "OFF"));
+    cctl_stream_printf("  Webcam: %s\n", st->webcam < 0 ? "--" : (st->webcam ? "ON" : "OFF"));
+    cctl_stream_printf("  Microphone: %s\n", st->microphone < 0 ? "--" : (st->microphone ? "ON" : "OFF"));
+    cctl_stream_printf("  Battery thresholds: %s%% → %s%%\n",
            cctl_snapshot_value(st->battery_start, buf, sizeof(buf)),
            cctl_snapshot_value(st->battery_stop, buf + 32, sizeof(buf) - 32));
-    printf("  Refresh rate: %s%s\n", strcmp(st->display_rate, "skip") == 0 ? "--" : st->display_rate,
+    cctl_stream_printf("  Refresh rate: %s%s\n", strcmp(st->display_rate, "skip") == 0 ? "--" : st->display_rate,
            strcmp(st->display_rate, "skip") == 0 ? "" : "Hz");
-    if (st->display_scale_known < 0) printf("  Display scale: --\n");
-    else if (st->display_scale_set) printf("  Display scale: %s\n", st->display_scale);
-    else printf("  Display scale: native (1x1)\n");
+    if (st->display_scale_known < 0) cctl_stream_printf("  Display scale: --\n");
+    else if (st->display_scale_set) cctl_stream_printf("  Display scale: %s\n", st->display_scale);
+    else cctl_stream_printf("  Display scale: native (1x1)\n");
     g_stream_mode = prev;
 }
 
@@ -780,20 +780,20 @@ static int cctl_snapshot_save(const char *name, unsigned long long mask)
     if (found < 0)
         return fail("Cannot inspect existing snapshot '%s'", name);
     if (found) {
-        fprintf(stderr, "Warning: snapshot '%s' already exists. Replace it? [y/N] ", name);
+        cctl_stream_fprintf(stderr, "Warning: snapshot '%s' already exists. Replace it? [y/N] ", name);
         fflush(stderr);
         if (!isatty(STDIN_FILENO)) {
-            fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm replacement.\n");
+            cctl_stream_fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm replacement.\n");
             return 1;
         }
         char answer[32];
         if (!fgets(answer, sizeof(answer), stdin)) {
-            puts("Cancelled; the existing snapshot was kept.");
+            cctl_stream_puts("Cancelled; the existing snapshot was kept.");
             return 1;
         }
         answer[strcspn(answer, "\r\n")] = '\0';
         if (strcasecmp(answer, "y") != 0 && strcasecmp(answer, "yes") != 0) {
-            puts("Cancelled; the existing snapshot was kept.");
+            cctl_stream_puts("Cancelled; the existing snapshot was kept.");
             return 1;
         }
     }
@@ -802,7 +802,7 @@ static int cctl_snapshot_save(const char *name, unsigned long long mask)
     cctl_snapshot_read_current(&st);
     cctl_snapshot_apply_mask(&st, mask);
     if (cctl_snapshot_write_file(name, &st) != 0) {
-        perror("Error: could not save snapshot");
+        cctl_stream_perror("Error: could not save snapshot");
         return 1;
     }
     stream_printf(STREAM_DELAY_US, "Saved snapshot '%s' to %s/%s.conf\n", name,
@@ -822,7 +822,7 @@ static int cctl_snapshot_delete(const char *name, int noconfirm)
     if (!noconfirm && !cctl_confirm_delete("snapshot", name))
         return 1;
     if (unlink(path) != 0) {
-        perror("Error: could not delete snapshot");
+        cctl_stream_perror("Error: could not delete snapshot");
         return 1;
     }
     stream_printf(STREAM_DELAY_US, "Deleted snapshot '%s'.\n", name);
@@ -831,7 +831,7 @@ static int cctl_snapshot_delete(const char *name, int noconfirm)
 
 static void cctl_snapshot_divider(void)
 {
-    printf("%s---\n%s", C_DIM, C_RST);
+    cctl_stream_printf("%s---\n%s", C_DIM, C_RST);
 }
 
 static const char *snapshot_unchanged_tag(void)
@@ -842,7 +842,7 @@ static const char *snapshot_unchanged_tag(void)
 static int cctl_snapshot_apply_step(const char *name, int rc, int *errors)
 {
     if (rc != 0) {
-        fprintf(stderr, "  %sFailed to restore %s; continuing.%s\n", C_RED, name, C_RST);
+        cctl_stream_fprintf(stderr, "  %sFailed to restore %s; continuing.%s\n", C_RED, name, C_RST);
         (*errors)++;
         return -1;
     }
@@ -857,20 +857,20 @@ static void cctl_snapshot_apply_fan_safety(const char *target, int nosafe,
     if (*fans_auto_applied || *fan_safety_bypassed)
         return;
     if (nosafe) {
-        printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
         *fan_safety_bypassed = 1;
         return;
     }
 
     struct fancurve_state curve_st;
     if (fc_is_running(&curve_st)) {
-        printf("  Fan curve '%s' active; keeping curve control.\n",
+        cctl_stream_printf("  Fan curve '%s' active; keeping curve control.\n",
                curve_st.name);
         *fan_safety_bypassed = 1;
         return;
     }
 
-    printf("  Setting fans to AUTO for %s...\n", target);
+    cctl_stream_printf("  Setting fans to AUTO for %s...\n", target);
     if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), errors) == 0)
         *fans_auto_applied = 1;
 }
@@ -884,7 +884,7 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     int errors = 0;
     int fans_auto_applied = 0;
     int fan_safety_bypassed = 0;
-    printf("Restoring snapshot '%s' one setting at a time...\n", name);
+    cctl_stream_printf("Restoring snapshot '%s' one setting at a time...\n", name);
 
     /* 1. EC profile code: apply the saved code when present. */
     cctl_snapshot_divider();
@@ -897,7 +897,7 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
                                            &fan_safety_bypassed, &errors);
         }
     } else {
-        printf("  %sSkipping EC profile code (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping EC profile code (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 2. Turbo: query live state; skip if already matching */
@@ -915,12 +915,12 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         long cur_turbo_raw = read_sysfs_long(TURBO_PATH, -1);
         int cur_turbo = (cur_turbo_raw == 0) ? 1 : ((cur_turbo_raw == 1) ? 0 : -1);
         if (cur_turbo >= 0 && cur_turbo == st->turbo) {
-            printf("  Turbo boost: %s%s\n", st->turbo ? "ON" : "OFF", snapshot_unchanged_tag());
+            cctl_stream_printf("  Turbo boost: %s%s\n", st->turbo ? "ON" : "OFF", snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("turbo", set_turbo(st->turbo), &errors);
         }
     } else {
-        printf("  %sSkipping turbo (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping turbo (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 3. Governor & 4. EPP: query live state; skip if already matching */
@@ -930,12 +930,12 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     cctl_snapshot_divider();
     if (strcmp(st->governor, "skip") != 0) {
         if (cpu_profile.have_governor && strcmp(cpu_profile.governor, st->governor) == 0) {
-            printf("  Governor: %s%s\n", st->governor, snapshot_unchanged_tag());
+            cctl_stream_printf("  Governor: %s%s\n", st->governor, snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("governor", set_governor(st->governor), &errors);
         }
     } else {
-        printf("  %sSkipping governor (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping governor (not saved).%s\n", C_DIM, C_RST);
     }
 
     cctl_snapshot_divider();
@@ -945,7 +945,7 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
             if (read_sysfs_str(CPU_GOVERNOR_PATH, cur_gov, sizeof(cur_gov)) >= 0 &&
                 strcmp(cur_gov, "performance") == 0 &&
                 strcmp(st->epp, "performance") != 0) {
-                printf("  %sNote:%s Governor is in %sperformance%s mode (EPP is locked).\n"
+                cctl_stream_printf("  %sNote:%s Governor is in %sperformance%s mode (EPP is locked).\n"
                        "        Changing governor to %spowersave%s to apply saved EPP '%s'.\n"
                        "        (Use '--mask epp' if you do not want governor to change).\n",
                        C_YLW, C_RST, C_CYN, C_RST, C_CYN, C_RST, st->epp);
@@ -954,12 +954,12 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
             }
         }
         if (cpu_profile.have_epp && strcmp(cpu_profile.epp, st->epp) == 0) {
-            printf("  EPP: %s%s\n", st->epp, snapshot_unchanged_tag());
+            cctl_stream_printf("  EPP: %s%s\n", st->epp, snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("EPP", set_epp(st->epp), &errors);
         }
     } else {
-        printf("  %sSkipping EPP (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping EPP (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 5. RAPL: query live state after EC profile set; skip if already matching */
@@ -975,11 +975,11 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     int pl1_rejected = 0;
     if (st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2) {
         if (st->pl2 >= 0) {
-            printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
+            cctl_stream_printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
                    "        Skipping PL1 and restoring PL2 (%dW) alone.\n",
                    C_YLW, C_RST, st->pl1, st->pl2);
         } else {
-            printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
+            cctl_stream_printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
                    "        Skipping PL1.\n",
                    C_YLW, C_RST, st->pl1);
         }
@@ -990,7 +990,7 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     int pl2_rejected = 0;
     int eff_pl1 = (st->pl1 >= 0 && !pl1_rejected) ? st->pl1 : cur_pl1;
     if (st->pl2 >= 0 && eff_pl1 > 0 && st->pl2 <= eff_pl1) {
-        printf("  %sNote:%s Saved PL2 (%dW) must be greater than %s PL1 (%dW). Skipping PL2.\n",
+        cctl_stream_printf("  %sNote:%s Saved PL2 (%dW) must be greater than %s PL1 (%dW). Skipping PL2.\n",
                C_YLW, C_RST, st->pl2,
                (st->pl1 < 0) ? "current system" : (pl1_rejected ? "live" : "restored"),
                eff_pl1);
@@ -999,13 +999,13 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     }
 
     if (st->pl1 < 0 && st->pl2 < 0) {
-        printf("  %sSkipping RAPL (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping RAPL (not saved).%s\n", C_DIM, C_RST);
     } else if (st->pl1 < 0) {
-        printf("  %sSkipping PL1 (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping PL1 (not saved).%s\n", C_DIM, C_RST);
         if (pl2_rejected) {
             /* PL2 rejected with note above */
         } else if (!need_pl2) {
-            printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
+            cctl_stream_printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("RAPL PL2", set_rapl_limits(0, st->pl2, pl1_cap), &errors);
         }
@@ -1015,17 +1015,17 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         } else if (pl2_rejected) {
             /* Both rejected */
         } else if (!need_pl2) {
-            printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
+            cctl_stream_printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("RAPL PL2", set_rapl_limits(0, st->pl2, pl1_cap), &errors);
         }
     } else if (!need_pl1 && !need_pl2) {
         if (!pl1_rejected && !pl2_rejected && st->pl1 >= 0 && st->pl2 >= 0)
-            printf("  RAPL: PL1 %dW, PL2 %dW%s\n", st->pl1, st->pl2, snapshot_unchanged_tag());
+            cctl_stream_printf("  RAPL: PL1 %dW, PL2 %dW%s\n", st->pl1, st->pl2, snapshot_unchanged_tag());
         else if (!pl1_rejected && st->pl1 >= 0)
-            printf("  RAPL: PL1 %dW%s\n", st->pl1, snapshot_unchanged_tag());
+            cctl_stream_printf("  RAPL: PL1 %dW%s\n", st->pl1, snapshot_unchanged_tag());
         else if (!pl2_rejected && st->pl2 >= 0)
-            printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
+            cctl_stream_printf("  RAPL: PL2 %dW%s\n", st->pl2, snapshot_unchanged_tag());
     } else {
         int apply_pl1 = need_pl1 ? st->pl1 : 0;
         int apply_pl2 = need_pl2 ? st->pl2 : 0;
@@ -1035,28 +1035,28 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     /* 6. NVIDIA GPU clocks: always apply if saved */
     cctl_snapshot_divider();
     if (st->core_clock_known < 0) {
-        printf("  %sSkipping NVIDIA core clock (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping NVIDIA core clock (not saved).%s\n", C_DIM, C_RST);
     } else if (st->core_clock_set) {
-        printf("  NVIDIA core clock: %d–%d MHz%s\n",
+        cctl_stream_printf("  NVIDIA core clock: %d–%d MHz%s\n",
                st->core_clock_min, st->core_clock_max, snapshot_applied_tag());
         cctl_snapshot_apply_step("NVIDIA core clock",
             nvidia_clock_apply("-lgc", st->core_clock_min, st->core_clock_max), &errors);
     } else {
-        printf("  NVIDIA core clock: reset/unlocked%s\n", snapshot_applied_tag());
+        cctl_stream_printf("  NVIDIA core clock: reset/unlocked%s\n", snapshot_applied_tag());
         cctl_snapshot_apply_step("NVIDIA core clock reset",
             nvidia_clock_reset_flag("-rgc"), &errors);
     }
 
     cctl_snapshot_divider();
     if (st->mem_clock_known < 0) {
-        printf("  %sSkipping NVIDIA memory clock (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping NVIDIA memory clock (not saved).%s\n", C_DIM, C_RST);
     } else if (st->mem_clock_set) {
-        printf("  NVIDIA memory clock: %d–%d MHz%s\n",
+        cctl_stream_printf("  NVIDIA memory clock: %d–%d MHz%s\n",
                st->mem_clock_min, st->mem_clock_max, snapshot_applied_tag());
         cctl_snapshot_apply_step("NVIDIA memory clock",
             nvidia_clock_apply("-lmc", st->mem_clock_min, st->mem_clock_max), &errors);
     } else {
-        printf("  NVIDIA memory clock: reset/unlocked%s\n", snapshot_applied_tag());
+        cctl_stream_printf("  NVIDIA memory clock: reset/unlocked%s\n", snapshot_applied_tag());
         cctl_snapshot_apply_step("NVIDIA memory clock reset",
             nvidia_clock_reset_flag("-rmc"), &errors);
     }
@@ -1095,74 +1095,74 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
 
         if (target_effect_matches && target_col_matches && target_bri_matches) {
             if (st->kbd_r >= 0)
-                printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
+                cctl_stream_printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
                        st->kbd_r, st->kbd_g, st->kbd_b, snapshot_unchanged_tag());
             if (st->kbd_brightness >= 0)
-                printf("  Keyboard brightness: %d%%%s\n",
+                cctl_stream_printf("  Keyboard brightness: %d%%%s\n",
                        (st->kbd_brightness * 100 + 127) / 255, snapshot_unchanged_tag());
             if (!preserve_effect)
-                printf("  Keyboard effect: %s%s\n", st->kbd_effect, snapshot_unchanged_tag());
+                cctl_stream_printf("  Keyboard effect: %s%s\n", st->kbd_effect, snapshot_unchanged_tag());
             else if (effect_was_running)
-                printf("  Keyboard effect: preserving active effect '%s'%s\n", running_effect, snapshot_unchanged_tag());
+                cctl_stream_printf("  Keyboard effect: preserving active effect '%s'%s\n", running_effect, snapshot_unchanged_tag());
             else
-                printf("  %sSkipping keyboard effect (not saved).%s\n", C_DIM, C_RST);
+                cctl_stream_printf("  %sSkipping keyboard effect (not saved).%s\n", C_DIM, C_RST);
         } else {
             if (effect_was_running)
                 cctl_snapshot_apply_step("current keyboard effect stop", kbe_stop(1), &errors);
 
             if (st->kbd_r >= 0 && st->kbd_g >= 0 && st->kbd_b >= 0) {
                 if (cur_r == st->kbd_r && cur_g == st->kbd_g && cur_b == st->kbd_b) {
-                    printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
+                    cctl_stream_printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
                            st->kbd_r, st->kbd_g, st->kbd_b, snapshot_unchanged_tag());
                 } else {
-                    printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
+                    cctl_stream_printf("  Keyboard color: RGB(%d, %d, %d)%s\n",
                            st->kbd_r, st->kbd_g, st->kbd_b, snapshot_applied_tag());
                     cctl_snapshot_apply_step("keyboard color",
                         kbd_write_color(st->kbd_r, st->kbd_g, st->kbd_b), &errors);
                 }
             } else {
-                printf("  %sSkipping keyboard color (not saved).%s\n", C_DIM, C_RST);
+                cctl_stream_printf("  %sSkipping keyboard color (not saved).%s\n", C_DIM, C_RST);
             }
 
             if (st->kbd_brightness >= 0) {
                 if (cur_bri == st->kbd_brightness) {
-                    printf("  Keyboard brightness: %d%%%s\n",
+                    cctl_stream_printf("  Keyboard brightness: %d%%%s\n",
                            (st->kbd_brightness * 100 + 127) / 255, snapshot_unchanged_tag());
                 } else {
-                    printf("  Keyboard brightness: %d%%%s\n",
+                    cctl_stream_printf("  Keyboard brightness: %d%%%s\n",
                            (st->kbd_brightness * 100 + 127) / 255, snapshot_applied_tag());
                     cctl_snapshot_apply_step("keyboard brightness",
                         write_sysfs_int(KBD_PATH "/brightness", st->kbd_brightness), &errors);
                 }
             } else {
-                printf("  %sSkipping keyboard brightness (not saved).%s\n", C_DIM, C_RST);
+                cctl_stream_printf("  %sSkipping keyboard brightness (not saved).%s\n", C_DIM, C_RST);
             }
 
             if (strcmp(st->kbd_effect, "skip") != 0 && strcmp(st->kbd_effect, "none") != 0) {
                 pid_t pid = 0;
                 if (kbe_start_ext(st->kbd_effect, &pid, 1) == 0) {
-                    printf("  Keyboard effect: %s (PID %d)%s\n", st->kbd_effect, (int)pid, snapshot_applied_tag());
+                    cctl_stream_printf("  Keyboard effect: %s (PID %d)%s\n", st->kbd_effect, (int)pid, snapshot_applied_tag());
                 } else {
-                    fprintf(stderr, "  %sFailed to restore keyboard effect '%s'; continuing.%s\n", C_RED, st->kbd_effect, C_RST);
+                    cctl_stream_fprintf(stderr, "  %sFailed to restore keyboard effect '%s'; continuing.%s\n", C_RED, st->kbd_effect, C_RST);
                     errors++;
                 }
             } else if (preserve_effect && effect_was_running) {
                 pid_t pid = 0;
                 if (kbe_start_ext(running_effect, &pid, 1) == 0) {
-                    printf("  Keyboard effect: preserving active effect '%s' (restarted with restored color, PID %d)\n",
+                    cctl_stream_printf("  Keyboard effect: preserving active effect '%s' (restarted with restored color, PID %d)\n",
                            running_effect, (int)pid);
                 } else {
-                    fprintf(stderr, "  %sFailed to restart preserved keyboard effect '%s'; continuing.%s\n", C_RED, running_effect, C_RST);
+                    cctl_stream_fprintf(stderr, "  %sFailed to restart preserved keyboard effect '%s'; continuing.%s\n", C_RED, running_effect, C_RST);
                     errors++;
                 }
             } else if (strcmp(st->kbd_effect, "none") == 0) {
-                printf("  Keyboard effect: none%s\n", snapshot_applied_tag());
+                cctl_stream_printf("  Keyboard effect: none%s\n", snapshot_applied_tag());
             } else {
-                printf("  %sSkipping keyboard effect (not saved).%s\n", C_DIM, C_RST);
+                cctl_stream_printf("  %sSkipping keyboard effect (not saved).%s\n", C_DIM, C_RST);
             }
         }
     } else {
-        printf("  %sSkipping keyboard settings (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping keyboard settings (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 8. Fn Lock: query live state; skip if already matching */
@@ -1170,12 +1170,12 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     if (st->fn_lock >= 0) {
         int cur_fnlock = get_fnlock();
         if (cur_fnlock >= 0 && cur_fnlock == st->fn_lock) {
-            printf("  Fn Lock: %s%s\n", st->fn_lock ? "ON" : "OFF", snapshot_unchanged_tag());
+            cctl_stream_printf("  Fn Lock: %s%s\n", st->fn_lock ? "ON" : "OFF", snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("Fn Lock", set_fnlock(st->fn_lock), &errors);
         }
     } else {
-        printf("  %sSkipping Fn Lock (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping Fn Lock (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 9. Webcam: query live state; skip if already matching */
@@ -1183,12 +1183,12 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     if (st->webcam >= 0) {
         int cur_webcam = is_webcam_enabled();
         if (cur_webcam >= 0 && cur_webcam == st->webcam) {
-            printf("  Webcam: %s%s\n", st->webcam ? "ON" : "OFF", snapshot_unchanged_tag());
+            cctl_stream_printf("  Webcam: %s%s\n", st->webcam ? "ON" : "OFF", snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("webcam", webcam_set(st->webcam), &errors);
         }
     } else {
-        printf("  %sSkipping webcam (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping webcam (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 10. Microphone: query live state; skip if already matching */
@@ -1196,12 +1196,12 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     if (st->microphone >= 0) {
         int cur_mic = mic_is_enabled();
         if (cur_mic >= 0 && cur_mic == st->microphone) {
-            printf("  Laptop internal microphone: %s%s\n", st->microphone ? "ON" : "OFF", snapshot_unchanged_tag());
+            cctl_stream_printf("  Laptop internal microphone: %s%s\n", st->microphone ? "ON" : "OFF", snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("microphone", mic_set(st->microphone), &errors);
         }
     } else {
-        printf("  %sSkipping microphone (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping microphone (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 11. Battery thresholds: query live state; skip if already matching */
@@ -1216,17 +1216,17 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         if (cur_start > 0 && cur_stop > 0 && have_charge_type &&
             strcmp(cur_charge_type, "Custom") == 0 &&
             target_start == cur_start && target_stop == cur_stop) {
-            printf("  Set charge thresholds: start %d%% → stop %d%%%s\n",
+            cctl_stream_printf("  Set charge thresholds: start %d%% → stop %d%%%s\n",
                    cur_start, cur_stop, snapshot_unchanged_tag());
         } else if (target_start > 0 && target_stop > 0) {
             cctl_snapshot_apply_step("battery thresholds", bat_set(target_start, target_stop), &errors);
         } else {
-            fprintf(stderr, "  %sFailed to restore battery thresholds; current values are unavailable.%s\n",
+            cctl_stream_fprintf(stderr, "  %sFailed to restore battery thresholds; current values are unavailable.%s\n",
                     C_RED, C_RST);
             errors++;
         }
     } else {
-        printf("  %sSkipping battery thresholds (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping battery thresholds (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 12. Display refresh rate: query live state; skip if already matching (prevents X11 mode reset / flicker) */
@@ -1235,31 +1235,31 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         struct display_info disp;
         int have_disp = (has_display_support() && query_display_info(&disp) == 0 && disp.current_rate[0]);
         if (have_disp && strcmp(disp.current_rate, st->display_rate) == 0) {
-            printf("  Refresh rate: %sHz%s\n", st->display_rate, snapshot_unchanged_tag());
+            cctl_stream_printf("  Refresh rate: %sHz%s\n", st->display_rate, snapshot_unchanged_tag());
         } else {
             cctl_snapshot_apply_step("display refresh rate", rr_set(st->display_rate), &errors);
         }
     } else {
-        printf("  %sSkipping display refresh rate (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping display refresh rate (not saved).%s\n", C_DIM, C_RST);
     }
 
     /* 13. Display scale: compare the live X11 desktop dimensions. */
     cctl_snapshot_divider();
     if (st->display_scale_known < 0) {
-        printf("  %sSkipping display scale (not saved).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping display scale (not saved).%s\n", C_DIM, C_RST);
     } else {
         struct display_info disp;
         int have_disp = has_display_support() && query_display_info(&disp) == 0 &&
                         disp.current_resolution[0] && disp.resolution[0];
         if (st->display_scale_set) {
             if (have_disp && strcmp(disp.current_resolution, st->display_scale) == 0) {
-                printf("  Display scale: %s%s\n", st->display_scale, snapshot_unchanged_tag());
+                cctl_stream_printf("  Display scale: %s%s\n", st->display_scale, snapshot_unchanged_tag());
             } else {
                 cctl_snapshot_apply_step("display scale", scale_set(st->display_scale), &errors);
             }
         } else {
             if (have_disp && strcmp(disp.current_resolution, disp.resolution) == 0) {
-                printf("  Scale: native (1x1)%s\n", snapshot_unchanged_tag());
+                cctl_stream_printf("  Scale: native (1x1)%s\n", snapshot_unchanged_tag());
             } else {
                 cctl_snapshot_apply_step("display scale reset", scale_reset(), &errors);
             }
@@ -1270,12 +1270,12 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     g_snapshot_restoring = 0;
 
     if (errors) {
-        fprintf(stderr, "%sSnapshot '%s' restored with %d error(s).%s\n",
+        cctl_stream_fprintf(stderr, "%sSnapshot '%s' restored with %d error(s).%s\n",
                 C_RED, name, errors, C_RST);
         g_stream_mode = prev;
         return 1;
     }
-    printf("%sSnapshot '%s' restored.%s\n", C_GRN, name, C_RST);
+    cctl_stream_printf("%sSnapshot '%s' restored.%s\n", C_GRN, name, C_RST);
     g_stream_mode = prev;
     return 0;
 }
@@ -1286,21 +1286,21 @@ static int cmd_snapshot(int argc, char **argv)
         int prev = g_stream_mode;
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
-        printf("%sUsage:%s %scctl snap <save|s|restore|r|view|v|delete|del> [name] [options]%s\n",
+        cctl_stream_printf("%sUsage:%s %scctl snap <save|s|restore|r|view|v|delete|del> [name] [options]%s\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
-        printf("       %scctl snapshot <action> [name] [options]%s\n\n", C_CYN_BLD, C_RST);
-        printf("%sActions:%s\n", C_YLW, C_RST);
-        printf("  save/s <name> [--mask fields]       Save current settings\n");
-        printf("  restore/r <name> [--mask fields] [--dry-run]  Apply or preview settings\n");
-        printf("  view/v [name]                       List snapshots or show one snapshot\n");
-        printf("  delete/del <name> [--noconfirm]      Delete a snapshot (prompts by default)\n");
-        printf("  Names: letters, numbers, '-' and '_' only; no spaces (max %d characters).\n",
+        cctl_stream_printf("       %scctl snapshot <action> [name] [options]%s\n\n", C_CYN_BLD, C_RST);
+        cctl_stream_printf("%sActions:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("  save/s <name> [--mask fields]       Save current settings\n");
+        cctl_stream_printf("  restore/r <name> [--mask fields] [--dry-run]  Apply or preview settings\n");
+        cctl_stream_printf("  view/v [name]                       List snapshots or show one snapshot\n");
+        cctl_stream_printf("  delete/del <name> [--noconfirm]      Delete a snapshot (prompts by default)\n");
+        cctl_stream_printf("  Names: letters, numbers, '-' and '_' only; no spaces (max %d characters).\n",
                CCTL_SNAPSHOT_NAME_MAX);
-        printf("\n%sMask fields:%s\n", C_YLW, C_RST);
-        printf("  nvidia_clock,nvidia_memclock,ec_code,turbo,gov,epp,pl1,pl2,\n");
-        printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,nosafe\n");
-        printf("  Use 'nosafe' only with restore to bypass automatic fan safety.\n");
-        printf("\n%sFan settings:%s not saved by snapshots; restore sets fans to AUTO when\n"
+        cctl_stream_printf("\n%sMask fields:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("  nvidia_clock,nvidia_memclock,ec_code,turbo,gov,epp,pl1,pl2,\n");
+        cctl_stream_printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,nosafe\n");
+        cctl_stream_printf("  Use 'nosafe' only with restore to bypass automatic fan safety.\n");
+        cctl_stream_printf("\n%sFan settings:%s not saved by snapshots; restore sets fans to AUTO when\n"
                "  EC profile code 2/3 is applied, or Turbo ON is restored while EC is 2/3,\n"
                "  unless masked with nosafe or a fan curve is active.\n",
                C_YLW, C_RST);

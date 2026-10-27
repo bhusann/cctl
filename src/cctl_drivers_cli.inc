@@ -117,12 +117,12 @@ static int verify_drivers_sha(const char *path, const char *src_desc, int announ
 {
     char sha[65];
     if (file_sha256(path, sha) != 0) {
-        fprintf(stderr, "Error: cannot compute sha256 of %s (is sha256sum installed?)\n",
+        cctl_stream_fprintf(stderr, "Error: cannot compute sha256 of %s (is sha256sum installed?)\n",
                 path);
         return -1;
     }
     if (strcmp(sha, DRIVERS_SHA256) != 0) {
-        fprintf(stderr,
+        cctl_stream_fprintf(stderr,
             "%sError:%s %s checksum mismatch — refusing to install.\n"
             "  %ssource:%s   %s%s%s\n"
             "  %sexpected:%s %s%s%s\n"
@@ -140,7 +140,7 @@ static int verify_drivers_sha(const char *path, const char *src_desc, int announ
         return -1;
     }
     if (announce_ok)
-        printf("  sha256 verified: %.16s...\n", sha);
+        cctl_stream_printf("  sha256 verified: %.16s...\n", sha);
     return 0;
 }
 
@@ -150,7 +150,7 @@ static int verify_drivers_sha(const char *path, const char *src_desc, int announ
 static int cache_store(const char *verified_file)
 {
     if (mkdir(DRIVERS_CACHE_DIR, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "Note: cannot create %s: %s\n", DRIVERS_CACHE_DIR, strerror(errno));
+        cctl_stream_fprintf(stderr, "Note: cannot create %s: %s\n", DRIVERS_CACHE_DIR, strerror(errno));
         return -1;
     }
     char tmp[PATH_MAX];
@@ -158,11 +158,11 @@ static int cache_store(const char *verified_file)
     char *const cp_args[] = { "cp", "--", (char *)verified_file, tmp, NULL };
     if (run(cp_args, 0, NULL, 0) != 0) {
         unlink(tmp);
-        fprintf(stderr, "Note: cannot copy %s into %s\n", verified_file, DRIVERS_CACHE_DIR);
+        cctl_stream_fprintf(stderr, "Note: cannot copy %s into %s\n", verified_file, DRIVERS_CACHE_DIR);
         return -1;
     }
     if (chmod(tmp, 0644) != 0 || rename(tmp, DRIVERS_CACHE_FILE) != 0) {
-        fprintf(stderr, "Note: cannot publish %s: %s\n", DRIVERS_CACHE_FILE, strerror(errno));
+        cctl_stream_fprintf(stderr, "Note: cannot publish %s: %s\n", DRIVERS_CACHE_FILE, strerror(errno));
         unlink(tmp);
         return -1;
     }
@@ -185,7 +185,7 @@ static int cache_lookup(char *out, size_t sz, int quiet, int *stale)
         return 1;
     }
     if (!quiet)
-        printf("Note: %s is outdated or corrupt — fetching a verified replacement.\n",
+        cctl_stream_printf("Note: %s is outdated or corrupt — fetching a verified replacement.\n",
                DRIVERS_CACHE_FILE);
     if (stale)
         *stale = 1;
@@ -268,7 +268,7 @@ static int cmd_drivers_install(int argc, char **argv)
      * and verifies its baked-in sha256, so nothing user-named is trusted
      * except via the explicitly-prompted offline path (also verified). */
     if (argc != 2) {
-        fprintf(stderr, "Error: 'cctl drivers-manage' does not accept arguments.\n"
+        cctl_stream_fprintf(stderr, "Error: 'cctl drivers-manage' does not accept arguments.\n"
                         "       It finds or downloads %s automatically.\n",
                 DRIVERS_TARBALL);
         return 1;
@@ -279,7 +279,7 @@ static int cmd_drivers_install(int argc, char **argv)
 
     struct fancurve_state curve_state;
     if (fc_is_running(&curve_state)) {
-        printf("Stopping fan curve '%s' before driver management...\n", curve_state.name);
+        cctl_stream_printf("Stopping fan curve '%s' before driver management...\n", curve_state.name);
         if (fc_stop_worker(1, 1) != 0)
             return fail("could not stop the active fan curve; refusing driver changes");
     }
@@ -307,7 +307,7 @@ static int cmd_drivers_install(int argc, char **argv)
      *    replaced after the next verified acquisition. */
     if (cache_lookup(src, sizeof(src), 0, NULL)) {
         src_is_cache = 1;
-        printf("Using cached %s\n  from %s\n", DRIVERS_TARBALL, DRIVERS_CACHE_DIR);
+        cctl_stream_printf("Using cached %s\n  from %s\n", DRIVERS_TARBALL, DRIVERS_CACHE_DIR);
     }
 
     /* 1. Local: drivers.tar.gz beside the cctl binary — sha256-checked
@@ -322,7 +322,7 @@ static int cmd_drivers_install(int argc, char **argv)
         if (access(src, R_OK) == 0) {
             char lsha[65] = {0};
             if (file_sha256(src, lsha) != 0 || strcmp(lsha, DRIVERS_SHA256) != 0) {
-                fprintf(stderr,
+                cctl_stream_fprintf(stderr,
                     "Warning: %s beside the cctl binary is outdated or corrupt.\n"
                     "         Do NOT use that copy: %s\n"
                     "         expected %s\n"
@@ -343,10 +343,10 @@ static int cmd_drivers_install(int argc, char **argv)
         if (can_download) {
             tmpdir = mkdtemp(tmpbase);
             if (!tmpdir)
-                perror("Warning: mkdtemp failed");
+                cctl_stream_perror("Warning: mkdtemp failed");
             else {
                 snprintf(tarball, sizeof(tarball), "%s/%s", tmpdir, DRIVERS_TARBALL);
-                printf("Fetching %s\n  from %s\n", DRIVERS_TARBALL, DRIVERS_MIRROR_RAW);
+                cctl_stream_printf("Fetching %s\n  from %s\n", DRIVERS_TARBALL, DRIVERS_MIRROR_RAW);
                 if (download_file(DRIVERS_MIRROR_RAW, tarball) == 0)
                     staged_by_download = 1;
             }
@@ -355,7 +355,7 @@ static int cmd_drivers_install(int argc, char **argv)
         if (!staged_by_download) {
             /* 3. Download failed (or impossible): say so plainly and offer
              *    the two manual ways to continue. */
-            fprintf(stderr,
+            cctl_stream_fprintf(stderr,
                 "Error: could not provide %s.\n"
                 "%s\n"
                 "Do ONE of the following:\n"
@@ -374,10 +374,10 @@ static int cmd_drivers_install(int argc, char **argv)
                 DRIVERS_TARBALL, DRIVERS_MIRROR_REPO,
                 bindir[0] ? bindir : "<directory containing the cctl binary>",
                 DRIVERS_TARBALL);
-            printf("Full path to %s (Enter to abort): ", DRIVERS_TARBALL);
+            cctl_stream_printf("Full path to %s (Enter to abort): ", DRIVERS_TARBALL);
             char path[PATH_MAX] = {0};
             if (!fgets(path, sizeof(path), stdin) || path[0] == '\0') {
-                printf("Aborted.\n");
+                cctl_stream_printf("Aborted.\n");
                 rc = 0;
                 goto cleanup;
             }
@@ -398,7 +398,7 @@ static int cmd_drivers_install(int argc, char **argv)
                     int n = snprintf(expanded, sizeof(expanded), "%s%s",
                                      home, path + 1);
                     if (n < 0 || (size_t)n >= sizeof(expanded)) {
-                        fprintf(stderr, "Error: path is too long.\n");
+                        cctl_stream_fprintf(stderr, "Error: path is too long.\n");
                         goto cleanup;
                     }
                     snprintf(path, sizeof(path), "%s", expanded);
@@ -407,7 +407,7 @@ static int cmd_drivers_install(int argc, char **argv)
 
             struct stat pst;
             if (stat(path, &pst) != 0) {
-                fprintf(stderr, "Error: no such file: %s\n", path);
+                cctl_stream_fprintf(stderr, "Error: no such file: %s\n", path);
                 goto cleanup;
             }
             if (S_ISDIR(pst.st_mode)) {
@@ -416,14 +416,14 @@ static int cmd_drivers_install(int argc, char **argv)
                                  path, DRIVERS_TARBALL);
                 if (n < 0 || (size_t)n >= sizeof(archive_path) ||
                     stat(archive_path, &pst) != 0 || !S_ISREG(pst.st_mode)) {
-                    fprintf(stderr, "Error: folder does not contain %s: %s\n",
+                    cctl_stream_fprintf(stderr, "Error: folder does not contain %s: %s\n",
                             DRIVERS_TARBALL, path);
                     goto cleanup;
                 }
                 snprintf(path, sizeof(path), "%s", archive_path);
             }
             if (access(path, R_OK) != 0) {
-                fprintf(stderr, "Error: no such readable file: %s\n", path);
+                cctl_stream_fprintf(stderr, "Error: no such readable file: %s\n", path);
                 goto cleanup;
             }
             /* Check the given file IN PLACE first — a mismatch is rejected
@@ -443,12 +443,12 @@ static int cmd_drivers_install(int argc, char **argv)
     } else {
         if (!tmpdir) {
             tmpdir = mkdtemp(tmpbase);
-            if (!tmpdir) { perror("Error: cannot create temp directory"); goto cleanup; }
+            if (!tmpdir) { cctl_stream_perror("Error: cannot create temp directory"); goto cleanup; }
         }
         snprintf(tarball, sizeof(tarball), "%s/%s", tmpdir, DRIVERS_TARBALL);
         char *const cp_args[] = { "cp", "--", src, tarball, NULL };
         if (run(cp_args, 0, NULL, 0) != 0) {
-            fprintf(stderr, "Error: failed to copy %s into %s\n", src, tmpdir);
+            cctl_stream_fprintf(stderr, "Error: failed to copy %s into %s\n", src, tmpdir);
             goto cleanup;
         }
         if (verify_drivers_sha(tarball, "staged drivers.tar.gz", 1) != 0)
@@ -465,14 +465,14 @@ static int cmd_drivers_install(int argc, char **argv)
     {
         char *const tar_args[] = { "tar", "-xzf", tarball, "-C", tmpdir, NULL };
         if (run(tar_args, 0, NULL, 0) != 0) {
-            fprintf(stderr, "Error: failed to extract %s\n", tarball);
+            cctl_stream_fprintf(stderr, "Error: failed to extract %s\n", tarball);
             goto cleanup;
         }
     }
     char script[PATH_MAX + 64];
     snprintf(script, sizeof(script), "%s/drivers/driverinstall.sh", tmpdir);
     if (access(script, R_OK) != 0) {
-        fprintf(stderr, "Error: drivers/driverinstall.sh not found inside %s\n", DRIVERS_TARBALL);
+        cctl_stream_fprintf(stderr, "Error: drivers/driverinstall.sh not found inside %s\n", DRIVERS_TARBALL);
         goto cleanup;
     }
 
@@ -481,7 +481,7 @@ static int cmd_drivers_install(int argc, char **argv)
         char *const sh_args[] = { "bash", script, NULL };
         int installer_status = run(sh_args, 0, NULL, 0);
         if (installer_status != 0) {
-            fprintf(stderr, "Driver installer exited with status %d. "
+            cctl_stream_fprintf(stderr, "Driver installer exited with status %d. "
                             "Review the installer output above.\n", installer_status);
             goto cleanup;
         }
@@ -507,8 +507,8 @@ static int cmd_mux(int argc, char **argv)
             require_root(argc, argv);
             return mux_switch();
         }
-        fprintf(stderr, "Error: Unknown mux subcommand '%s'\n", argv[2]);
-        fprintf(stderr, "Usage: cctl mux  |  cctl mux switch\n");
+        cctl_stream_fprintf(stderr, "Error: Unknown mux subcommand '%s'\n", argv[2]);
+        cctl_stream_fprintf(stderr, "Usage: cctl mux  |  cctl mux switch\n");
         return 1;
     }
 
@@ -517,7 +517,7 @@ static int cmd_mux(int argc, char **argv)
     if (mux_running_mode() == MUX_VAL_DGPU && has_display_support()) {
         struct display_info info;
         if (query_display_info(&info) == 0 && strtod(info.current_rate, NULL) == 40.0)
-            printf("  Current refresh rate is 40 Hz. To use 165 Hz, run: cctl rr 165\n");
+            cctl_stream_printf("  Current refresh rate is 40 Hz. To use 165 Hz, run: cctl rr 165\n");
     }
     return rc;
 }
@@ -583,8 +583,8 @@ static const struct command commands[] = {
 
     /* Info */
     { "status",         1, cmd_status,          SEC_INFO,      "[--json]",                        "Show current settings", NULL },
-    { "cpumon",         1, cmd_cpumon,          SEC_INFO,      "[--json] [--interval SEC] [--once]", "Live CPU, memory, power, and fan monitor", NULL },
-    { "gpumon",         1, cmd_gpumon,          SEC_INFO,      "[--json]",                        "Live NVIDIA GPU monitor", NULL },
+    { "cpumon",         1, cmd_cpumon,          SEC_INFO,      "[--json] [--live] [--interval SEC]", "Live CPU monitor; --live streams JSON", NULL },
+    { "gpumon",         1, cmd_gpumon,          SEC_INFO,      "[--json] [--live]",               "Live NVIDIA GPU monitor; --live streams JSON", NULL },
 
     /* NVIDIA */
 #ifdef CCTL_NVIDIA
@@ -603,8 +603,8 @@ static const struct command commands[] = {
 
     /* Overrides */
     { "turbo",          0, cmd_turbo,           SEC_OVERRIDES, "<on|off> [--nosafe]",              "Turbo on sets fans to auto only in EC code 2/3; bypass with --nosafe", NULL },
-    { "gov",            0, cmd_gov,             SEC_OVERRIDES, "<governor>",                       "CPU governor (powersave, performance)", NULL },
-    { "epp",            0, cmd_epp,             SEC_OVERRIDES, "<value>",                          "EPP (performance, balance_performance, balance_power, power)", NULL },
+    { "gov",            0, cmd_gov,             SEC_OVERRIDES, "<governor>",                       "Set a CPU frequency governor", NULL },
+    { "epp",            0, cmd_epp,             SEC_OVERRIDES, "<value>",                          "Set CPU energy preference", NULL },
     { "rapl",           0, cmd_rapl,            SEC_OVERRIDES, "<pl1> <pl2>",                      "RAPL power limits (watts, use 'skip' to omit)", NULL },
 
     /* System */
@@ -641,9 +641,9 @@ static void print_help_desc(const char *desc)
 {
     const char *paren = strchr(desc, '(');
     if (!paren) {
-        printf("%s\n", desc);
+        cctl_stream_printf("%s\n", desc);
     } else {
-        printf("%.*s%s%s%s\n", (int)(paren - desc), desc, C_DIM, paren, C_RST);
+        cctl_stream_printf("%.*s%s%s%s\n", (int)(paren - desc), desc, C_DIM, paren, C_RST);
     }
 }
 
@@ -658,7 +658,7 @@ static void print_help_command_indent(const struct command *cmd, int indent)
         target_col = 36;
 
     int col = indent;
-    printf("%*s%s%s%s", indent, "", C_BLD, cmd->name, C_RST);
+    cctl_stream_printf("%*s%s%s%s", indent, "", C_BLD, cmd->name, C_RST);
     col += (int)strlen(cmd->name);
 
     if (cmd->usage && cmd->usage[0]) {
@@ -674,15 +674,15 @@ static void print_help_command_indent(const struct command *cmd, int indent)
 
         int name_len = (int)strlen(cmd->name);
         int gap = name_col > name_len ? name_col - name_len : 1;
-        for (int i = 0; i < gap; i++) { putchar(' '); col++; }
-        printf("%s", cmd->usage);
+        for (int i = 0; i < gap; i++) { cctl_stream_putchar(' '); col++; }
+        cctl_stream_printf("%s", cmd->usage);
         col += (int)strlen(cmd->usage);
     }
 
     if (col < target_col) {
-        for (int i = col; i < target_col; i++) putchar(' ');
+        for (int i = col; i < target_col; i++) cctl_stream_putchar(' ');
     } else {
-        putchar(' ');
+        cctl_stream_putchar(' ');
     }
 
     print_help_desc(cmd->desc);
@@ -701,7 +701,7 @@ static void print_usage(const char *prog)
     prog = base ? base + 1 : prog;
 
     /* COLORCONTROL banner supplied by the user. */
-    printf(
+    cctl_stream_printf(
     "\n"
     "   %s____ ___  _     ___  ____  %s %s____ ___  _   _ _____ ____   ___  _%s\n"
     "  %s/ ___/ _ \\| |   / _ \\|  _ \\ %s%s/ ___/ _ \\| \\ | |_   _|  _ \\ / _ \\| |%s\n"
@@ -715,7 +715,7 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST,
     C_GRN, C_RST, C_RED, C_RST);
 
-    printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
+    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
 
     struct cctl_settings help_settings;
     (void)cctl_settings_read(&help_settings);
@@ -728,9 +728,9 @@ static void print_usage(const char *prog)
             continue;
 
         if (sec->subtitle)
-            printf("  %s%s%s %s%s%s\n", prof_color_str(sec->header_color), sec->title, C_RST, C_DIM, sec->subtitle, C_RST);
+            cctl_stream_printf("  %s%s%s %s%s%s\n", prof_color_str(sec->header_color), sec->title, C_RST, C_DIM, sec->subtitle, C_RST);
         else
-            printf("  %s%s%s\n", prof_color_str(sec->header_color), sec->title, C_RST);
+            cctl_stream_printf("  %s%s%s\n", prof_color_str(sec->header_color), sec->title, C_RST);
 
         if (sec->section == SEC_PROFILES) {
             for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
@@ -738,7 +738,7 @@ static void print_usage(const char *prog)
                 if (cmd->section != sec->section) continue;
                 print_help_command(cmd);
             }
-            printf("\n");
+            cctl_stream_printf("\n");
             print_profile_table();
             continue;
         }
@@ -749,27 +749,27 @@ static void print_usage(const char *prog)
             if (cmd->visible && !cmd->visible()) continue;
             print_help_command(cmd);
         }
-        printf("\n");
+        cctl_stream_printf("\n");
     }
 
     if (!drivers_loaded()) {
-        printf("  %sDRIVERS NOT LOADED%s — some features need them:\n", C_YLW, C_RST);
-        printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    • %sset%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
-        printf("    Fix: run %scctl drivers-manage%s\n\n",
+        cctl_stream_printf("  %sDRIVERS NOT LOADED%s — some features need them:\n", C_YLW, C_RST);
+        cctl_stream_printf("    • %skbc/kbb%s   keyboard backlight (%stuxedo_keyboard%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        cctl_stream_printf("    • %sset%s GPU performance slots (%stuxedo_io%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        cctl_stream_printf("    • %sbat%s      battery charge thresholds (%sclevo_acpi%s)\n", C_CYN, C_RST, C_DIM, C_RST);
+        cctl_stream_printf("    Fix: run %scctl drivers-manage%s\n\n",
                C_BLD, C_RST);
     }
 
     if (!is_installed_systemwide()) {
-        printf("  %sNOT INSTALLED%s — run %ssudo ./%s install%s to set up:\n",
+        cctl_stream_printf("  %sNOT INSTALLED%s — run %ssudo ./%s install%s to set up:\n",
                C_YLW, C_RST, C_BLD, prog, C_RST);
-        printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
-        printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
-        printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
+        cctl_stream_printf("    • Adds cctl to your PATH — run %scctl%s from anywhere\n", C_CYN, C_RST);
+        cctl_stream_printf("    • Passwordless sudo — %ssudo cctl <cmd>%s never prompts for a password\n", C_CYN, C_RST);
+        cctl_stream_printf("    • Auto-elevation — %scctl%s elevates automatically via passwordless sudo\n\n", C_CYN, C_RST);
     }
 
-    printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
+    cctl_stream_printf("  %sv%s%s\n", C_DIM, CCTL_VERSION, C_RST);
     g_stream_output = prev_stream;
 }
 
@@ -815,7 +815,7 @@ static int cmd_faninfo(int once)
 {
     int fd = tuxedo_open_clevo();
     if (fd < 0) {
-        fprintf(stderr, "Error: /dev/tuxedo_io not available (Clevo interface)\n");
+        cctl_stream_fprintf(stderr, "Error: /dev/tuxedo_io not available (Clevo interface)\n");
         return 1;
     }
 
@@ -891,7 +891,7 @@ int main(int argc, char **argv)
         *p = (char)tolower((unsigned char)*p);
 
     if (strcmp(argv[1], "monitor") == 0) {
-        fprintf(stderr,
+        cctl_stream_fprintf(stderr,
                 "Deprecated: 'cctl monitor' has been removed. Use 'cctl cpumon' for CPU readings or 'cctl gpumon' for GPU readings.\n"
                 "            Both commands support --json.\n");
         return 1;
@@ -910,19 +910,19 @@ int main(int argc, char **argv)
 
     if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0 ||
         strcmp(argv[1], "-v") == 0) {
-        printf("cctl %s\n", CCTL_VERSION);
+        cctl_stream_printf("cctl %s\n", CCTL_VERSION);
         return 0;
     }
 
     if (strcmp(argv[1], "--microversion") == 0) {
-        printf("%d\n", CCTL_MICROVERSION);
+        cctl_stream_printf("%d\n", CCTL_MICROVERSION);
         return 0;
     }
 
     /* Hidden diagnostic (like --microversion: no help, no README) —
      * prints the sha256 baked into this binary for driver verification. */
     if (strcmp(argv[1], "--shasecret") == 0) {
-        printf("%s\n", DRIVERS_SHA256);
+        cctl_stream_printf("%s\n", DRIVERS_SHA256);
         return 0;
     }
 

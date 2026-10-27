@@ -58,8 +58,6 @@
 #define FRAME_SEC 0.05            /* 20 fps */
 
 /* Match cctl's Clevo fan telemetry sources. */
-#define EC_RAM_PATH "/sys/kernel/debug/ec/ec0/io"
-#define EC_FAN_RPM_DIVISOR 2156220
 #define R_HWCHECK_CL 0x8008EC05
 #define R_CL_FANINFO2 0x8008ED11
 
@@ -108,10 +106,10 @@ typedef struct {
 typedef struct {
     char   bdf[32];
     double interval;
-    bool   json;
+    bool   json, live;
 } Config;
 
-static Config g_cfg = { "", 1.0, false };
+static Config g_cfg = { "", 1.0, false, false };
 
 /* ----------------------------------------------------------------- globals */
 static GpuSnapshot       g_snap;
@@ -815,25 +813,6 @@ static bool parse_smi_csv(char *line, GpuSnapshot *s)
     return true;
 }
 
-static void ensure_ec_sys(void)
-{
-    static bool attempted;
-    if (access(EC_RAM_PATH, F_OK) == 0 || geteuid() != 0 || attempted)
-        return;
-    attempted = true;
-    pid_t child = fork();
-    if (child == 0) {
-        execlp("modprobe", "modprobe", "ec_sys", (char *)NULL);
-        _exit(127);
-    }
-    if (child < 0)
-        return;
-    int status;
-    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
-    struct timespec delay = { .tv_sec = 0, .tv_nsec = 200000000L };
-    while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
-}
-
 /* Match cctl's fan readings: duty from tuxedo_io and RPM from EC RAM.
  * This monitor's single fan readout uses the GPU fan values. */
 static bool read_cctl_fans(double *gpu_duty_pct, double *gpu_rpm)
@@ -849,8 +828,8 @@ static bool read_cctl_fans(double *gpu_duty_pct, double *gpu_rpm)
         close(fd);
     }
 
-    ensure_ec_sys();
-    int ec_fd = open(EC_RAM_PATH, O_RDONLY);
+    (void)cctl_ensure_ec_sys();
+    int ec_fd = open(CCTL_EC_RAM_PATH, O_RDONLY);
     if (ec_fd < 0)
         return got_duty != 0;
     unsigned char ram[256] = {0};
@@ -861,7 +840,7 @@ static bool read_cctl_fans(double *gpu_duty_pct, double *gpu_rpm)
 
     unsigned int raw16 = ((unsigned int)ram[0xD2] << 8) | ram[0xD3];
     *gpu_duty_pct = (double)gpu_duty;
-    *gpu_rpm = raw16 ? (double)(EC_FAN_RPM_DIVISOR / raw16) : 0.0;
+    *gpu_rpm = raw16 ? (double)(CCTL_EC_FAN_RPM_DIVISOR / raw16) : 0.0;
     return true;
 }
 
@@ -1079,11 +1058,17 @@ static void print_json_snapshot(const GpuSnapshot *s)
 
 int cctl_gpumon(int argc, char **argv)
 {
-    if (argc > 3 || (argc == 3 && strcmp(argv[2], "--json") != 0)) {
-        fprintf(stderr, "Usage: cctl gpumon [--json]\n");
-        return 1;
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--json")) {
+            g_cfg.json = true;
+        } else if (!strcmp(argv[i], "--live")) {
+            g_cfg.live = true;
+            g_cfg.json = true;
+        } else {
+            fprintf(stderr, "Usage: cctl gpumon [--json] [--live]\n");
+            return 2;
+        }
     }
-    g_cfg.json = argc == 3;
     if (!g_cfg.bdf[0] && !autodetect_bdf(g_cfg.bdf, sizeof g_cfg.bdf)) {
         fprintf(stderr, "No NVIDIA GPU found in %s.\n", pci_root());
         return 1;
@@ -1093,20 +1078,23 @@ int cctl_gpumon(int argc, char **argv)
         return 1;
     }
 
-    static char out[1 << 18];
-    Buf b = { out, 0, sizeof out };
-    Ui ui; memset(&ui, 0, sizeof ui);
-    g_t0 = now_s();
-
     struct sigaction sa; memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
     sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL);
 
     init_snapshot(&g_snap);
+    if (g_cfg.json && !g_cfg.live) {
+        GpuSnapshot s;
+        init_snapshot(&s);
+        live_poll(&s);
+        print_json_snapshot(&s);
+        return 0;
+    }
+
     pthread_t th;
     if (pthread_create(&th, NULL, poller, NULL) != 0) { fprintf(stderr, "thread failed\n"); return 1; }
 
-    if (g_cfg.json) {
+    if (g_cfg.json && g_cfg.live) {
         while (!g_quit) {
             sleep_s(g_cfg.interval);
             GpuSnapshot s;
@@ -1118,6 +1106,11 @@ int cctl_gpumon(int argc, char **argv)
         pthread_join(th, NULL);
         return 0;
     }
+
+    static char out[1 << 18];
+    Buf b = { out, 0, sizeof out };
+    Ui ui; memset(&ui, 0, sizeof ui);
+    g_t0 = now_s();
 
     term_enter();
     double last = now_s();

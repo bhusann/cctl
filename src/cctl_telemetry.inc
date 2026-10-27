@@ -1,20 +1,6 @@
 /* Shared CPU temperature and fan telemetry used by status and GPU monitor. */
 
-#define EC_RAM_PATH "/sys/kernel/debug/ec/ec0/io"
-
-/* Load ec_sys only when root and the EC debugfs endpoint is not available. */
-static int ensure_ec_sys(void)
-{
-    if (access(EC_RAM_PATH, F_OK) == 0) return 0;
-    if (geteuid() != 0) return -1;
-    static int attempted;
-    if (attempted) return -1;
-    attempted = 1;
-    char *const args[] = { "modprobe", "ec_sys", NULL };
-    if (run(args, RUN_SILENT, NULL, 0) != 0) return -1;
-    usleep(200000);
-    return access(EC_RAM_PATH, F_OK) == 0 ? 0 : -1;
-}
+#include "cctl_shared.h"
 
 /* Duty comes from tuxedo_io; RPM comes from EC RAM. */
 static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm,
@@ -36,8 +22,8 @@ static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm,
         if (cached_fd < 0) close(fd);
     }
 
-    (void)ensure_ec_sys();
-    int ec_fd = open(EC_RAM_PATH, O_RDONLY);
+    (void)cctl_ensure_ec_sys();
+    int ec_fd = open(CCTL_EC_RAM_PATH, O_RDONLY);
     if (ec_fd < 0) return got_duty ? 0 : -1;
     unsigned char ram[256] = {0};
     ssize_t n = read(ec_fd, ram, sizeof ram);
@@ -51,8 +37,8 @@ static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm,
     }
     unsigned int cpu_raw = ((unsigned int)ram[0xD0] << 8) | ram[0xD1];
     unsigned int gpu_raw = ((unsigned int)ram[0xD2] << 8) | ram[0xD3];
-    *cpu_rpm = cpu_raw ? (int)(EC_FAN_RPM_DIVISOR / cpu_raw) : 0;
-    *gpu_rpm = gpu_raw ? (int)(EC_FAN_RPM_DIVISOR / gpu_raw) : 0;
+    *cpu_rpm = cpu_raw ? (int)(CCTL_EC_FAN_RPM_DIVISOR / cpu_raw) : 0;
+    *gpu_rpm = gpu_raw ? (int)(CCTL_EC_FAN_RPM_DIVISOR / gpu_raw) : 0;
     return 0;
 }
 

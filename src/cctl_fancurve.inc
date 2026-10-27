@@ -34,6 +34,9 @@
 
 #define FANCURVE_IOCTL_RETRIES     3
 #define FANCURVE_IOCTL_RETRY_US    100000
+#define FANCURVE_START_TIMEOUT_MS  7000
+#define FANCURVE_START_POLL_MS     20
+#define FANCURVE_SLEEP_CLOCK_THRESHOLD_NS 250000000LL
 #define FANCURVE_MIN_POINTS        2
 #define FANCURVE_MAX_POINTS        16
 #define FANCURVE_MIN_FAN           25
@@ -81,7 +84,6 @@ static int fancurve_name_valid(const char *name)
     len = strlen(name);
     if (len > FANCURVE_NAME_MAX) return 0;
     if (name[0] == '.') return 0;
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
 
     for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
         if (*p == '/' || iscntrl(*p)) return 0;
@@ -932,12 +934,12 @@ static int fc_edit_and_save(const char *initial, const char *name,
         }
 
         unlink(tmp);
-        fprintf(stderr, "Invalid fan curve: %s\n", parse_err);
-        printf("Reopen the editor? [Y/n] ");
+        cctl_stream_fprintf(stderr, "Invalid fan curve: %s\n", parse_err);
+        cctl_stream_printf("Reopen the editor? [Y/n] ");
         fflush(stdout);
         char ans[16];
         int got = fgets(ans, sizeof(ans), stdin) != NULL;
-        putchar('\n');
+        cctl_stream_putchar('\n');
         if (!got || ans[0] == 'n' || ans[0] == 'N') {
             free(edited);
             free(text);
@@ -995,8 +997,17 @@ static int fc_read_state(struct fancurve_state *st)
 
     if (fgets(line, sizeof(line), fp))
         st->epoch = (time_t)strtol(line, NULL, 10);
-    if (fgets(line, sizeof(line), fp))
-        st->sleep_monitor = atoi(line) != 0;
+    if (fgets(line, sizeof(line), fp)) {
+        errno = 0;
+        char *end = NULL;
+        long value = strtol(line, &end, 10);
+        while (end && isspace((unsigned char)*end)) end++;
+        if (errno || end == line || !end || *end || (value != 0 && value != 1)) {
+            fclose(fp);
+            return -1;
+        }
+        st->sleep_monitor = (int)value;
+    }
 
     fclose(fp);
     return 0;
@@ -1087,7 +1098,7 @@ static void fc_warn_active(const struct fancurve_state *st)
     int prev_line = g_stream_error_line;
     g_stream_error_mode = STREAM_MODE_LINE;
     g_stream_error_line = 0;
-    fprintf(stderr, "Info: %s is active; keeping curve fan control.\n", label);
+    cctl_stream_fprintf(stderr, "Info: %s is active; keeping curve fan control.\n", label);
     g_stream_error_mode = prev_mode;
     g_stream_error_line = prev_line;
 }
@@ -1096,8 +1107,8 @@ static void fc_warn_fan_change(const struct fancurve_state *st)
 {
     char label[FANCURVE_NAME_MAX + 32];
     fc_active_label(st, label, sizeof(label));
-    fprintf(stderr, "Warning: %s is running; refusing to change fan control.\n", label);
-    fprintf(stderr, "         Stop it first with 'cctl fancurve stop'.\n");
+    cctl_stream_fprintf(stderr, "Warning: %s is running; refusing to change fan control.\n", label);
+    cctl_stream_fprintf(stderr, "         Stop it first with 'cctl fancurve stop'.\n");
 }
 
 /* ------------------------------------------------------------- daemon */
@@ -1157,7 +1168,9 @@ static int fc_temp_faninfo(int fd, unsigned long req, int *out)
     return 0;
 }
 
-/* CPU fallback: /sys/class/hwmon coretemp/k10temp package sensors. */
+/* Fan safety fallback: inspect recognized CPU thermal drivers and use their
+ * hottest valid input. This is intentionally more conservative than selecting
+ * one package label, and is separate from cpumon's presentation sensor choice. */
 static int fc_cpu_temp_hwmon(void)
 {
     DIR *dir = opendir("/sys/class/hwmon");
@@ -1175,21 +1188,65 @@ static int fc_cpu_temp_hwmon(void)
             strcmp(name, "zenpower") != 0)
             continue;
 
-        for (int i = 1; i <= 16; i++) {
-            snprintf(path, sizeof(path), "/sys/class/hwmon/%s/temp%d_input",
-                     ent->d_name, i);
+        char dirpath[PATH_MAX];
+        snprintf(dirpath, sizeof(dirpath), "/sys/class/hwmon/%s", ent->d_name);
+        DIR *sensors = opendir(dirpath);
+        if (!sensors) continue;
+        struct dirent *sensor;
+        while ((sensor = readdir(sensors)) != NULL) {
+            int index = 0;
+            char suffix = '\0';
+            if (sscanf(sensor->d_name, "temp%d_input%c", &index, &suffix) != 1 || index < 1)
+                continue;
+            snprintf(path, sizeof(path), "/sys/class/hwmon/%s/%s",
+                     ent->d_name, sensor->d_name);
             long milli = read_sysfs_long(path, -1000);
             if (milli < 0) continue;
             int temp = (int)(milli / 1000);
             if (temp > 0 && temp < 125 && temp > best) best = temp;
         }
+        closedir(sensors);
     }
     closedir(dir);
     return best;
 }
 
+/* nvidia-smi can wake a GPU or keep it out of D3cold. Only query when every
+ * NVIDIA display device is already in D0; unknown states are treated as off. */
+static int fc_nvidia_gpus_in_d0(void)
+{
+    DIR *dir = opendir("/sys/bus/pci/devices");
+    if (!dir) return 0;
+
+    int found = 0, all_in_d0 = 1;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+
+        char path[PATH_MAX], value[32];
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", ent->d_name);
+        if (read_sysfs_str(path, value, sizeof(value)) < 0 || strcmp(value, "0x10de") != 0)
+            continue;
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", ent->d_name);
+        if (read_sysfs_str(path, value, sizeof(value)) < 0 ||
+            (strncmp(value, "0x0300", 6) != 0 && strncmp(value, "0x0302", 6) != 0))
+            continue;
+
+        found++;
+        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/power_state", ent->d_name);
+        if (read_sysfs_str(path, value, sizeof(value)) < 0 || strcmp(value, "D0") != 0) {
+            all_in_d0 = 0;
+            break;
+        }
+    }
+    closedir(dir);
+    return found > 0 && all_in_d0;
+}
+
 static int fc_gpu_temp_nvidia(void)
 {
+    if (!fc_nvidia_gpus_in_d0()) return -1;
+
     char out[128];
     char *const args[] = { "nvidia-smi", "--query-gpu=temperature.gpu",
                            "--format=csv,noheader,nounits", NULL };
@@ -1203,8 +1260,8 @@ static int fc_gpu_temp_nvidia(void)
     return (int)temp;
 }
 
-/* Hottest valid fan-sensor temperature; faninfo is authoritative except for
- * this EC's transient 1 C CPU reading after resume, which falls back to hwmon. */
+/* Hottest valid fan-sensor temperature. This EC can report a transient 1 C
+ * CPU reading around resume; treat it as invalid and try CPU hwmon instead. */
 static int fc_read_temps(int fd, int *cpu, int *gpu)
 {
     int c = -1, g = -1;
@@ -1292,12 +1349,40 @@ struct fancurve_worker_ctx {
     int sleep_force_apply;
     int sleep_suspended;
     int sleep_monitor_active;
+    int sleep_clock_valid;
+    int sleep_clock_resume_seen;
+    int64_t sleep_clock_offset_ns;
     DBusConnection *sleep_bus;
 };
 
 static void fc_log_line(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 static int fc_reopen_drivers(struct fancurve_worker_ctx *ctx);
+
+/* CLOCK_BOOTTIME advances during suspend; CLOCK_MONOTONIC does not. Their
+ * offset therefore changes only after the machine has actually slept, which
+ * lets the temperature fallback distinguish resume from the pre-sleep window. */
+static int fc_sleep_clock_offset(int64_t *offset_ns)
+{
+    struct timespec boot, mono;
+    if (clock_gettime(CLOCK_BOOTTIME, &boot) != 0 ||
+        clock_gettime(CLOCK_MONOTONIC, &mono) != 0)
+        return -1;
+    int64_t boot_ns = (int64_t)boot.tv_sec * 1000000000LL + boot.tv_nsec;
+    int64_t mono_ns = (int64_t)mono.tv_sec * 1000000000LL + mono.tv_nsec;
+    *offset_ns = boot_ns - mono_ns;
+    return 0;
+}
+
+static int fc_sleep_clock_confirms_resume(struct fancurve_worker_ctx *ctx)
+{
+    int64_t current_offset;
+    if (!ctx->sleep_clock_valid ||
+        fc_sleep_clock_offset(&current_offset) != 0)
+        return 0;
+    return current_offset - ctx->sleep_clock_offset_ns >=
+           FANCURVE_SLEEP_CLOCK_THRESHOLD_NS;
+}
 
 static int fc_sleep_inhibitor_acquire(struct fancurve_worker_ctx *ctx)
 {
@@ -1371,6 +1456,11 @@ static DBusHandlerResult fc_sleep_signal(DBusConnection *connection,
 
     if (sleeping && !ctx->sleep_suspended) {
         fc_log_line("suspend requested; releasing fans to EC auto");
+        ctx->sleep_clock_valid =
+            fc_sleep_clock_offset(&ctx->sleep_clock_offset_ns) == 0;
+        ctx->sleep_clock_resume_seen = 0;
+        if (!ctx->sleep_clock_valid)
+            fc_log_line("suspend clock unavailable; temperature fallback waits for login1 resume signal");
         if (ctx->tuxedo_fd >= 0) {
             close(ctx->tuxedo_fd); /* The armed driver close hook restores EC auto. */
             ctx->tuxedo_fd = -1;
@@ -1485,9 +1575,23 @@ static int fc_worker_sleep_ms(int ms, struct fancurve_worker_ctx *ctx)
         if (fc_sleep_monitor_process(ctx) < 0) return -1;
         if (ctx->sleep_force_apply || ctx->sleep_suspended != was_suspended)
             return 0;
-        int chunk = ms > 25 ? 25 : ms;
-        usleep((useconds_t)chunk * 1000);
+        int chunk = ms > 250 ? 250 : ms;
+        if (ctx->sleep_bus) {
+            /* Dispatch immediately when logind sends a sleep/resume signal;
+             * otherwise block until this short signal-check interval ends. */
+            (void)dbus_connection_read_write_dispatch(ctx->sleep_bus, chunk);
+        } else {
+            struct timespec delay = {
+                .tv_sec = chunk / 1000,
+                .tv_nsec = (long)(chunk % 1000) * 1000000L
+            };
+            while (nanosleep(&delay, &delay) < 0 && errno == EINTR && g_fancurve_running) {}
+        }
+        if (!g_fancurve_running) return -1;
         ms -= chunk;
+        if (fc_sleep_monitor_process(ctx) < 0) return -1;
+        if (ctx->sleep_force_apply || ctx->sleep_suspended != was_suspended)
+            return 0;
     }
     return g_fancurve_running ? 0 : -1;
 }
@@ -1505,7 +1609,7 @@ static int fc_worker_begin(struct fancurve_worker_ctx *ctx,
 
     ctx->tuxedo_fd = tuxedo_open_clevo();
     if (ctx->tuxedo_fd < 0 || fc_arm_auto_on_close(ctx->tuxedo_fd) != 0) {
-        fprintf(stderr, "cctl: driver lacks fan-auto-on-close safety; refusing to start fan curve\n");
+        cctl_stream_fprintf(stderr, "cctl: driver lacks fan-auto-on-close safety; refusing to start fan curve\n");
         goto fail;
     }
 
@@ -1526,7 +1630,7 @@ static int fc_worker_begin(struct fancurve_worker_ctx *ctx,
     if (!fp) goto fail;
     state_fd = -1; /* owned by fp */
 
-    fprintf(fp, "%d %ld\n%s\n%ld\n%d\n",
+    cctl_stream_fprintf(fp, "%d %ld\n%s\n%ld\n%d\n",
             (int)getpid(), proc_starttime(getpid()), prof->name, (long)time(NULL),
             ctx->sleep_monitor_active);
     if (fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
@@ -1739,9 +1843,19 @@ static void fc_worker(const struct fancurve_profile *prof)
     while (g_fancurve_running) {
         if (fc_sleep_monitor_process(&ctx) < 0) break;
         if (ctx.sleep_suspended) {
+            /* PrepareForSleep(true) can arrive well before firmware enters
+             * sleep. Only enable the temperature fallback once the Linux
+             * suspend-aware clock confirms that the machine actually slept. */
+            if (!ctx.sleep_clock_resume_seen &&
+                fc_sleep_clock_confirms_resume(&ctx)) {
+                ctx.sleep_clock_resume_seen = 1;
+                fc_log_line("clock confirms system resumed; temperature fallback active");
+            }
+
             /* Keep EC auto while polling for a missed resume notification. */
             int cpu = -1, gpu = -1;
-            if (fc_read_temps(ctx.tuxedo_fd, &cpu, &gpu) == 0) {
+            if (ctx.sleep_clock_resume_seen &&
+                fc_read_temps(ctx.tuxedo_fd, &cpu, &gpu) == 0) {
                 int temp = cpu > gpu ? cpu : gpu;
                 fc_log_line("EC auto monitor CPU=%dC GPU=%dC -> control=%dC",
                             cpu, gpu, temp);
@@ -1932,15 +2046,15 @@ static int fc_stop_worker(int quiet, int set_auto)
 
     if (!quiet) {
         if (had_worker && rc == 0)
-            printf("Stopped fan curve '%s' [PID %d]; fans set to EC auto.\n",
+            cctl_stream_printf("Stopped fan curve '%s' [PID %d]; fans set to EC auto.\n",
                    st.name, (int)st.pid);
         else if (had_worker)
-            printf("Stopped fan curve '%s' [PID %d]; failed to set EC auto.\n",
+            cctl_stream_printf("Stopped fan curve '%s' [PID %d]; failed to set EC auto.\n",
                    st.name, (int)st.pid);
         else if (rc == 0)
-            printf("No fan curve is active. Fans set to EC auto.\n");
+            cctl_stream_printf("No fan curve is active. Fans set to EC auto.\n");
         else
-            printf("No fan curve is active; failed to set EC auto.\n");
+            cctl_stream_printf("No fan curve is active; failed to set EC auto.\n");
     }
     return rc;
 }
@@ -1966,7 +2080,10 @@ static int fc_start(const struct fancurve_profile *prof)
     if (pid > 0) {
         int ready = 0;
         int sleep_monitor_active = -1;
-        for (int i = 0; i < 100; i++) {
+        /* Worker setup can wait up to 5 seconds for the login1 inhibitor
+         * reply; leave margin for startup and state-file publication. */
+        for (int waited = 0; waited < FANCURVE_START_TIMEOUT_MS;
+             waited += FANCURVE_START_POLL_MS) {
             struct fancurve_state st;
             if (fc_read_state(&st) == 0 && st.pid == pid &&
                 strcmp(st.name, prof->name) == 0) {
@@ -1974,15 +2091,15 @@ static int fc_start(const struct fancurve_profile *prof)
                 sleep_monitor_active = st.sleep_monitor;
                 break;
             }
-            usleep(20000);
+            usleep(FANCURVE_START_POLL_MS * 1000);
         }
         if (!ready) {
             kill(pid, SIGTERM);
             return fail("fan-curve daemon failed to start");
         }
-        printf("Started fan curve '%s' [PID %d]\n", prof->name, (int)pid);
+        cctl_stream_printf("Started fan curve '%s' [PID %d]\n", prof->name, (int)pid);
         if (sleep_monitor_active == 0)
-            printf("Note: no login1-compatible sleep manager; suspend auto-restore is unavailable.\n");
+            cctl_stream_printf("Note: no login1-compatible sleep manager; suspend auto-restore is unavailable.\n");
         return 0;
     }
 
@@ -2051,7 +2168,7 @@ static char *fc_make_template(const char *name, int npoints)
 static int fc_prompt_points(void)
 {
     for (;;) {
-        printf("How many points? (%d-%d): ", FANCURVE_MIN_POINTS, FANCURVE_MAX_POINTS);
+        cctl_stream_printf("How many points? (%d-%d): ", FANCURVE_MIN_POINTS, FANCURVE_MAX_POINTS);
         fflush(stdout);
         char line[64];
         if (!fgets(line, sizeof(line), stdin))
@@ -2060,7 +2177,7 @@ static int fc_prompt_points(void)
         if (safe_atoi(line, &n) == 0 && n >= FANCURVE_MIN_POINTS &&
             n <= FANCURVE_MAX_POINTS)
             return n;
-        printf("Enter a number between %d and %d.\n",
+        cctl_stream_printf("Enter a number between %d and %d.\n",
                FANCURVE_MIN_POINTS, FANCURVE_MAX_POINTS);
     }
 }
@@ -2078,29 +2195,29 @@ static void fc_print_status(const char *requested_name)
     }
 
     if (requested_name)
-        printf("%sFan Curve:%s %s\n", C_YLW, C_RST, requested_name);
+        cctl_stream_printf("%sFan Curve:%s %s\n", C_YLW, C_RST, requested_name);
     else
-        printf("%sFan Curve:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("%sFan Curve:%s\n", C_YLW, C_RST);
 
     if (fc_is_running(&st)) {
         if (!requested_name)
-            printf("  %sStatus:%s              %s%s%s (active, PID %d)\n",
+            cctl_stream_printf("  %sStatus:%s              %s%s%s (active, PID %d)\n",
                    C_CYN, C_RST, C_GRN, st.name, C_RST, (int)st.pid);
         else if (strcmp(st.name, requested_name) == 0)
-            printf("  %sStatus:%s              %sactive%s [PID %d]\n",
+            cctl_stream_printf("  %sStatus:%s              %sactive%s [PID %d]\n",
                    C_CYN, C_RST, C_GRN, C_RST, (int)st.pid);
         else
-            printf("  %sStatus:%s              %sinactive%s (active curve: %s%s%s [PID %d])\n",
+            cctl_stream_printf("  %sStatus:%s              %sinactive%s (active curve: %s%s%s [PID %d])\n",
                    C_CYN, C_RST, C_DIM, C_RST, C_GRN, st.name, C_RST, (int)st.pid);
     } else {
         if (requested_name)
-            printf("  %sStatus:%s              %sinactive%s\n",
+            cctl_stream_printf("  %sStatus:%s              %sinactive%s\n",
                    C_CYN, C_RST, C_DIM, C_RST);
         else
-            printf("  %sStatus:%s              %snone%s (stopped)\n",
+            cctl_stream_printf("  %sStatus:%s              %snone%s (stopped)\n",
                    C_CYN, C_RST, C_DIM, C_RST);
     }
-    printf("\n");
+    cctl_stream_printf("\n");
 }
 
 static void fc_print_status_row(void)
@@ -2131,9 +2248,9 @@ static int fc_list_profiles(void)
     int n = scandir(FANCURVE_DIR, &list, NULL, alphasort);
     int shown = 0;
 
-    printf("%sSaved Fan Curves:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("%sSaved Fan Curves:%s\n", C_YLW, C_RST);
     if (n < 0) {
-        printf("No fan-curve profiles yet.\n");
+        cctl_stream_printf("No fan-curve profiles yet.\n");
     } else {
         for (int i = 0; i < n; i++) {
             const char *name = list[i]->d_name;
@@ -2143,7 +2260,7 @@ static int fc_list_profiles(void)
                 free(list[i]);
                 continue;
             }
-            printf("%s%s%.*s%s", shown ? ", " : "  ", C_CYN,
+            cctl_stream_printf("%s%s%.*s%s", shown ? ", " : "  ", C_CYN,
                    (int)(len - 5), name, C_RST);
             shown++;
             free(list[i]);
@@ -2152,8 +2269,8 @@ static int fc_list_profiles(void)
     }
 
     if (n >= 0) {
-        if (shown) putchar('\n');
-        else printf("No fan-curve profiles yet.\n");
+        if (shown) cctl_stream_putchar('\n');
+        else cctl_stream_printf("No fan-curve profiles yet.\n");
     }
 
     g_stream_mode = prev;
@@ -2166,20 +2283,20 @@ static void fc_print_usage(void)
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
 
-    printf("%sUsage:%s %scctl fancurve <action> [name]%s\n\n",
+    cctl_stream_printf("%sUsage:%s %scctl fancurve <action> [name]%s\n\n",
            C_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("%sActions:%s\n", C_YLW, C_RST);
-    printf("  %s%-19s%s Stop the daemon and return both fans to EC automatic control\n",
+    cctl_stream_printf("%sActions:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  %s%-19s%s Stop the daemon and return both fans to EC automatic control\n",
            C_CYN, "stop", C_RST);
-    printf("  %s%-19s%s Start a curve (restarts a running curve)\n",
+    cctl_stream_printf("  %s%-19s%s Start a curve (restarts a running curve)\n",
            C_CYN, "start|s <name>", C_RST);
-    printf("  %s%-19s%s Create a profile: prompt for point count, then open the editor\n",
+    cctl_stream_printf("  %s%-19s%s Create a profile: prompt for point count, then open the editor\n",
            C_CYN, "create|c <name>", C_RST);
-    printf("  %s%-19s%s Validate and show a profile\n", C_CYN, "view|v <name>", C_RST);
-    printf("  %s%-19s%s Edit a profile in the editor\n", C_CYN, "edit|e <name>", C_RST);
-    printf("  %s%-19s%s Delete an inactive profile (--noconfirm skips the prompt)\n",
+    cctl_stream_printf("  %s%-19s%s Validate and show a profile\n", C_CYN, "view|v <name>", C_RST);
+    cctl_stream_printf("  %s%-19s%s Edit a profile in the editor\n", C_CYN, "edit|e <name>", C_RST);
+    cctl_stream_printf("  %s%-19s%s Delete an inactive profile (--noconfirm skips the prompt)\n",
            C_CYN, "del <name>", C_RST);
-    printf("  %s%-19s%s Stream live worker diagnostics (Ctrl-C to stop)\n",
+    cctl_stream_printf("  %s%-19s%s Stream live worker diagnostics (Ctrl-C to stop)\n",
            C_CYN, "log", C_RST);
 
     g_stream_mode = prev;
@@ -2203,7 +2320,7 @@ static void fc_print_log_line(const char *line, size_t len)
     if (len >= sizeof(text)) len = sizeof(text) - 1;
     memcpy(text, line, len);
     text[len] = '\0';
-    printf("%s%.*s%s", fc_log_color(text), (int)len, line, C_RST);
+    cctl_stream_printf("%s%.*s%s", fc_log_color(text), (int)len, line, C_RST);
 }
 
 static int fc_cmd_start(int argc, char **argv)
@@ -2236,14 +2353,14 @@ static int fc_cmd_stop(int argc, char **argv)
 
 static void fc_print_shell_quoted(const char *s)
 {
-    putchar('\'');
+    cctl_stream_putchar('\'');
     for (const char *p = s; *p; p++) {
         if (*p == '\'')
-            printf("'\\''");
+            cctl_stream_printf("'\\''");
         else
-            putchar(*p);
+            cctl_stream_putchar(*p);
     }
-    putchar('\'');
+    cctl_stream_putchar('\'');
 }
 
 static int fc_cmd_create(int argc, char **argv)
@@ -2256,20 +2373,20 @@ static int fc_cmd_create(int argc, char **argv)
         return fail("invalid profile name '%s'", name);
 
     if (fancurve_profile_exists(name)) {
-        fprintf(stderr, "Warning: fan curve '%s' already exists. Replace it? [y/N] ", name);
+        cctl_stream_fprintf(stderr, "Warning: fan curve '%s' already exists. Replace it? [y/N] ", name);
         fflush(stderr);
         if (!isatty(STDIN_FILENO)) {
-            fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm replacement.\n");
+            cctl_stream_fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm replacement.\n");
             return 1;
         }
         char answer[32];
         if (!fgets(answer, sizeof(answer), stdin)) {
-            puts("Cancelled; the existing fan curve was kept.");
+            cctl_stream_puts("Cancelled; the existing fan curve was kept.");
             return 1;
         }
         answer[strcspn(answer, "\r\n")] = '\0';
         if (strcasecmp(answer, "y") != 0 && strcasecmp(answer, "yes") != 0) {
-            puts("Cancelled; the existing fan curve was kept.");
+            cctl_stream_puts("Cancelled; the existing fan curve was kept.");
             return 1;
         }
     }
@@ -2282,7 +2399,7 @@ static int fc_cmd_create(int argc, char **argv)
     if (!template)
         return fail("out of memory");
 
-    printf("Opening editor for %s/%s.json ...\n", FANCURVE_DIR, name);
+    cctl_stream_printf("Opening editor for %s/%s.json ...\n", FANCURVE_DIR, name);
     fflush(stdout);
 
     char err[256];
@@ -2291,10 +2408,10 @@ static int fc_cmd_create(int argc, char **argv)
     if (rc < 0)
         return fail("%s", err);
 
-    printf("Created fan curve '%s'.\n", name);
-    printf("Activate it with: cctl fancurve start ");
+    cctl_stream_printf("Created fan curve '%s'.\n", name);
+    cctl_stream_printf("Activate it with: cctl fancurve start ");
     fc_print_shell_quoted(name);
-    putchar('\n');
+    cctl_stream_putchar('\n');
     return 0;
 }
 
@@ -2320,7 +2437,7 @@ static int fc_cmd_edit(int argc, char **argv)
     if (!text)
         return fail("%s", err);
 
-    printf("Opening editor for %s ...\n", path);
+    cctl_stream_printf("Opening editor for %s ...\n", path);
     fflush(stdout);
 
     int rc = fc_edit_and_save(text, name, err, sizeof(err));
@@ -2328,12 +2445,12 @@ static int fc_cmd_edit(int argc, char **argv)
     if (rc < 0)
         return fail("%s", err);
 
-    printf("Updated fan curve '%s'.\n", name);
+    cctl_stream_printf("Updated fan curve '%s'.\n", name);
 
     if (fc_is_running(&st) && strcmp(st.name, name) == 0) {
-        printf("This curve is active; run: cctl fancurve start ");
+        cctl_stream_printf("This curve is active; run: cctl fancurve start ");
         fc_print_shell_quoted(name);
-        printf(" to apply the new points.\n");
+        cctl_stream_printf(" to apply the new points.\n");
     }
     return 0;
 }
@@ -2360,18 +2477,18 @@ static int fc_cmd_view(int argc, char **argv)
     g_stream_line = 0;
 
     fc_print_status(prof.name);
-    printf("  Hysteresis: %d C\n", prof.hysteresis);
-    printf("  Interval:   %d ms\n", prof.interval_ms);
-    printf("  Points:     %d\n", prof.npoints);
-    printf("  %-8s %s\n", "Temp", "Fan");
-    printf("  %-8s %s\n", "────", "───");
+    cctl_stream_printf("  Hysteresis: %d C\n", prof.hysteresis);
+    cctl_stream_printf("  Interval:   %d ms\n", prof.interval_ms);
+    cctl_stream_printf("  Points:     %d\n", prof.npoints);
+    cctl_stream_printf("  %-8s %s\n", "Temp", "Fan");
+    cctl_stream_printf("  %-8s %s\n", "────", "───");
     for (int i = 0; i < prof.npoints; i++) {
         if (prof.points[i].fan == FANCURVE_FAN_AUTO)
-            printf("  %3d C    auto\n", prof.points[i].temp);
+            cctl_stream_printf("  %3d C    auto\n", prof.points[i].temp);
         else
-            printf("  %3d C    %3d%%\n", prof.points[i].temp, prof.points[i].fan);
+            cctl_stream_printf("  %3d C    %3d%%\n", prof.points[i].temp, prof.points[i].fan);
     }
-    printf("  Source:     %s\n", path);
+    cctl_stream_printf("  Source:     %s\n", path);
 
     g_stream_mode = prev;
     return 0;
@@ -2418,9 +2535,9 @@ static int fc_cmd_log(int argc, char **argv)
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
 
-    printf("%sFan Curve Log:%s %s%s%s [PID %d]\n",
+    cctl_stream_printf("%sFan Curve Log:%s %s%s%s [PID %d]\n",
            C_YLW, C_RST, C_GRN, st.name, C_RST, (int)st.pid);
-    printf("%sLive worker activity; earlier messages are not saved. Press Ctrl-C to stop.%s\n\n",
+    cctl_stream_printf("%sLive worker activity; earlier messages are not saved. Press Ctrl-C to stop.%s\n\n",
            C_DIM, C_RST);
     fflush(stdout);
 
@@ -2453,7 +2570,7 @@ static int fc_cmd_log(int argc, char **argv)
             struct fancurve_state current;
             if (!fc_is_running(&current) || current.pid != st.pid ||
                 current.starttime != st.starttime) {
-                printf("\nFan curve stopped.\n");
+                cctl_stream_printf("\nFan curve stopped.\n");
                 fflush(stdout);
                 break;
             }
@@ -2497,7 +2614,7 @@ static int fc_cmd_del(int argc, char **argv)
     if (unlink(path) != 0)
         return fail("cannot delete '%s': %s", name, strerror(errno));
 
-    printf("Deleted fan curve '%s'.\n", name);
+    cctl_stream_printf("Deleted fan curve '%s'.\n", name);
     return 0;
 }
 
@@ -2509,7 +2626,7 @@ static int cmd_fancurve(int argc, char **argv)
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
         int rc = fc_list_profiles();
-        printf("\n");
+        cctl_stream_printf("\n");
         fc_print_usage();
         g_stream_mode = prev;
         return rc;

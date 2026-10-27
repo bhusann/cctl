@@ -142,7 +142,7 @@ static int webcam_set(int enabled)
     /* Try tuxedo_io first */
     if (access("/dev/tuxedo_io", F_OK) == 0) {
         if (webcam_write_tuxedo(enabled) == 0) {
-            printf("  Webcam: %s (tuxedo_io)%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
+            cctl_stream_printf("  Webcam: %s (tuxedo_io)%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
             return 0;
         }
     }
@@ -154,14 +154,14 @@ static int webcam_set(int enabled)
      * The disable switch is unbinding e.g. "1-8:1.0" from uvcvideo. */
     char *usb_id = find_webcam_usb_id();
     if (!usb_id) {
-        fprintf(stderr, "Error: No webcam USB device found\n");
+        cctl_stream_fprintf(stderr, "Error: No webcam USB device found\n");
         return -1;
     }
 
     char ifnames[8][256];
     int cnt = webcam_list_interfaces(usb_id, ifnames, 8);
     if (cnt <= 0) {
-        fprintf(stderr, "Error: Webcam USB device exposes no interfaces\n");
+        cctl_stream_fprintf(stderr, "Error: Webcam USB device exposes no interfaces\n");
         free(usb_id);
         return -1;
     }
@@ -175,7 +175,7 @@ static int webcam_set(int enabled)
     free(usb_id);
 
     if (enabled == currently_enabled) {
-        printf("  Webcam: already %s\n", enabled ? "ON" : "OFF");
+        cctl_stream_printf("  Webcam: already %s\n", enabled ? "ON" : "OFF");
         return 0;
     }
 
@@ -184,9 +184,9 @@ static int webcam_set(int enabled)
              enabled ? "bind" : "unbind");
     int fd = open(op_path, O_WRONLY);
     if (fd < 0) {
-        fprintf(stderr, "Error: Failed to open %s: %s\n", op_path, strerror(errno));
+        cctl_stream_fprintf(stderr, "Error: Failed to open %s: %s\n", op_path, strerror(errno));
         if (errno == ENOENT)
-            fprintf(stderr, "       (uvcvideo kernel module not loaded?)\n");
+            cctl_stream_fprintf(stderr, "       (uvcvideo kernel module not loaded?)\n");
         return -1;
     }
 
@@ -202,12 +202,12 @@ static int webcam_set(int enabled)
     close(fd);
 
     if (attempted > 0 && done == 0) {
-        fprintf(stderr, "Error: Failed to %s webcam: %s\n",
+        cctl_stream_fprintf(stderr, "Error: Failed to %s webcam: %s\n",
                 enabled ? "bind" : "unbind", strerror(last_err));
         return -1;
     }
 
-    printf("  Webcam: %s (USB)%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
+    cctl_stream_printf("  Webcam: %s (USB)%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -215,7 +215,7 @@ static int webcam_toggle(void)
 {
     int current = is_webcam_enabled();
     if (current < 0) {
-        fprintf(stderr, "Error: Cannot detect webcam state\n");
+        cctl_stream_fprintf(stderr, "Error: Cannot detect webcam state\n");
         return -1;
     }
     return webcam_set(!current);
@@ -273,7 +273,7 @@ static int mic_is_enabled(void)
 static int mic_set(int enabled)
 {
     if (!command_exists("amixer")) {
-        fprintf(stderr, "Error: amixer not found (install alsa-utils)\n");
+        cctl_stream_fprintf(stderr, "Error: amixer not found (install alsa-utils)\n");
         return -1;
     }
     const char *verb = enabled ? "cap" : "nocap";
@@ -292,10 +292,10 @@ static int mic_set(int enabled)
         rc = run(args, RUN_SILENT, NULL, 0);
     }
     if (rc != 0) {
-        fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
+        cctl_stream_fprintf(stderr, "Error: amixer failed (is alsa installed?)\n");
         return -1;
     }
-    printf("  Laptop internal microphone: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
+    cctl_stream_printf("  Laptop internal microphone: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -303,8 +303,8 @@ static int mic_toggle(void)
 {
     int current = mic_is_enabled();
     if (current < 0) {
-        fprintf(stderr, "Error: Cannot determine microphone state (amixer missing or failed)\n");
-        fprintf(stderr, "Set it explicitly: cctl mic on  |  cctl mic off\n");
+        cctl_stream_fprintf(stderr, "Error: Cannot determine microphone state (amixer missing or failed)\n");
+        cctl_stream_fprintf(stderr, "Set it explicitly: cctl mic on  |  cctl mic off\n");
         return -1;
     }
     return mic_set(!current);
@@ -316,7 +316,8 @@ static int mic_toggle(void)
 
 /* Parsed per-output state from `xrandr --current` (one entry per connected
  * output, internal panel flagged separately). */
-#define MAX_MONITORS 8
+#define MAX_MONITORS 32
+#define MAX_DISPLAY_RATES 32
 
 struct display_monitor {
     char name[64];
@@ -325,7 +326,7 @@ struct display_monitor {
     char geometry[64];          /* "WxH" from the output line (framebuffer region) */
     char resolution[64];        /* active mode */
     char current_rate[16];
-    char available_rates[32][16];
+    char available_rates[MAX_DISPLAY_RATES][16];
     int rate_count;
 };
 
@@ -336,7 +337,7 @@ struct display_info {
     char resolution[64];
     char current_resolution[64];
     char current_rate[16];
-    char available_rates[32][16];
+    char available_rates[MAX_DISPLAY_RATES][16];
     int rate_count;
     /* Every output xrandr reports, in server order. */
     struct display_monitor monitors[MAX_MONITORS];
@@ -440,7 +441,13 @@ static int query_display_info(struct display_info *info)
             if (!strstr(line, " connected")) continue;
             char name[64];
             if (sscanf(line, "%63s", name) != 1) continue;
-            if (info->monitor_count >= MAX_MONITORS) continue;
+            if (info->monitor_count >= MAX_MONITORS) {
+                fclose(fp);
+                cctl_stream_fprintf(stderr,
+                                    "Error: xrandr reported more than %d connected displays; refusing an incomplete display list.\n",
+                                    MAX_MONITORS);
+                return -1;
+            }
             cur = info->monitor_count++;
             snprintf(info->monitors[cur].name,
                      sizeof(info->monitors[cur].name), "%s", name);
@@ -460,10 +467,10 @@ static int query_display_info(struct display_info *info)
         if (sscanf(res, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) continue;
 
         p += strlen(res);
-        char rates[32][16];
+        char rates[MAX_DISPLAY_RATES][16];
         int rc = 0, active = 0;
         char active_rate[16] = "";
-        while (*p && rc < 32) {
+        while (*p && rc < MAX_DISPLAY_RATES) {
             while (*p == ' ') p++;
             if (!*p) break;
             char tok[32];
@@ -476,12 +483,20 @@ static int query_display_info(struct display_info *info)
             int act = 0;
             if (!display_rate_token(tok, clean, sizeof(clean), &act))
                 continue;
-            snprintf(rates[rc], sizeof(rates[rc]), "%s", clean);
+            memcpy(rates[rc], clean, strlen(clean) + 1);
             if (act) {
                 active = 1;
                 snprintf(active_rate, sizeof(active_rate), "%s", clean);
             }
             rc++;
+        }
+        while (*p == ' ') p++;
+        if (rc == MAX_DISPLAY_RATES && *p) {
+            fclose(fp);
+            cctl_stream_fprintf(stderr,
+                                "Error: xrandr reported more than %d refresh rates for one mode.\n",
+                                MAX_DISPLAY_RATES);
+            return -1;
         }
         /* Zero parses rates => not a mode line (verbose timing block). */
         if (rc == 0) continue;
@@ -491,9 +506,10 @@ static int query_display_info(struct display_info *info)
             snprintf(m->resolution, sizeof(m->resolution), "%s", res);
             snprintf(m->current_rate, sizeof(m->current_rate), "%s", active_rate);
             m->rate_count = rc;
-            for (int i = 0; i < rc; i++)
-                snprintf(m->available_rates[i], sizeof(m->available_rates[i]),
-                         "%s", rates[i]);
+            for (int i = 0; i < rc; i++) {
+                size_t rate_len = strlen(rates[i]);
+                memcpy(m->available_rates[i], rates[i], rate_len + 1);
+            }
         }
     }
     fclose(fp);
@@ -642,21 +658,21 @@ static int rr_set_ext_on(int mon, const char *rate, const char *extra_note)
     /* Validate rate: must be digits and at most one dot */
     for (const char *p = rate; *p; p++) {
         if (!isdigit((unsigned char)*p) && *p != '.') {
-            fprintf(stderr, "Error: Invalid refresh rate '%s'\n", rate);
+            cctl_stream_fprintf(stderr, "Error: Invalid refresh rate '%s'\n", rate);
             return -1;
         }
     }
 
     struct display_info info;
     if (query_display_info(&info) < 0) {
-        fprintf(stderr, "Error: failed to query display info\n");
+        cctl_stream_fprintf(stderr, "Error: failed to query display info\n");
         return -1;
     }
 
     int target = (mon > 0) ? mon : 1;
     int ti = display_monitor_by_number(&info, target);
     if (ti < 0) {
-        fprintf(stderr, "Error: no display #%d (run 'cctl rr' to list displays)\n",
+        cctl_stream_fprintf(stderr, "Error: no display #%d (run 'cctl rr' to list displays)\n",
                 target);
         return -1;
     }
@@ -670,7 +686,7 @@ static int rr_set_ext_on(int mon, const char *rate, const char *extra_note)
         "--rate", (char *)rate, NULL
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0) {
-        fprintf(stderr, "Error: Failed to set display #%d (%s) to %sHz\n",
+        cctl_stream_fprintf(stderr, "Error: Failed to set display #%d (%s) to %sHz\n",
                 target, output, rate);
         return -1;
     }
@@ -682,10 +698,10 @@ static int rr_set_ext_on(int mon, const char *rate, const char *extra_note)
             live_rate = info.monitors[ni].current_rate;
     }
     if (extra_note && *extra_note)
-        printf("  Refresh rate: %sHz on %s %s%s\n", live_rate, output,
+        cctl_stream_printf("  Refresh rate: %sHz on %s %s%s\n", live_rate, output,
                extra_note, snapshot_applied_tag());
     else
-        printf("  Refresh rate: %sHz on %s%s\n", live_rate, output,
+        cctl_stream_printf("  Refresh rate: %sHz on %s%s\n", live_rate, output,
                snapshot_applied_tag());
     return 0;
 }
@@ -740,14 +756,14 @@ static int rr_list(void)
 {
     struct display_info info;
     if (query_display_info(&info) < 0) {
-        fprintf(stderr, "Error: xrandr not available or failed to parse\n");
+        cctl_stream_fprintf(stderr, "Error: xrandr not available or failed to parse\n");
         return -1;
     }
 
     int idx[MAX_MONITORS];
     int n = display_numbered(&info, idx, MAX_MONITORS);
 
-    printf("%sDisplays:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("%sDisplays:%s\n", C_YLW, C_RST);
     for (int k = 0; k < n; k++) {
         struct display_monitor *m = &info.monitors[idx[k]];
         char resbuf[96];
@@ -756,31 +772,31 @@ static int rr_list(void)
                      m->geometry, m->resolution);
         else
             snprintf(resbuf, sizeof(resbuf), "%s", m->resolution);
-        printf("  %s#%d%s  %s%-10s%s %-11s %s%sHz%s\n",
+        cctl_stream_printf("  %s#%d%s  %s%-10s%s %-11s %s%sHz%s\n",
                C_BLD, k + 1, C_RST,
                C_CYN, m->name, C_RST,
                resbuf,
                C_GRN, m->current_rate, C_RST);
-        printf("       %sRates:%s", C_CYN, C_RST);
+        cctl_stream_printf("       %sRates:%s", C_CYN, C_RST);
         for (int i = 0; i < m->rate_count; i++) {
-            printf("  %s%s%s%s", C_CYN, m->available_rates[i], C_RST,
+            cctl_stream_printf("  %s%s%s%s", C_CYN, m->available_rates[i], C_RST,
                    strcmp(m->available_rates[i], m->current_rate) == 0
                        ? " (current)" : "");
         }
-        putchar('\n');
+        cctl_stream_putchar('\n');
     }
 
     int inactive = 0;
     for (int i = 0; i < info.monitor_count; i++) {
         if (info.monitors[i].active) continue;
-        if (!inactive++) printf("\n%sConnected (inactive):%s\n", C_YLW, C_RST);
-        printf("  %s%-10s%s  %sno mode set%s\n", C_CYN, info.monitors[i].name,
+        if (!inactive++) cctl_stream_printf("\n%sConnected (inactive):%s\n", C_YLW, C_RST);
+        cctl_stream_printf("  %s%-10s%s  %sno mode set%s\n", C_CYN, info.monitors[i].name,
                C_RST, C_DIM, C_RST);
     }
 
-    printf("\n%sUsage:%s %scctl rr <rate | toggle> [#N]%s\n",
+    cctl_stream_printf("\n%sUsage:%s %scctl rr <rate | toggle> [#N]%s\n",
            C_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("       %scctl rr 60 --2%s   (display #2, closest rate is applied)\n",
+    cctl_stream_printf("       %scctl rr 60 --2%s   (display #2, closest rate is applied)\n",
            C_CYN, C_RST);
     return 0;
 }
@@ -1021,16 +1037,16 @@ static void row(const char *label, const char *fmt, ...)
         return;
     }
     int ec_code_row = strcmp(label, "EC Code:") == 0;
-    printf("  %-14s %s%s\n", label, val, ec_code_row ? " **" : "");
+    cctl_stream_printf("  %-14s %s%s\n", label, val, ec_code_row ? " **" : "");
 }
 
 static void json_field(const char *key, const char *value)
 {
     if (!json_output) return;
-    if (!json_first_field) putchar(',');
+    if (!json_first_field) cctl_stream_putchar(',');
     json_first_field = 0;
     json_string(key);
-    putchar(':');
+    cctl_stream_putchar(':');
     json_string(value);
 }
 
@@ -1236,7 +1252,7 @@ static void status_system(void)
                 /* One line per active display, internal panel first. */
                 for (int k = 0; k < n; k++) {
                     struct display_monitor *m = &disp_info.monitors[idx[k]];
-                    printf("  %-14s %s%s%s (%s) %s%s Hz%s\n",
+                    cctl_stream_printf("  %-14s %s%s%s (%s) %s%s Hz%s\n",
                            k == 0 ? "Displays:" : "",
                            C_CYN, m->name, C_RST, m->resolution,
                            C_CYN, m->current_rate, C_RST);
@@ -1260,7 +1276,7 @@ static void fc_print_status_row(void);
 
 static void status_fans(void)
 {
-    if (!json_output) printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
+    if (!json_output) cctl_stream_printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
     int cpu_pct = 0, gpu_pct = 0, cpu_rpm = 0, gpu_rpm = 0;
     if (read_fan_telemetry(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm) == 0) {
         row("CPU Fan:", "%s%3d%%%s duty, %s%4d RPM%s", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
@@ -1286,7 +1302,7 @@ static void status_keyboard_color(const char *label, int r, int g, int b)
 
 static void status_keyboard(void)
 {
-    if (!json_output) printf("\n%s--- Keyboard ---%s\n", C_YLW, C_RST);
+    if (!json_output) cctl_stream_printf("\n%s--- Keyboard ---%s\n", C_YLW, C_RST);
     int cur_r = 0, cur_g = 0, cur_b = 0;
     int have_current_color = kbd_get_color(&cur_r, &cur_g, &cur_b) == 0;
     struct kbe_state ks;
@@ -1325,7 +1341,7 @@ static void status_keyboard(void)
 
 static void status_privacy(void)
 {
-    if (!json_output) printf("\n%s--- Privacy ---%s\n", C_YLW, C_RST);
+    if (!json_output) cctl_stream_printf("\n%s--- Privacy ---%s\n", C_YLW, C_RST);
     int cam = is_webcam_enabled();
     if (cam < 0)
         row("Webcam:", "%sNot detected%s", C_DIM, C_RST);
@@ -1341,7 +1357,7 @@ static void status_privacy(void)
 
 static void status_battery(void)
 {
-    if (!json_output) printf("\n%s--- Battery Info ---%s\n", C_YLW, C_RST);
+    if (!json_output) cctl_stream_printf("\n%s--- Battery Info ---%s\n", C_YLW, C_RST);
     char bat_status[32] = {0};
     bat_read_str("status", bat_status, sizeof(bat_status));
     long cap      = bat_read_long("capacity", -1);
@@ -1399,25 +1415,25 @@ static void show_status(void)
     s_status_mode_has_aggressive = 0;
     if (json_output) {
         json_first_field = 1;
-        putchar('{');
+        cctl_stream_putchar('{');
     } else {
-        printf("%s=== System Status ===%s\n\n", C_YLW, C_RST);
+        cctl_stream_printf("%s=== System Status ===%s\n\n", C_YLW, C_RST);
     }
     status_system();
     status_fans();
     status_keyboard();
     status_privacy();
     status_battery();
-    if (json_output) puts("}");
+    if (json_output) cctl_stream_puts("}");
     else {
-        printf("\n");
+        cctl_stream_printf("\n");
         if (s_status_mode_has_aggressive) {
-            printf("%sNote: Aggressive locks CPU clocks near max constantly; non-aggressive scales dynamically on demand (cool & quiet at idle).%s\n",
+            cctl_stream_printf("%sNote: Aggressive locks CPU clocks near max constantly; non-aggressive scales dynamically on demand (cool & quiet at idle).%s\n",
                    C_DIM, C_RST);
         }
-        printf("%s** EC Code uses TCC when recognized; otherwise, it uses the tuxedo_io cache.%s\n",
+        cctl_stream_printf("%s** EC Code uses TCC when recognized; otherwise, it uses the tuxedo_io cache.%s\n",
                C_DIM, C_RST);
-        printf("%sNVIDIA clock values show the last settings applied through cctl, not live readings.%s\n\n",
+        cctl_stream_printf("%sNVIDIA clock values show the last settings applied through cctl, not live readings.%s\n\n",
                C_DIM, C_RST);
     }
 }
@@ -1445,7 +1461,7 @@ static int bat_set_charge_type(const char *type)
     char path[256];
     bat_charge_type_path(path, sizeof(path));
     if (write_sysfs(path, type) < 0) {
-        fprintf(stderr, "Error: Failed to set battery charge mode to %s\n", type);
+        cctl_stream_fprintf(stderr, "Error: Failed to set battery charge mode to %s\n", type);
         return -1;
     }
     return 0;
@@ -1482,9 +1498,9 @@ static int is_valid_threshold(const int *avail, int count, int val)
 /* Print available threshold values to stderr. */
 static void print_avail_thresholds(const char *label, const int *avail, int count)
 {
-    fprintf(stderr, "  %s available: ", label);
+    cctl_stream_fprintf(stderr, "  %s available: ", label);
     for (int i = 0; i < count; i++)
-        fprintf(stderr, "%d%c", avail[i], i < count - 1 ? ' ' : '\n');
+        cctl_stream_fprintf(stderr, "%d%c", avail[i], i < count - 1 ? ' ' : '\n');
 }
 
 /* Read current charge control start threshold. Returns value or -1. */
@@ -1515,7 +1531,7 @@ static int bat_set(int start, int end)
     bat_start_avail_path(pa, sizeof(pa));
     start_count = read_avail_thresholds(pa, start_avail, 16);
     if (start_count > 0 && !is_valid_threshold(start_avail, start_count, start)) {
-        fprintf(stderr, "Error: Start threshold %d%% is not valid\n", start);
+        cctl_stream_fprintf(stderr, "Error: Start threshold %d%% is not valid\n", start);
         print_avail_thresholds("Start", start_avail, start_count);
         return -1;
     }
@@ -1525,13 +1541,13 @@ static int bat_set(int start, int end)
     bat_end_avail_path(pa, sizeof(pa));
     end_count = read_avail_thresholds(pa, end_avail, 16);
     if (end_count > 0 && !is_valid_threshold(end_avail, end_count, end)) {
-        fprintf(stderr, "Error: End threshold %d%% is not valid\n", end);
+        cctl_stream_fprintf(stderr, "Error: End threshold %d%% is not valid\n", end);
         print_avail_thresholds("End", end_avail, end_count);
         return -1;
     }
 
     if (start >= end) {
-        fprintf(stderr, "Error: Start threshold (%d%%) must be less than end threshold (%d%%)\n", start, end);
+        cctl_stream_fprintf(stderr, "Error: Start threshold (%d%%) must be less than end threshold (%d%%)\n", start, end);
         return -1;
     }
 
@@ -1542,17 +1558,17 @@ static int bat_set(int start, int end)
 
     bat_start_path(pa, sizeof(pa));
     if (write_sysfs_int(pa, start) < 0) {
-        fprintf(stderr, "Error: Failed to set start threshold to %d%%\n", start);
+        cctl_stream_fprintf(stderr, "Error: Failed to set start threshold to %d%%\n", start);
         return -1;
     }
 
     bat_end_path(pa, sizeof(pa));
     if (write_sysfs_int(pa, end) < 0) {
-        fprintf(stderr, "Error: Failed to set end threshold to %d%%\n", end);
+        cctl_stream_fprintf(stderr, "Error: Failed to set end threshold to %d%%\n", end);
         return -1;
     }
 
-    printf("  %s charge thresholds: start %d%% → stop %d%%%s\n",
+    cctl_stream_printf("  %s charge thresholds: start %d%% → stop %d%%%s\n",
            dry_run ? "Would set" : "Set", start, end, snapshot_applied_tag());
     return 0;
 }

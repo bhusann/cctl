@@ -148,18 +148,18 @@ static void print_initramfs_install_hint(void)
     }
 
     if (strstr(id, "arch") || strstr(id, "manjaro") || strstr(id, "endeavouros"))
-        fprintf(stderr, "  Install: sudo pacman -S mkinitcpio\n");
+        cctl_stream_fprintf(stderr, "  Install: sudo pacman -S mkinitcpio\n");
     else if (strstr(id, "fedora"))
-        fprintf(stderr, "  Install: sudo dnf install dracut\n");
+        cctl_stream_fprintf(stderr, "  Install: sudo dnf install dracut\n");
     else if (strstr(id, "rhel") || strstr(id, "centos") || strstr(id, "rocky") || strstr(id, "alma"))
-        fprintf(stderr, "  Install: sudo dnf install dracut\n");
+        cctl_stream_fprintf(stderr, "  Install: sudo dnf install dracut\n");
     else if (strstr(id, "suse"))
-        fprintf(stderr, "  Install: sudo zypper install dracut\n");
+        cctl_stream_fprintf(stderr, "  Install: sudo zypper install dracut\n");
     else if (strstr(id, "debian") || strstr(id, "ubuntu") || strstr(id, "mint") ||
              strstr(id, "pop") || strstr(id, "elementary") || strstr(id, "zorin"))
-        fprintf(stderr, "  Install: sudo apt install initramfs-tools\n");
+        cctl_stream_fprintf(stderr, "  Install: sudo apt install initramfs-tools\n");
     else
-        fprintf(stderr, "  Install one of:\n"
+        cctl_stream_fprintf(stderr, "  Install one of:\n"
                 "    sudo pacman -S mkinitcpio          (Arch/Manjaro)\n"
                 "    sudo dnf install dracut             (Fedora/RHEL)\n"
                 "    sudo zypper install dracut           (openSUSE)\n"
@@ -179,8 +179,8 @@ static int initramfs_rebuild_ready(void)
 {
     int has_initramfs = initramfs_present();
     if (!has_initramfs) {
-        printf("  No initramfs detected in /boot. The modprobe blacklist\n");
-        printf("  takes effect directly on next boot without a rebuild.\n");
+        cctl_stream_printf("  No initramfs detected in /boot. The modprobe blacklist\n");
+        cctl_stream_printf("  takes effect directly on next boot without a rebuild.\n");
         return 0;
     }
 
@@ -191,9 +191,9 @@ static int initramfs_rebuild_ready(void)
         return 1;
 
     /* initramfs present but no tool to rebuild it */
-    fprintf(stderr, "\n  %sError: This system uses an initramfs but no rebuild tool is installed.%s\n\n", C_RED, C_RST);
+    cctl_stream_fprintf(stderr, "\n  %sError: This system uses an initramfs but no rebuild tool is installed.%s\n\n", C_RED, C_RST);
     print_initramfs_install_hint();
-    fprintf(stderr, "  Install the tool first, then re-run this command.\n\n");
+    cctl_stream_fprintf(stderr, "  Install the tool first, then re-run this command.\n\n");
     return -1;
 }
 
@@ -203,27 +203,27 @@ static int initramfs_rebuild_ready(void)
 static int rebuild_initramfs(void)
 {
     if (access("/usr/bin/mkinitcpio", X_OK) == 0) {
-        printf("  Rebuilding initramfs with mkinitcpio (this may take a minute)...\n");
+        cctl_stream_printf("  Rebuilding initramfs with mkinitcpio (this may take a minute)...\n");
         char *const args[] = { "mkinitcpio", "-P", NULL };
         return run(args, 0, NULL, 0);
     }
     if (access("/usr/bin/dracut", X_OK) == 0) {
-        printf("  Rebuilding initramfs with dracut (this may take a minute)...\n");
+        cctl_stream_printf("  Rebuilding initramfs with dracut (this may take a minute)...\n");
         char *const args[] = { "dracut", "--force", NULL };
         return run(args, 0, NULL, 0);
     }
     if (access("/usr/sbin/update-initramfs", X_OK) == 0) {
-        printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
+        cctl_stream_printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
         char *const args[] = { "update-initramfs", "-u", NULL };
         return run(args, 0, NULL, 0);
     }
     if (access("/sbin/update-initramfs", X_OK) == 0) {
-        printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
+        cctl_stream_printf("  Rebuilding initramfs with update-initramfs (this may take a minute)...\n");
         char *const args[] = { "update-initramfs", "-u", NULL };
         return run(args, 0, NULL, 0);
     }
     /* Should never reach here if initramfs_rebuild_ready() was called first */
-    fprintf(stderr, "Error: No initramfs tool found (mkinitcpio/dracut/update-initramfs).\n");
+    cctl_stream_fprintf(stderr, "Error: No initramfs tool found (mkinitcpio/dracut/update-initramfs).\n");
     return -1;
 }
 
@@ -254,13 +254,13 @@ static int nvidia_write_blacklist(void)
 {
     FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "w");
     if (!fp) {
-        perror("fopen blacklist-nvidia.conf");
+        cctl_stream_perror("fopen blacklist-nvidia.conf");
         return -1;
     }
-    fprintf(fp, "# Disabled by cctl nvidia off\n");
+    cctl_stream_fprintf(fp, "# Disabled by cctl nvidia off\n");
     for (size_t i = 0; i < NV_MODULE_COUNT; i++) {
-        fprintf(fp, "blacklist %s\n", nvidia_modules[i]);
-        fprintf(fp, "alias %s off\n", nvidia_modules[i]);
+        cctl_stream_fprintf(fp, "blacklist %s\n", nvidia_modules[i]);
+        cctl_stream_fprintf(fp, "alias %s off\n", nvidia_modules[i]);
     }
     fclose(fp);
     return 0;
@@ -268,16 +268,16 @@ static int nvidia_write_blacklist(void)
 
 static int try_unload_nvidia(void)
 {
-    printf("  Attempting to unload NVIDIA modules...\n");
+    cctl_stream_printf("  Attempting to unload NVIDIA modules...\n");
     if (nvidia_gpu_in_use()) {
-        fprintf(stderr, "Error: GPU is actively in use by running processes:\n");
+        cctl_stream_fprintf(stderr, "Error: GPU is actively in use by running processes:\n");
         char *const query_args[] = {
             "sh", "-c",
             "nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | awk -F', ' '{print \"    PID \" $1 \": \" $2}'",
             NULL
         };
         run_quiet(query_args);
-        fprintf(stderr, "Cannot unload modules while GPU is in use.\n");
+        cctl_stream_fprintf(stderr, "Cannot unload modules while GPU is in use.\n");
         return -1;
     }
 
@@ -289,9 +289,9 @@ static int try_unload_nvidia(void)
         if (loaded[i]) {
             char *const args[] = { "modprobe", "-r", (char *)nvidia_modules[i], NULL };
             if (run(args, RUN_SILENT, NULL, 0) == 0) {
-                printf("  Unloaded %s\n", nvidia_modules[i]);
+                cctl_stream_printf("  Unloaded %s\n", nvidia_modules[i]);
             } else {
-                fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
+                cctl_stream_fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
                 failed = 1;
             }
         }
@@ -301,13 +301,13 @@ static int try_unload_nvidia(void)
 
 static int try_load_nvidia(void)
 {
-    printf("  Attempting to load NVIDIA modules...\n");
+    cctl_stream_printf("  Attempting to load NVIDIA modules...\n");
     char *const args[] = { "modprobe", "nvidia", NULL };
     if (run(args, RUN_SILENT, NULL, 0) == 0) {
-        printf("  NVIDIA modules loaded successfully.\n");
+        cctl_stream_printf("  NVIDIA modules loaded successfully.\n");
         return 0;
     }
-    fprintf(stderr, "  Could not load NVIDIA modules. Reboot may be required.\n");
+    cctl_stream_fprintf(stderr, "  Could not load NVIDIA modules. Reboot may be required.\n");
     return -1;
 }
 
@@ -331,35 +331,35 @@ static int reply_is_yes(const char *s)
 static int nvidia_set_off(void)
 {
     if (nvidia_is_blacklisted() && !nvidia_is_loaded()) {
-        printf("  NVIDIA is already blacklisted and modules are unloaded.\n");
+        cctl_stream_printf("  NVIDIA is already blacklisted and modules are unloaded.\n");
         return 0;
     }
 
     /* Experimental / permanent-disable warning + double confirmation */
-    printf("\n");
-    printf("  %sWARNING: 'nvidia off' PERMANENTLY disables the discrete GPU at boot.%s\n", C_YLW, C_RST);
-    printf("  This is experimental and can break games and other dGPU-accelerated\n");
-    printf("  software. The GPU stays OFF after reboot until you run 'nvidia on'.\n");
-    printf("  This option is intended for developers, hardware tinkerers, and users\n");
-    printf("  who know exactly what they are doing.\n");
-    printf("  %sTry 'nvidia unload' first%s to switch the GPU off for this session\n", C_CYN, C_RST);
-    printf("  only (it reverts after reboot). Use 'nvidia off' as a LAST RESORT.\n");
+    cctl_stream_printf("\n");
+    cctl_stream_printf("  %sWARNING: 'nvidia off' PERMANENTLY disables the discrete GPU at boot.%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  This is experimental and can break games and other dGPU-accelerated\n");
+    cctl_stream_printf("  software. The GPU stays OFF after reboot until you run 'nvidia on'.\n");
+    cctl_stream_printf("  This option is intended for developers, hardware tinkerers, and users\n");
+    cctl_stream_printf("  who know exactly what they are doing.\n");
+    cctl_stream_printf("  %sTry 'nvidia unload' first%s to switch the GPU off for this session\n", C_CYN, C_RST);
+    cctl_stream_printf("  only (it reverts after reboot). Use 'nvidia off' as a LAST RESORT.\n");
 
     char reply[64];
-    printf("  Type 'yes' to continue, or anything else to abort: ");
+    cctl_stream_printf("  Type 'yes' to continue, or anything else to abort: ");
     if (!fgets(reply, sizeof(reply), stdin) || !reply_is_yes(reply)) {
-        printf("  Aborted.\n");
+        cctl_stream_printf("  Aborted.\n");
         return 0;
     }
-    printf("  Are you sure? Type 'yes' again to proceed: ");
+    cctl_stream_printf("  Are you sure? Type 'yes' again to proceed: ");
     if (!fgets(reply, sizeof(reply), stdin) || !reply_is_yes(reply)) {
-        printf("  Aborted.\n");
+        cctl_stream_printf("  Aborted.\n");
         return 0;
     }
 
     if (nvidia_is_blacklisted()) {
         /* blacklisted but modules still loaded -> just unload now */
-        printf("  NVIDIA is blacklisted but modules are still loaded (reboot pending).\n");
+        cctl_stream_printf("  NVIDIA is blacklisted but modules are still loaded (reboot pending).\n");
         try_unload_nvidia();
         return 0;
     }
@@ -370,13 +370,13 @@ static int nvidia_set_off(void)
     if (initrd_ready < 0)
         return -1;
 
-    printf("  Writing blacklist to /etc/modprobe.d/blacklist-nvidia.conf...\n");
+    cctl_stream_printf("  Writing blacklist to /etc/modprobe.d/blacklist-nvidia.conf...\n");
     if (nvidia_write_blacklist() != 0)
         return -1;
 
     if (initrd_ready == 1) {
         if (rebuild_initramfs() < 0) {
-            fprintf(stderr, "Error: Initramfs rebuild failed. Removing blacklist config.\n");
+            cctl_stream_fprintf(stderr, "Error: Initramfs rebuild failed. Removing blacklist config.\n");
             unlink("/etc/modprobe.d/blacklist-nvidia.conf");
             return -1;
         }
@@ -386,7 +386,7 @@ static int nvidia_set_off(void)
         try_unload_nvidia();
     }
 
-    printf("\n  NVIDIA is %sblacklisted%s. Reboot to complete. After reboot, only iGPU will be active.\n", C_RED, C_RST);
+    cctl_stream_printf("\n  NVIDIA is %sblacklisted%s. Reboot to complete. After reboot, only iGPU will be active.\n", C_RED, C_RST);
     return 0;
 }
 
@@ -394,10 +394,10 @@ static int nvidia_set_on(void)
 {
     if (!nvidia_is_blacklisted()) {
         if (nvidia_is_loaded()) {
-            printf("  NVIDIA is already enabled and modules are loaded.\n");
+            cctl_stream_printf("  NVIDIA is already enabled and modules are loaded.\n");
         } else {
-            printf("  NVIDIA is enabled but modules aren't loaded.\n");
-            printf("  Attempt to load modules now? [y/N] ");
+            cctl_stream_printf("  NVIDIA is enabled but modules aren't loaded.\n");
+            cctl_stream_printf("  Attempt to load modules now? [y/N] ");
             char reply[16];
             if (fgets(reply, sizeof(reply), stdin) && (reply[0] == 'y' || reply[0] == 'Y'))
                 try_load_nvidia();
@@ -405,10 +405,10 @@ static int nvidia_set_on(void)
         return 0;
     }
 
-    printf("  Unblacklist NVIDIA and rebuild initramfs? [y/N] ");
+    cctl_stream_printf("  Unblacklist NVIDIA and rebuild initramfs? [y/N] ");
     char reply[16];
     if (!fgets(reply, sizeof(reply), stdin) || (reply[0] != 'y' && reply[0] != 'Y')) {
-        printf("  Aborted.\n");
+        cctl_stream_printf("  Aborted.\n");
         return 0;
     }
 
@@ -417,12 +417,12 @@ static int nvidia_set_on(void)
     if (initrd_ready < 0)
         return -1;
 
-    printf("  Removing /etc/modprobe.d/blacklist-nvidia.conf...\n");
+    cctl_stream_printf("  Removing /etc/modprobe.d/blacklist-nvidia.conf...\n");
     unlink("/etc/modprobe.d/blacklist-nvidia.conf");
 
     if (initrd_ready == 1) {
         if (rebuild_initramfs() < 0) {
-            fprintf(stderr, "Error: Initramfs rebuild failed. Restoring blacklist config.\n");
+            cctl_stream_fprintf(stderr, "Error: Initramfs rebuild failed. Restoring blacklist config.\n");
             nvidia_write_blacklist();
             return -1;
         }
@@ -432,7 +432,7 @@ static int nvidia_set_on(void)
         try_load_nvidia();
     }
 
-    printf("\n  NVIDIA is %senabled%s. Reboot to complete. After reboot, NVIDIA will be available.\n", C_GRN, C_RST);
+    cctl_stream_printf("\n  NVIDIA is %senabled%s. Reboot to complete. After reboot, NVIDIA will be available.\n", C_GRN, C_RST);
     return 0;
 }
 
@@ -441,25 +441,25 @@ static void nvidia_show_status(void)
     int blacklisted = nvidia_is_blacklisted();
     int loaded = nvidia_is_loaded();
 
-    printf("  Boot config:   %s%s%s\n", blacklisted ? C_RED : C_GRN,
+    cctl_stream_printf("  Boot config:   %s%s%s\n", blacklisted ? C_RED : C_GRN,
            blacklisted ? "BLACKLISTED" : "ENABLED", C_RST);
-    printf("  Module state:  %s%s%s\n", loaded ? C_GRN : C_DIM,
+    cctl_stream_printf("  Module state:  %s%s%s\n", loaded ? C_GRN : C_DIM,
            loaded ? "LOADED" : "NOT LOADED", C_RST);
 
     if (blacklisted && loaded) {
-        printf("  GPU state:     %sON%s (session-only) — stays OFF after reboot\n", C_GRN, C_RST);
+        cctl_stream_printf("  GPU state:     %sON%s (session-only) — stays OFF after reboot\n", C_GRN, C_RST);
     } else if (blacklisted && !loaded) {
-        printf("  GPU state:     %sOFF%s (persistent)\n", C_DIM, C_RST);
+        cctl_stream_printf("  GPU state:     %sOFF%s (persistent)\n", C_DIM, C_RST);
     } else if (!blacklisted && loaded) {
-        printf("  GPU state:     %sON%s (persistent)\n", C_GRN, C_RST);
+        cctl_stream_printf("  GPU state:     %sON%s (persistent)\n", C_GRN, C_RST);
     } else {
-        printf("  GPU state:     %sOFF%s\n", C_DIM, C_RST);
-        printf("  Pending:       %sReboot needed to load%s\n", C_YLW, C_RST);
+        cctl_stream_printf("  GPU state:     %sOFF%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  Pending:       %sReboot needed to load%s\n", C_YLW, C_RST);
     }
 
     if (loaded) {
         if (access("/usr/bin/nvidia-smi", X_OK) == 0) {
-            printf("\n%s--- NVIDIA GPU Telemetry ---%s\n", C_YLW, C_RST);
+            cctl_stream_printf("\n%s--- NVIDIA GPU Telemetry ---%s\n", C_YLW, C_RST);
             char *const telemetry_args[] = {
                 "sh", "-c",
                 "nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu,persistence_mode --format=csv,noheader,nounits 2>/dev/null | "
@@ -480,17 +480,17 @@ static void nvidia_show_status(void)
                     char pid[32] = {0}, name[128] = {0}, mem[64] = {0};
                     if (sscanf(line, "%31[^,], %127[^,], %63[^\n]", pid, name, mem) >= 2) {
                         if (!has_procs) {
-                            printf("\n  GPU Processes:\n");
+                            cctl_stream_printf("\n  GPU Processes:\n");
                             has_procs = 1;
                         }
-                        printf("    PID %-8s %-30s %s\n", pid, name, mem);
+                        cctl_stream_printf("    PID %-8s %-30s %s\n", pid, name, mem);
                     }
                     if (!next) break;
                     line = next + 1;
                 }
             }
             if (!has_procs) {
-                printf("  Processes:     none\n");
+                cctl_stream_printf("  Processes:     none\n");
             }
         }
     }
@@ -504,9 +504,9 @@ static void nvidia_pci_set_control(const char *val, const char *msg)
         snprintf(ctrl_path, sizeof(ctrl_path), "%s/power/control", pci_path);
         FILE *fp = fopen(ctrl_path, "w");
         if (fp) {
-            fprintf(fp, "%s", val);
+            cctl_stream_fprintf(fp, "%s", val);
             fclose(fp);
-            printf("  GPU %s.\n", msg);
+            cctl_stream_printf("  GPU %s.\n", msg);
         }
     }
 }
@@ -514,11 +514,11 @@ static void nvidia_pci_set_control(const char *val, const char *msg)
 static int nvidia_load(int load_game)
 {
     if (!nvidia_is_blacklisted()) {
-        fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia on' instead.\n");
+        cctl_stream_fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia on' instead.\n");
         return 1;
     }
     if (nvidia_is_loaded()) {
-        printf("  NVIDIA module is already loaded.\n");
+        cctl_stream_printf("  NVIDIA module is already loaded.\n");
         return 0;
     }
 
@@ -528,7 +528,7 @@ static int nvidia_load(int load_game)
     /* Temporarily move blacklist aside so modprobe works.
      * Block termination signals while the file is swapped so an interrupt doesn't
      * leave the blacklist missing. */
-    printf("  Loading NVIDIA modules (session-only)...\n");
+    cctl_stream_printf("  Loading NVIDIA modules (session-only)...\n");
     sigset_t block_mask, orig_mask;
     sigemptyset(&block_mask);
     sigaddset(&block_mask, SIGHUP);
@@ -560,14 +560,14 @@ static int nvidia_load(int load_game)
 
     if (ret == 0) {
         if (load_game) {
-            printf("  NVIDIA modules loaded (nvidia + nvidia_uvm + nvidia_modeset + nvidia_drm). GPU available for this session.\n");
+            cctl_stream_printf("  NVIDIA modules loaded (nvidia + nvidia_uvm + nvidia_modeset + nvidia_drm). GPU available for this session.\n");
         } else {
-            printf("  NVIDIA modules loaded (nvidia + nvidia_uvm). GPU available for this session.\n");
-            printf("  %sNote:%s For display/gaming, also run: sudo modprobe nvidia_drm (or use loadgame)\n", C_YLW, C_RST);
+            cctl_stream_printf("  NVIDIA modules loaded (nvidia + nvidia_uvm). GPU available for this session.\n");
+            cctl_stream_printf("  %sNote:%s For display/gaming, also run: sudo modprobe nvidia_drm (or use loadgame)\n", C_YLW, C_RST);
         }
-        printf("  On next reboot, NVIDIA will remain off (blacklist intact).\n");
+        cctl_stream_printf("  On next reboot, NVIDIA will remain off (blacklist intact).\n");
     } else {
-        fprintf(stderr, "  Failed to load NVIDIA modules.\n");
+        cctl_stream_fprintf(stderr, "  Failed to load NVIDIA modules.\n");
     }
     return ret;
 }
@@ -575,25 +575,25 @@ static int nvidia_load(int load_game)
 static int nvidia_unload(void)
 {
     if (!nvidia_is_blacklisted()) {
-        fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia off' instead.\n");
+        cctl_stream_fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia off' instead.\n");
         return 1;
     }
     if (!nvidia_is_loaded()) {
-        printf("  NVIDIA modules are not loaded.\n");
+        cctl_stream_printf("  NVIDIA modules are not loaded.\n");
         return 0;
     }
 
     if (nvidia_gpu_in_use()) {
-        fprintf(stderr, "  Error: GPU is actively in use by running processes.\n");
+        cctl_stream_fprintf(stderr, "  Error: GPU is actively in use by running processes.\n");
         return 1;
     }
 
     if (nvidia_display_in_use()) {
-        fprintf(stderr, "  Warning: GPU appears to be driving a display (nvidia_drm active).\n");
-        fprintf(stderr, "  Unload may fail unless the session has released it (see AutoAddGPU note in README).\n");
+        cctl_stream_fprintf(stderr, "  Warning: GPU appears to be driving a display (nvidia_drm active).\n");
+        cctl_stream_fprintf(stderr, "  Unload may fail unless the session has released it (see AutoAddGPU note in README).\n");
     }
 
-    printf("  Unloading NVIDIA modules...\n");
+    cctl_stream_printf("  Unloading NVIDIA modules...\n");
     int loaded[NV_MODULE_COUNT];
     nvidia_scan_loaded(loaded);
 
@@ -604,16 +604,16 @@ static int nvidia_unload(void)
         /* Use rmmod directly instead of modprobe -r (avoids blacklist alias interference) */
         char *const args[] = { "rmmod", (char *)nvidia_modules[i], NULL };
         if (run(args, 0, NULL, 0) == 0) {
-            printf("  Unloaded %s\n", nvidia_modules[i]);
+            cctl_stream_printf("  Unloaded %s\n", nvidia_modules[i]);
         } else {
-            fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
+            cctl_stream_fprintf(stderr, "  Failed to unload %s\n", nvidia_modules[i]);
             failed = 1;
         }
     }
 
     /* Verify nvidia is actually gone */
     if (nvidia_is_loaded()) {
-        fprintf(stderr, "  Warning: NVIDIA module is still loaded.\n");
+        cctl_stream_fprintf(stderr, "  Warning: NVIDIA module is still loaded.\n");
         return -1;
     }
 
@@ -684,13 +684,13 @@ static int nvidia_pm_disable_if_unlocked(void)
 static int nvidia_clock_apply(const char *flag, int min, int max)
 {
     if (nvidia_pm_set(1) != 0)
-        fprintf(stderr, "  Warning: failed to enable persistence mode\n");
+        cctl_stream_fprintf(stderr, "  Warning: failed to enable persistence mode\n");
     char range[32];
     snprintf(range, sizeof(range), "%d,%d", min, max);
     char *const args[] = { "nvidia-smi", (char *)flag, range, NULL };
     int rc = run(args, 0, NULL, 0);
     if (rc == 0 && mode_record_nvidia_clock(strcmp(flag, "-lmc") == 0, 1, min, max) < 0)
-        fprintf(stderr, "Warning: could not record NVIDIA clock settings in %s\n", MODE_FILE);
+        cctl_stream_fprintf(stderr, "Warning: could not record NVIDIA clock settings in %s\n", MODE_FILE);
     return rc;
 }
 
@@ -701,9 +701,9 @@ static int nvidia_clock_reset_flag(const char *flag)
     int memory_clock = strcmp(flag, "-rmc") == 0;
     if (rc == 0) {
         if (mode_record_nvidia_clock(memory_clock, 0, 0, 0) < 0) {
-            fprintf(stderr, "Warning: could not record NVIDIA clock reset in %s; leaving persistence mode enabled\n", MODE_FILE);
+            cctl_stream_fprintf(stderr, "Warning: could not record NVIDIA clock reset in %s; leaving persistence mode enabled\n", MODE_FILE);
         } else if (nvidia_pm_disable_if_unlocked() != 0) {
-            fprintf(stderr, "Warning: NVIDIA clocks were reset, but persistence mode could not be disabled\n");
+            cctl_stream_fprintf(stderr, "Warning: NVIDIA clocks were reset, but persistence mode could not be disabled\n");
         }
     }
     return rc;
@@ -801,8 +801,8 @@ static int nvidia_parse_clock_inputs(int argc, char **argv, int max_supported,
         return -1;
     }
     if (argc > 5) {
-        fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[5]);
-        fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
+        cctl_stream_fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[5]);
+        cctl_stream_fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                 cmd_name, cmd_name);
         return -1;
     }
@@ -817,22 +817,22 @@ static int nvidia_parse_clock_inputs(int argc, char **argv, int max_supported,
             char s1[32], s2[32];
             size_t len1 = (size_t)(comma - arg);
             if (len1 >= sizeof(s1) || strlen(comma + 1) >= sizeof(s2)) {
-                fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max>)\n", arg);
+                cctl_stream_fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max>)\n", arg);
                 return -1;
             }
             strncpy(s1, arg, len1);
             s1[len1] = '\0';
             snprintf(s2, sizeof(s2), "%s", comma + 1);
             if (safe_atoi(s1, &min) < 0 || safe_atoi(s2, &max) < 0) {
-                fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max>)\n", arg);
-                fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
+                cctl_stream_fprintf(stderr, "Error: Invalid clock range '%s' (expected <min>,<max>)\n", arg);
+                cctl_stream_fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                         cmd_name, cmd_name);
                 return -1;
             }
         } else {
             if (safe_atoi(arg, &max) < 0) {
-                fprintf(stderr, "Error: Invalid clock value '%s'\n", arg);
-                fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
+                cctl_stream_fprintf(stderr, "Error: Invalid clock value '%s'\n", arg);
+                cctl_stream_fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                         cmd_name, cmd_name);
                 return -1;
             }
@@ -848,39 +848,39 @@ static int nvidia_parse_clock_inputs(int argc, char **argv, int max_supported,
             s_min[slen - 1] = '\0';
 
         if (safe_atoi(s_min, &min) < 0) {
-            fprintf(stderr, "Error: Invalid minimum clock '%s'\n", argv[3]);
-            fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
+            cctl_stream_fprintf(stderr, "Error: Invalid minimum clock '%s'\n", argv[3]);
+            cctl_stream_fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                     cmd_name, cmd_name);
             return -1;
         }
         if (safe_atoi(argv[4], &max) < 0) {
-            fprintf(stderr, "Error: Invalid maximum clock '%s'\n", argv[4]);
-            fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
+            cctl_stream_fprintf(stderr, "Error: Invalid maximum clock '%s'\n", argv[4]);
+            cctl_stream_fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                     cmd_name, cmd_name);
             return -1;
         }
     }
 
     if (min < 0) {
-        fprintf(stderr, "Error: Minimum clock cannot be negative (%d)\n", min);
+        cctl_stream_fprintf(stderr, "Error: Minimum clock cannot be negative (%d)\n", min);
         return -1;
     }
     if (max <= 0) {
-        fprintf(stderr, "Error: Maximum clock must be greater than 0 (%d)\n", max);
+        cctl_stream_fprintf(stderr, "Error: Maximum clock must be greater than 0 (%d)\n", max);
         return -1;
     }
     if (min > max) {
-        fprintf(stderr, "Error: Minimum clock (%d MHz) cannot exceed maximum clock (%d MHz)\n",
+        cctl_stream_fprintf(stderr, "Error: Minimum clock (%d MHz) cannot exceed maximum clock (%d MHz)\n",
                 min, max);
         return -1;
     }
     if (max_supported > 0 && max > max_supported) {
-        fprintf(stderr, "Error: Clock %d MHz exceeds maximum supported %d MHz\n",
+        cctl_stream_fprintf(stderr, "Error: Clock %d MHz exceeds maximum supported %d MHz\n",
                 max, max_supported);
         return -1;
     }
     if (max_supported > 0 && min > max_supported) {
-        fprintf(stderr, "Error: Minimum clock %d MHz exceeds maximum supported %d MHz\n",
+        cctl_stream_fprintf(stderr, "Error: Minimum clock %d MHz exceeds maximum supported %d MHz\n",
                 min, max_supported);
         return -1;
     }
@@ -893,15 +893,15 @@ static int nvidia_parse_clock_inputs(int argc, char **argv, int max_supported,
 static int nvidia_clock_display(const char *label, const char *subcmd, int max_val,
                                 int ex_single, int ex_min, int ex_max)
 {
-    printf("%s%s:%s\n", C_YLW, label, C_RST);
-    printf("  %sMax Supported:%s %s%d MHz%s\n\n", C_CYN, C_RST, C_CYN, max_val, C_RST);
-    printf("%sUsage:%s %scctl nvidia %s [min] <max>  |  cctl nvidia %s reset%s\n",
+    cctl_stream_printf("%s%s:%s\n", C_YLW, label, C_RST);
+    cctl_stream_printf("  %sMax Supported:%s %s%d MHz%s\n\n", C_CYN, C_RST, C_CYN, max_val, C_RST);
+    cctl_stream_printf("%sUsage:%s %scctl nvidia %s [min] <max>  |  cctl nvidia %s reset%s\n",
            C_BLD, C_RST, C_CYN_BLD, subcmd, subcmd, C_RST);
-    printf("  %sExamples:%s cctl nvidia %s %d        %s(auto minimum 0 MHz)%s\n",
+    cctl_stream_printf("  %sExamples:%s cctl nvidia %s %d        %s(auto minimum 0 MHz)%s\n",
            C_YLW, C_RST, subcmd, ex_single, C_DIM, C_RST);
-    printf("            cctl nvidia %s %d %d\n", subcmd, ex_min, ex_max);
-    printf("            cctl nvidia %s %d,%d\n", subcmd, ex_min, ex_max);
-    printf("            cctl nvidia %s reset\n", subcmd);
+    cctl_stream_printf("            cctl nvidia %s %d %d\n", subcmd, ex_min, ex_max);
+    cctl_stream_printf("            cctl nvidia %s %d,%d\n", subcmd, ex_min, ex_max);
+    cctl_stream_printf("            cctl nvidia %s reset\n", subcmd);
     return 0;
 }
 
@@ -931,12 +931,12 @@ static int nvidia_clock_show_target(const struct nvidia_clk_target *tgt)
 {
     struct nvidia_clock_info ci;
     if (nvidia_query_clocks(&ci) != 0) {
-        fprintf(stderr, "Error: Unable to query %s via nvidia-smi\n", tgt->desc);
+        cctl_stream_fprintf(stderr, "Error: Unable to query %s via nvidia-smi\n", tgt->desc);
         return 1;
     }
     int max_clk = (strcmp(tgt->name, "clock") == 0) ? ci.max_graphics : ci.max_memory;
     if (max_clk <= 0) {
-        fprintf(stderr, "Error: Unable to query %s via nvidia-smi\n", tgt->desc);
+        cctl_stream_fprintf(stderr, "Error: Unable to query %s via nvidia-smi\n", tgt->desc);
         return 1;
     }
     int prev = g_stream_mode;
@@ -959,13 +959,13 @@ static int cmd_nvidia(int argc, char **argv)
         int prev = g_stream_mode;
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
-        printf("%sUsage:%s %scctl %s%s\n\n", C_BLD, C_RST, C_CYN_BLD, NVIDIA_USAGE_STR, C_RST);
-        printf("%sCommands:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("%sUsage:%s %scctl %s%s\n\n", C_BLD, C_RST, C_CYN_BLD, NVIDIA_USAGE_STR, C_RST);
+        cctl_stream_printf("%sCommands:%s\n", C_YLW, C_RST);
 #ifdef CCTL_NVIDIA
-        printf("  %s%-10s%s Show GPU status & telemetry\n", C_CYN, "status", C_RST);
+        cctl_stream_printf("  %s%-10s%s Show GPU status & telemetry\n", C_CYN, "status", C_RST);
 #endif
-        printf("  %s%-10s%s Lock/unlock GPU core clocks (no arg: show max clock)\n", C_CYN, "clock", C_RST);
-        printf("  %s%-10s%s Lock/unlock GPU memory clocks (no arg: show max clock)\n", C_CYN, "memclock", C_RST);
+        cctl_stream_printf("  %s%-10s%s Lock/unlock GPU core clocks (no arg: show max clock)\n", C_CYN, "clock", C_RST);
+        cctl_stream_printf("  %s%-10s%s Lock/unlock GPU memory clocks (no arg: show max clock)\n", C_CYN, "memclock", C_RST);
         g_stream_mode = prev;
         return 0;
     }
@@ -979,8 +979,8 @@ static int cmd_nvidia(int argc, char **argv)
     if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0 ||
         strcmp(action, "load") == 0 || strcmp(action, "loadgame") == 0 ||
         strcmp(action, "unload") == 0 || strcmp(action, "status") == 0) {
-        fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
+        cctl_stream_fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
+        cctl_stream_fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
         return 1;
     }
 #endif
@@ -1004,8 +1004,8 @@ static int cmd_nvidia(int argc, char **argv)
     if (clk_tgt) {
         if (strcmp(argv[3], "reset") == 0) {
             if (argc > 4) {
-                fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[4]);
-                fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
+                cctl_stream_fprintf(stderr, "Error: Unexpected extra argument '%s'\n", argv[4]);
+                cctl_stream_fprintf(stderr, "Usage: cctl nvidia %s [min] <max>  |  cctl nvidia %s reset\n",
                         clk_tgt->name, clk_tgt->name);
                 return 1;
             }
@@ -1019,8 +1019,8 @@ static int cmd_nvidia(int argc, char **argv)
         }
 #ifndef CCTL_NVIDIA
     } else {
-        fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
+        cctl_stream_fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
+        cctl_stream_fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
         return 1;
 #endif
     }
@@ -1046,8 +1046,8 @@ static int cmd_nvidia(int argc, char **argv)
             return nvidia_clock_reset_flag(clk_tgt->rst_flag);
         return nvidia_clock_apply(clk_tgt->set_flag, clk_min, clk_max);
     } else {
-        fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
-        fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
+        cctl_stream_fprintf(stderr, "Error: Unknown nvidia action '%s'\n", action);
+        cctl_stream_fprintf(stderr, "Usage: %s\n", NVIDIA_USAGE_STR);
         return 1;
     }
     return 0;
@@ -1102,18 +1102,18 @@ static int cmd_rr(int argc, char **argv)
     if (strcmp(rate, "toggle") == 0 || strcmp(rate, "t") == 0) {
         struct display_info info;
         if (query_display_info(&info) < 0) {
-            fprintf(stderr, "Error: cannot toggle refresh rate (no display info)\n");
+            cctl_stream_fprintf(stderr, "Error: cannot toggle refresh rate (no display info)\n");
             return -1;
         }
         int ti = display_monitor_by_number(&info, mon > 0 ? mon : 1);
         if (ti < 0) {
-            fprintf(stderr, "Error: no display #%d (run 'cctl rr' to list displays)\n",
+            cctl_stream_fprintf(stderr, "Error: no display #%d (run 'cctl rr' to list displays)\n",
                     mon > 0 ? mon : 1);
             return -1;
         }
         struct display_monitor *m = &info.monitors[ti];
         if (m->rate_count < 2) {
-            fprintf(stderr, "Error: cannot toggle refresh rate on %s (multiple rates unavailable)\n",
+            cctl_stream_fprintf(stderr, "Error: cannot toggle refresh rate on %s (multiple rates unavailable)\n",
                     m->name);
             return -1;
         }

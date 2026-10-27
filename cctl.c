@@ -40,14 +40,14 @@
 #include <math.h>
 #include <dbus/dbus.h>
 
-#define CCTL_VERSION      "4.8"
+#define CCTL_VERSION      "4.8.5"
 /* NOTE FOR DEVELOPERS / AI AGENTS:
  * Always increment CCTL_MICROVERSION (a 6-digit integer) whenever making code
  * changes and committing. 'cctl install' checks this hidden value to determine
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100109
+#define CCTL_MICROVERSION 100112
 #endif
 
 

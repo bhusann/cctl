@@ -52,20 +52,6 @@ static void sleep_ms(long ms)
     nanosleep(&ts, NULL);
 }
 
-static int is_char_stream_prompt(const char *s, size_t len)
-{
-    if (!s || len == 0) return 0;
-    if (memmem(s, len, "tuxedo-drivers are installed. Reinstall or Uninstall", 52))
-        return 1;
-    if (memmem(s, len, "tuxedo-drivers are not installed. Install", 41))
-        return 1;
-    if (memmem(s, len, "Uninstall existing driver and install cctl drivers", 50))
-        return 1;
-    if (memmem(s, len, "tuxedo-drivers are in a broken/partial state", 43))
-        return 1;
-    return 0;
-}
-
 static void stream_write_file(FILE *stream, const char *text, int delay_us)
 {
     if (!text) return;
@@ -91,35 +77,8 @@ static void stream_write_file(FILE *stream, const char *text, int delay_us)
         size_t len = strlen(text);
         for (size_t i = 0; i < len; ) {
             size_t start = i;
-            while (i < len && text[i] != '\n') {
-                i++;
-            }
-            if (is_char_stream_prompt(&text[start], i - start)) {
-                size_t seg_len = i - start;
-                for (size_t k = 0; k < seg_len; ) {
-                    if (text[start + k] == '\033' && k + 1 < seg_len && text[start + k + 1] == '[') {
-                        size_t j = k + 2;
-                        while (j < seg_len && (text[start + j] < 0x40 || text[start + j] > 0x7E)) j++;
-                        if (j < seg_len) j++;
-                        fwrite(&text[start + k], 1, j - k, stream);
-                        k = j;
-                        continue;
-                    }
-                    unsigned char c = (unsigned char)text[start + k];
-                    size_t clen = 1;
-                    if ((c & 0xE0) == 0xC0) clen = 2;
-                    else if ((c & 0xF0) == 0xE0) clen = 3;
-                    else if ((c & 0xF8) == 0xF0) clen = 4;
-                    if (k + clen > seg_len) clen = seg_len - k;
-
-                    fwrite(&text[start + k], 1, clen, stream);
-                    k += clen;
-                    fflush(stream);
-                    usleep((useconds_t)STREAM_DELAY_US);
-                }
-            } else if (i > start) {
-                fwrite(&text[start], 1, i - start, stream);
-            }
+            while (i < len && text[i] != '\n') i++;
+            if (i > start) fwrite(&text[start], 1, i - start, stream);
             if (i < len && text[i] == '\n') {
                 fputc('\n', stream);
                 fflush(stream);
@@ -282,12 +241,6 @@ static void cctl_stream_perror(const char *s)
     }
 }
 
-#define printf(...)    cctl_stream_printf(__VA_ARGS__)
-#define fprintf(...)   cctl_stream_fprintf(__VA_ARGS__)
-#define puts(s)        cctl_stream_puts(s)
-#define putchar(c)     cctl_stream_putchar(c)
-#define perror(s)      cctl_stream_perror(s)
-
 enum run_flags {
     RUN_SILENT  = 1 << 0, /* redirect stdout & stderr to /dev/null */
     RUN_CAPTURE = 1 << 1, /* capture stdout into out buffer */
@@ -448,21 +401,21 @@ static int fail_line(const char *fmt, ...)
 /* Destructive-action confirmation. Returns 1 only for an explicit y/yes. */
 static int cctl_confirm_delete(const char *label, const char *name)
 {
-    fprintf(stderr, "Delete %s '%s'? [y/N] ", label, name);
+    cctl_stream_fprintf(stderr, "Delete %s '%s'? [y/N] ", label, name);
     fflush(stderr);
     if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm deletion, or pass --noconfirm.\n");
+        cctl_stream_fprintf(stderr, "\nCancelled. Run this command in a terminal to confirm deletion, or pass --noconfirm.\n");
         return 0;
     }
 
     char answer[32];
     if (!fgets(answer, sizeof(answer), stdin)) {
-        puts("Cancelled; nothing was deleted.");
+        cctl_stream_puts("Cancelled; nothing was deleted.");
         return 0;
     }
     answer[strcspn(answer, "\r\n")] = '\0';
     if (strcasecmp(answer, "y") != 0 && strcasecmp(answer, "yes") != 0) {
-        puts("Cancelled; nothing was deleted.");
+        cctl_stream_puts("Cancelled; nothing was deleted.");
         return 0;
     }
     return 1;
@@ -518,7 +471,7 @@ static void self_elevate(int argc, char **argv)
 
     char **args = malloc((size_t)(argc + 2) * sizeof(char *));
     if (!args) {
-        fprintf(stderr, "Error: memory allocation failed during self-elevation\n");
+        cctl_stream_fprintf(stderr, "Error: memory allocation failed during self-elevation\n");
         exit(1);
     }
     args[0] = "sudo";
@@ -529,7 +482,7 @@ static void self_elevate(int argc, char **argv)
     args[argc + 1] = NULL;
 
     execvp("sudo", args);
-    perror("Error: failed to re-run with sudo");
+    cctl_stream_perror("Error: failed to re-run with sudo");
     free(args);
     exit(1);
 }
@@ -582,7 +535,7 @@ static int ec_acquire_ports(void)
     if (ec_ports_acquired)
         return 0;
     if (ioperm(EC_DATA_PORT, 1, 1) != 0 || ioperm(EC_CMD_PORT, 1, 1) != 0) {
-        fprintf(stderr, "Error: Failed to get EC port permissions (run as root)\n");
+        cctl_stream_fprintf(stderr, "Error: Failed to get EC port permissions (run as root)\n");
         return -1;
     }
     ec_ports_acquired = 1;
@@ -606,7 +559,7 @@ static int wait_ibf(void)
         i++;
     }
     if (i >= 10000) {
-        fprintf(stderr, "Error: EC timeout (IBF)\n");
+        cctl_stream_fprintf(stderr, "Error: EC timeout (IBF)\n");
         return -1;
     }
     return 0;
@@ -680,6 +633,42 @@ static int read_sysfs_str(const char *path, char *buf, size_t bufsize)
 
 #define CPU_GOVERNOR_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 #define CPU_EPP_PATH "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference"
+#define CPU_AVAILABLE_GOVERNORS_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"
+#define CPU_AVAILABLE_EPP_PATH "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_available_preferences"
+
+/* CPU policy values vary by driver; always use the options exposed by sysfs. */
+static int cpu_policy_value_available(const char *path, const char *value)
+{
+    char available[512];
+    if (read_sysfs_str(path, available, sizeof(available)) < 0) return -1;
+
+    char *save = NULL;
+    for (char *item = strtok_r(available, " \t\r\n", &save);
+         item; item = strtok_r(NULL, " \t\r\n", &save)) {
+        if (strcmp(item, value) == 0) return 1;
+    }
+    return 0;
+}
+
+static void print_cpu_policy_values(const char *label, const char *path)
+{
+    char available[512];
+    cctl_stream_printf("%s%s:%s ", C_CYN, label, C_RST);
+    if (read_sysfs_str(path, available, sizeof(available)) < 0) {
+        cctl_stream_printf("%snot available%s\n", C_DIM, C_RST);
+        return;
+    }
+
+    char *save = NULL;
+    int count = 0;
+    for (char *item = strtok_r(available, " \t\r\n", &save);
+         item; item = strtok_r(NULL, " \t\r\n", &save)) {
+        cctl_stream_printf("%s%s%s%s", count ? ", " : "", C_CYN, item, C_RST);
+        count++;
+    }
+    if (!count) cctl_stream_printf("%snone reported%s", C_DIM, C_RST);
+    cctl_stream_printf("\n");
+}
 
 struct cpu_profile_state {
     char governor[64];
@@ -1092,7 +1081,7 @@ static int mux_show_internal(const char *prefix)
             json_field("GPU MUX", "N/A (NVRAM variable not found or unrecognized)");
             return 1;
         }
-        printf("%s%sN/A (NVRAM variable not found or unrecognized)%s\n", prefix, C_DIM, C_RST);
+        cctl_stream_printf("%s%sN/A (NVRAM variable not found or unrecognized)%s\n", prefix, C_DIM, C_RST);
         return 1;
     }
     int running = mux_running_mode();
@@ -1105,12 +1094,12 @@ static int mux_show_internal(const char *prefix)
     }
     const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_RED;
     if (running >= 0 && nvram != running)
-        printf("%s%s%s%s  %s← %s pending (reboot to apply)%s\n",
+        cctl_stream_printf("%s%s%s%s  %s← %s pending (reboot to apply)%s\n",
                prefix,
                col, mux_mode_str(running), C_RST,
                C_YLW, mux_mode_str(nvram), C_RST);
     else
-        printf("%s%s%s%s\n", prefix, col, mux_mode_str(nvram), C_RST);
+        cctl_stream_printf("%s%s%s%s\n", prefix, col, mux_mode_str(nvram), C_RST);
     return 0;
 }
 
@@ -1227,13 +1216,13 @@ static int mux_switch(void)
 {
     /* Preflight: NVRAM var must exist */
     if (access(MUX_VAR_PATH, F_OK) != 0) {
-        fprintf(stderr, "Error: NVRAM variable not found: %s\n", MUX_VAR_PATH);
+        cctl_stream_fprintf(stderr, "Error: NVRAM variable not found: %s\n", MUX_VAR_PATH);
         return 1;
     }
 
     /* Preflight: must be root */
     if (geteuid() != 0) {
-        fprintf(stderr, "Error: MUX switch requires root (sudo cctl mux switch)\n");
+        cctl_stream_fprintf(stderr, "Error: MUX switch requires root (sudo cctl mux switch)\n");
         return 1;
     }
 
@@ -1244,7 +1233,7 @@ static int mux_switch(void)
     if (ac_online() == 0) {
         int pct = battery_pct();
         if (pct >= 0 && pct < 10) {
-            fprintf(stderr,
+            cctl_stream_fprintf(stderr,
                     "Error: battery is less than 10%% and AC is not connected.\n"
                     "       Connect AC to use this.\n");
             return 1;
@@ -1255,7 +1244,7 @@ static int mux_switch(void)
     unsigned char blob[MUX_EXPECTED_LEN];
     int current = mux_read_blob(blob);
     if (current < 0) {
-        fprintf(stderr, "Error: NVRAM variable has an unexpected size or MUX value — refusing.\n");
+        cctl_stream_fprintf(stderr, "Error: NVRAM variable has an unexpected size or MUX value — refusing.\n");
         return 1;
     }
     int fd;
@@ -1263,14 +1252,14 @@ static int mux_switch(void)
     int target = (current == MUX_VAL_MSHYBRID) ? MUX_VAL_DGPU : MUX_VAL_MSHYBRID;
 
     /* Confirmation prompt */
-    printf("Switch GPU MUX mode from %s%s%s to %s%s%s? [y/N] ",
+    cctl_stream_printf("Switch GPU MUX mode from %s%s%s to %s%s%s? [y/N] ",
            C_DIM, mux_mode_str(current), C_RST,
            C_BLD, mux_mode_str(target), C_RST);
     fflush(stdout);
 
     char ans[32] = {0};
     if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
-        printf("Aborted.\n");
+        cctl_stream_printf("Aborted.\n");
         return 0;
     }
 
@@ -1282,7 +1271,7 @@ static int mux_switch(void)
     blob[MUX_OFFSET] = (unsigned char)target;
     fd = open(MUX_VAR_PATH, O_WRONLY);
     if (fd < 0) {
-        perror("Error: cannot open NVRAM variable for writing");
+        cctl_stream_perror("Error: cannot open NVRAM variable for writing");
         return 1;
     }
     ssize_t written;
@@ -1291,14 +1280,14 @@ static int mux_switch(void)
     } while (written < 0 && errno == EINTR);
     close(fd);
     if (written != (ssize_t)sizeof(blob)) {
-        fprintf(stderr, "Error: short write (%zd/%zu bytes).\n", written, sizeof(blob));
+        cctl_stream_fprintf(stderr, "Error: short write (%zd/%zu bytes).\n", written, sizeof(blob));
         return 1;
     }
 
     /* Readback verify */
     int readback = mux_read();
     if (readback != target) {
-        fprintf(stderr, "Error: readback 0x%02x != target 0x%02x — write may have failed!\n",
+        cctl_stream_fprintf(stderr, "Error: readback 0x%02x != target 0x%02x — write may have failed!\n",
                 readback, target);
         return 1;
     }

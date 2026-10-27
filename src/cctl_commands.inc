@@ -19,7 +19,7 @@ static int scale_set(const char *resolution)
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to set scale to %s", resolution);
-    printf("  Display scale: %s → %s%s\n", resolution, info.resolution, snapshot_applied_tag());
+    cctl_stream_printf("  Display scale: %s → %s%s\n", resolution, info.resolution, snapshot_applied_tag());
     return 0;
 }
 
@@ -37,36 +37,36 @@ static int scale_reset(void)
     };
     if (run(args, RUN_SILENT, NULL, 0) != 0)
         return fail("Failed to reset scale");
-    printf("  Scale: native (1x1)%s\n", snapshot_applied_tag());
+    cctl_stream_printf("  Scale: native (1x1)%s\n", snapshot_applied_tag());
     return 0;
 }
 
 static void scale_show_details(void)
 {
-    printf("%sUsage:%s %scctl scale <factor | resolution | off>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("The internal display does not offer these lower resolutions as native modes.\n"
+    cctl_stream_printf("%sUsage:%s %scctl scale <factor | resolution | off>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+    cctl_stream_printf("The internal display does not offer these lower resolutions as native modes.\n"
            "cctl uses X11 display scaling to show the desktop at a requested size\n"
            "while keeping the panel at its native resolution.\n\n");
 
     struct display_info info;
     if (has_display_support() && query_display_info(&info) == 0 && info.resolution[0]) {
-        printf("%sCurrent Display:%s\n", C_YLW, C_RST);
-        printf("  %sOutput:%s %s  |  %sNative Resolution:%s %s  |  %sCurrent Rate:%s %sHz\n\n",
+        cctl_stream_printf("%sCurrent Display:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("  %sOutput:%s %s  |  %sNative Resolution:%s %s  |  %sCurrent Rate:%s %sHz\n\n",
                C_CYN, C_RST, info.output, C_CYN, C_RST, info.resolution, C_CYN, C_RST, info.current_rate);
-        printf("  %sCurrent Desktop Size:%s %s (from xrandr)\n\n",
+        cctl_stream_printf("  %sCurrent Desktop Size:%s %s (from xrandr)\n\n",
                C_CYN, C_RST, info.current_resolution[0] ? info.current_resolution : "N/A");
     }
 
-    printf("%sOptions:%s\n", C_YLW, C_RST);
-    printf("  %s%-15s%s Fraction between 0.01 and 1.0 (e.g. 0.75 for 75%%, 0.5 for 50%%)\n", C_CYN, "<factor>", C_RST);
-    printf("  %s%-15s%s Explicit WIDTHxHEIGHT (e.g. 1920x1080, 1600x900, 1280x720)\n", C_CYN, "<resolution>", C_RST);
-    printf("  %s%-15s%s Restore native 1:1 display resolution\n\n", C_CYN, "off | reset", C_RST);
+    cctl_stream_printf("%sOptions:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  %s%-15s%s Fraction between 0.01 and 1.0 (e.g. 0.75 for 75%%, 0.5 for 50%%)\n", C_CYN, "<factor>", C_RST);
+    cctl_stream_printf("  %s%-15s%s Explicit WIDTHxHEIGHT (e.g. 1920x1080, 1600x900, 1280x720)\n", C_CYN, "<resolution>", C_RST);
+    cctl_stream_printf("  %s%-15s%s Restore native 1:1 display resolution\n\n", C_CYN, "off | reset", C_RST);
 
-    printf("%sExamples:%s\n", C_YLW, C_RST);
-    printf("  %scctl scale 0.75%s         Set display scale to 75%% (1080p area on a 1440p panel)\n", C_CYN, C_RST);
-    printf("  %scctl scale 1920x1080%s    Set display scale using a 1920x1080 area\n", C_CYN, C_RST);
-    printf("  %scctl scale 0.5%s          Set display scale to 50%%\n", C_CYN, C_RST);
-    printf("  %scctl scale off%s          Reset back to native display resolution\n", C_CYN, C_RST);
+    cctl_stream_printf("%sExamples:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  %scctl scale 0.75%s         Set display scale to 75%% (1080p area on a 1440p panel)\n", C_CYN, C_RST);
+    cctl_stream_printf("  %scctl scale 1920x1080%s    Set display scale using a 1920x1080 area\n", C_CYN, C_RST);
+    cctl_stream_printf("  %scctl scale 0.5%s          Set display scale to 50%%\n", C_CYN, C_RST);
+    cctl_stream_printf("  %scctl scale off%s          Reset back to native display resolution\n", C_CYN, C_RST);
 }
 
 static int cmd_scale(int argc, char **argv)
@@ -110,7 +110,7 @@ static int cmd_scale(int argc, char **argv)
             return fail("Scaled resolution %dx%d is too small (minimum 640x360)", sw, sh);
         char res[32];
         snprintf(res, sizeof(res), "%dx%d", sw, sh);
-        printf("  Factor: %.2f → %s (from %s)\n", factor, res, info.resolution);
+        cctl_stream_printf("  Factor: %.2f → %s (from %s)\n", factor, res, info.resolution);
         int rc = scale_set(res);
         if (rc == 0) print_done();
         return rc;
@@ -135,23 +135,23 @@ static int cmd_options(int argc, char **argv)
         int prev_line = g_stream_line;
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
-        printf("%sCCTL-specific settings:%s\n", C_YLW, C_RST);
-        printf("  %s%-18s%s %s%-6s%s  Stream output character-by-character or by line\n",
+        cctl_stream_printf("%sCCTL-specific settings:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("  %s%-18s%s %s%-6s%s  Stream output character-by-character or by line\n",
                C_CYN, "streamtext", C_RST,
                settings.streamtext_enabled ? C_GRN : C_DIM,
                settings.streamtext_enabled ? "on" : "off", C_RST);
-        printf("  %s%-18s%s %s%-6s%s  What bare 'cctl' shows: help or status\n",
+        cctl_stream_printf("  %s%-18s%s %s%-6s%s  What bare 'cctl' shows: help or status\n",
                C_CYN, "default", C_RST, C_GRN,
                settings.default_is_status ? "status" : "help", C_RST);
-        printf("  %s%-18s%s %s%-6s%s  Enable experimental fan controls and show in help\n",
+        cctl_stream_printf("  %s%-18s%s %s%-6s%s  Enable experimental fan controls and show in help\n",
                C_CYN, "experimental-fan", C_RST,
                settings.experimental_fan_enabled ? C_GRN : C_DIM,
                settings.experimental_fan_enabled ? "on" : "off", C_RST);
-        printf("\n%sUsage:%s %scctl options streamtext <on|off>%s\n",
+        cctl_stream_printf("\n%sUsage:%s %scctl options streamtext <on|off>%s\n",
                C_BLD, C_RST, C_CYN, C_RST);
-        printf("       %scctl options default <help|status>%s\n",
+        cctl_stream_printf("       %scctl options default <help|status>%s\n",
                C_CYN, C_RST);
-        printf("       %scctl options experimental-fan <on|off>%s\n",
+        cctl_stream_printf("       %scctl options experimental-fan <on|off>%s\n",
                C_CYN, C_RST);
         g_stream_mode = prev_mode;
         g_stream_line = prev_line;
@@ -182,7 +182,7 @@ static int cmd_options(int argc, char **argv)
         if (cctl_settings_write(&settings) != 0)
             return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
         g_stream_text_enabled = settings.streamtext_enabled;
-        printf("Text streaming %s.\n", settings.streamtext_enabled ? "enabled" : "disabled");
+        cctl_stream_printf("Text streaming %s.\n", settings.streamtext_enabled ? "enabled" : "disabled");
         return 0;
     }
 
@@ -193,7 +193,7 @@ static int cmd_options(int argc, char **argv)
         settings.default_is_status = (strcmp(opt_val, "status") == 0);
         if (cctl_settings_write(&settings) != 0)
             return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
-        printf("Default action on bare 'cctl' set to %s.\n",
+        cctl_stream_printf("Default action on bare 'cctl' set to %s.\n",
                settings.default_is_status ? "status" : "help");
         return 0;
     }
@@ -204,7 +204,7 @@ static int cmd_options(int argc, char **argv)
         settings.experimental_fan_enabled = (strcmp(opt_val, "on") == 0);
         if (cctl_settings_write(&settings) != 0)
             return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
-        printf("Experimental fan controls %s and %s in help.\n",
+        cctl_stream_printf("Experimental fan controls %s and %s in help.\n",
                settings.experimental_fan_enabled ? "enabled" : "disabled",
                settings.experimental_fan_enabled ? "shown" : "hidden");
         return 0;
@@ -403,7 +403,7 @@ static int cmd_editconf(int argc, char **argv)
     if (geteuid() == 0) {
         rc = editconf_install_helper(temp, getuid());
         unlink(temp);
-        if (rc == 0) printf("Saved custom profiles to %s\n", USER_PROFILE_FILE);
+        if (rc == 0) cctl_stream_printf("Saved custom profiles to %s\n", USER_PROFILE_FILE);
         return rc;
     }
 
@@ -417,13 +417,13 @@ static int cmd_editconf(int argc, char **argv)
     unlink(temp);
     if (rc != 0)
         return fail("Could not save custom profiles (installer exited with status %d)", rc);
-    printf("Saved custom profiles to %s\n", USER_PROFILE_FILE);
+    cctl_stream_printf("Saved custom profiles to %s\n", USER_PROFILE_FILE);
     return 0;
 }
 
 static void print_max_profile_note(void)
 {
-    printf("\n%sNote:%s 'max' can sustain 60–90W and reach ~98°C; use for demanding workloads.\n",
+    cctl_stream_printf("\n%sNote:%s 'max' can sustain 60–90W and reach ~98°C; use for demanding workloads.\n",
            C_YLW, C_RST);
 }
 
@@ -438,9 +438,9 @@ static int cmd_set(int argc, char **argv)
         int prev = g_stream_mode;
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
-        printf("%sUsage:%s %scctl %s <profile> [--nosafe]%s\n\n",
+        cctl_stream_printf("%sUsage:%s %scctl %s <profile> [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, "set", C_RST);
-        printf("%sValid Profiles:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("%sValid Profiles:%s\n", C_YLW, C_RST);
         print_profile_table();
         g_stream_mode = prev;
         return 0;
@@ -449,16 +449,16 @@ static int cmd_set(int argc, char **argv)
     const char *profile = pos[0];
     const struct profile_def *p = find_profile(profile);
     if (!p) {
-        fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
-        fprintf(stderr, "Valid profiles: ");
+        cctl_stream_fprintf(stderr, "Error: Unknown profile '%s'\n", profile);
+        cctl_stream_fprintf(stderr, "Valid profiles: ");
         for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
             const char *name = strcmp(PROFILES[i].name, "silent") == 0
                              ? "silent/eco" : PROFILES[i].name;
-            fprintf(stderr, "%s%s", name,
+            cctl_stream_fprintf(stderr, "%s%s", name,
                     i + 1 < sizeof(PROFILES) / sizeof(PROFILES[0]) ? ", " : "\n");
         }
         for (int i = 0; i < user_profile_count; i++)
-            fprintf(stderr, "%s%s", user_profiles[i].name,
+            cctl_stream_fprintf(stderr, "%s%s", user_profiles[i].name,
                     i + 1 < user_profile_count ? ", " : "\n");
         return 1;
     }
@@ -531,7 +531,7 @@ static int cmd_set(int argc, char **argv)
         fc_warn_active(&curve_st);
 
     if (wants_auto && !curve_active) {
-        printf("Setting fans to AUTO...\n");
+        cctl_stream_printf("Setting fans to AUTO...\n");
         fan_auto_all();
     }
     int rc = profile_apply(p);
@@ -576,20 +576,20 @@ static int cmd_fan(int argc, char **argv)
         int prev = g_stream_mode;
         g_stream_mode = STREAM_MODE_LINE;
         g_stream_line = 0;
-        printf("%sUsage:%s %scctl fan <mode> [pct] [--nosafe]%s\n\n",
+        cctl_stream_printf("%sUsage:%s %scctl fan <mode> [pct] [--nosafe]%s\n\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
-        printf("%sValid Modes:%s\n", C_YLW, C_RST);
-        printf("  %s%-18s%s Automatic EC fan control for both fans\n", C_CYN, "auto", C_RST);
-        printf("  %s%-18s%s Full 100%% fan speed\n", C_CYN, "max", C_RST);
+        cctl_stream_printf("%sValid Modes:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("  %s%-18s%s Automatic EC fan control for both fans\n", C_CYN, "auto", C_RST);
+        cctl_stream_printf("  %s%-18s%s Full 100%% fan speed\n", C_CYN, "max", C_RST);
         if (experimental_enabled) {
-            printf("  %s%-18s%s Quiet mode (forces silent/eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
-            printf("  %s%-18s%s Set both fans to duty 25-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
-            printf("  %s%-18s%s Set CPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "cpu <pct|auto>", C_RST);
-            printf("  %s%-18s%s Set GPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "gpu <pct|auto>", C_RST);
-            printf("  %sManual fan control is experimental and can ignore temperature safeguards.%s\n",
+            cctl_stream_printf("  %s%-18s%s Quiet mode (forces silent/eco profile; bypass with --nosafe)\n", C_CYN, "silent", C_RST);
+            cctl_stream_printf("  %s%-18s%s Set both fans to duty 25-100%% (requires --nosafe)\n", C_CYN, "<pct>", C_RST);
+            cctl_stream_printf("  %s%-18s%s Set CPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "cpu <pct|auto>", C_RST);
+            cctl_stream_printf("  %s%-18s%s Set GPU fan duty (25-100%% --nosafe) or 'auto'\n", C_CYN, "gpu <pct|auto>", C_RST);
+            cctl_stream_printf("  %sManual fan control is experimental and can ignore temperature safeguards.%s\n",
                    C_YLW, C_RST);
         } else {
-            printf("  %sExperimental fan controls are hidden. Enable with:%s cctl options experimental-fan on\n",
+            cctl_stream_printf("  %sExperimental fan controls are hidden. Enable with:%s cctl options experimental-fan on\n",
                    C_DIM, C_RST);
         }
         g_stream_mode = prev;
@@ -722,7 +722,7 @@ static int cmd_fan(int argc, char **argv)
             rc = fan_set_duty(0, pct, admin_mode);
         } else {
             fail("Unknown fan mode '%s'", mode);
-            fprintf(stderr, "Valid modes: auto [cpu|gpu], max, silent, cpu <pct|auto>, gpu <pct|auto>, or <pct> --nosafe\n");
+            cctl_stream_fprintf(stderr, "Valid modes: auto [cpu|gpu], max, silent, cpu <pct|auto>, gpu <pct|auto>, or <pct> --nosafe\n");
             return 1;
         }
     }
@@ -747,7 +747,7 @@ static int cmd_turbo(int argc, char **argv)
                    no_turbo == 0 ? C_GRN : C_RED,
                    no_turbo == 0 ? "ON" : "OFF",
                    C_RST);
-        printf("%sUsage:%s %scctl turbo <on|off> [--nosafe]%s\n",
+        cctl_stream_printf("%sUsage:%s %scctl turbo <on|off> [--nosafe]%s\n",
                C_BLD, C_RST, C_CYN_BLD, C_RST);
         return 0;
     }
@@ -808,18 +808,20 @@ static int cmd_gov(int argc, char **argv)
         struct cpu_profile_state cpu_profile;
         read_cpu_profile(&cpu_profile);
         if (cpu_profile.have_governor)
-            printf("%sCurrent Governor:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN,
+            cctl_stream_printf("%sCurrent Governor:%s %s%s%s\n\n", C_YLW, C_RST, C_CYN,
                    cpu_profile.governor, C_RST);
-        printf("%sUsage:%s %scctl gov <governor>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
-        printf("%sValid Values:%s\n", C_YLW, C_RST);
-        printf("  %spowersave%s\n", C_CYN, C_RST);
-        printf("  %sperformance%s\n", C_CYN, C_RST);
+        cctl_stream_printf("%sUsage:%s %scctl gov <governor>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        print_cpu_policy_values("Available Governors", CPU_AVAILABLE_GOVERNORS_PATH);
         g_stream_mode = prev;
         return 0;
     }
     const char *gov = argv[2];
-    if (strcmp(gov, "powersave") != 0 && strcmp(gov, "performance") != 0)
-        return fail("Invalid governor '%s' (use powersave or performance)", gov);
+    int available = cpu_policy_value_available(CPU_AVAILABLE_GOVERNORS_PATH, gov);
+    if (available < 0)
+        return fail("Cannot read available CPU governors from %s",
+                    CPU_AVAILABLE_GOVERNORS_PATH);
+    if (!available)
+        return fail("Governor '%s' is not available; run 'cctl gov' to see available values", gov);
 
     require_root(argc, argv);
     int rc = set_governor(gov);
@@ -836,36 +838,32 @@ static int cmd_epp(int argc, char **argv)
         struct cpu_profile_state cpu_profile;
         read_cpu_profile(&cpu_profile);
         if (cpu_profile.have_epp)
-            printf("%sCurrent EPP:%s %s%s%s\n", C_YLW, C_RST, C_CYN,
+            cctl_stream_printf("%sCurrent EPP:%s %s%s%s\n", C_YLW, C_RST, C_CYN,
                    cpu_profile.epp, C_RST);
         if (cpu_profile.have_governor && strcmp(cpu_profile.governor, "performance") == 0)
-            printf("%sNote:%s Governor is %sperformance%s — manual EPP control is locked in this mode.\n"
+            cctl_stream_printf("%sNote:%s Governor is %sperformance%s — manual EPP control is locked in this mode.\n"
                    "      Change governor to %spowersave%s ('cctl gov powersave') to configure EPP.\n\n",
                    C_YLW, C_RST, C_CYN, C_RST, C_CYN, C_RST);
         else
-            printf("\n");
-        printf("%sUsage:%s %scctl epp <value>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
-        printf("%sValid Values:%s\n", C_YLW, C_RST);
-        printf("  %sperformance%s\n", C_CYN, C_RST);
-        printf("  %sbalance_performance%s\n", C_CYN, C_RST);
-        printf("  %sbalance_power%s\n", C_CYN, C_RST);
-        printf("  %spower%s\n", C_CYN, C_RST);
+            cctl_stream_printf("\n");
+        cctl_stream_printf("%sUsage:%s %scctl epp <value>%s\n\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        print_cpu_policy_values("Available EPP Values", CPU_AVAILABLE_EPP_PATH);
         g_stream_mode = prev;
         return 0;
     }
     const char *epp = argv[2];
-    if (strcmp(epp, "performance") != 0 && strcmp(epp, "balance_performance") != 0 &&
-        strcmp(epp, "balance_power") != 0 && strcmp(epp, "power") != 0) {
-        fprintf(stderr, "Error: Invalid EPP '%s'\n", epp);
-        fprintf(stderr, "Valid values: performance, balance_performance, balance_power, power\n");
-        return 1;
-    }
+    int available = cpu_policy_value_available(CPU_AVAILABLE_EPP_PATH, epp);
+    if (available < 0)
+        return fail("Cannot read available EPP values from %s",
+                    CPU_AVAILABLE_EPP_PATH);
+    if (!available)
+        return fail("EPP value '%s' is not available; run 'cctl epp' to see available values", epp);
 
     char cur_gov[64] = {0};
     if (read_sysfs_str(CPU_GOVERNOR_PATH, cur_gov, sizeof(cur_gov)) >= 0) {
         if (strcmp(cur_gov, "performance") == 0 && strcmp(epp, "performance") != 0) {
-            fprintf(stderr, "Error: CPU governor is currently 'performance' — manual EPP control is only supported in 'powersave' mode.\n");
-            fprintf(stderr, "       Change the governor first: cctl gov powersave\n");
+            cctl_stream_fprintf(stderr, "Error: CPU governor is currently 'performance' — manual EPP control is only supported in 'powersave' mode.\n");
+            cctl_stream_fprintf(stderr, "       Change the governor first: cctl gov powersave\n");
             return 1;
         }
     }
@@ -884,15 +882,15 @@ static int cmd_rapl(int argc, char **argv)
         g_stream_line = 0;
         int cur_pl1 = -1, cur_pl2 = -1;
         if (read_rapl_current(&cur_pl1, &cur_pl2) == 0 && cur_pl1 > 0 && cur_pl2 > 0) {
-            printf("%sCurrent RAPL Limits:%s\n", C_YLW, C_RST);
-            printf("  %sPL1:%s %s%dW%s\n", C_CYN, C_RST, C_CYN, cur_pl1, C_RST);
-            printf("  %sPL2:%s %s%dW%s\n\n", C_CYN, C_RST, C_CYN, cur_pl2, C_RST);
+            cctl_stream_printf("%sCurrent RAPL Limits:%s\n", C_YLW, C_RST);
+            cctl_stream_printf("  %sPL1:%s %s%dW%s\n", C_CYN, C_RST, C_CYN, cur_pl1, C_RST);
+            cctl_stream_printf("  %sPL2:%s %s%dW%s\n\n", C_CYN, C_RST, C_CYN, cur_pl2, C_RST);
         }
-        printf("%sUsage:%s %scctl rapl <pl1_watts> <pl2_watts>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
-        printf("       %scctl rapl skip <pl2>%s      (set PL2 only)\n", C_CYN_BLD, C_RST);
-        printf("       %scctl rapl <pl1> skip%s      (set PL1 only)\n", C_CYN_BLD, C_RST);
-        printf("       %scctl rapl <pl2>%s           (one value = PL2 only)\n\n", C_CYN_BLD, C_RST);
-        printf("  %sLimits:%s PL1 1-%dW (up to %dW with EC profile code 2), PL2 up to %dW (must be > PL1)\n",
+        cctl_stream_printf("%sUsage:%s %scctl rapl <pl1_watts> <pl2_watts>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        cctl_stream_printf("       %scctl rapl skip <pl2>%s      (set PL2 only)\n", C_CYN_BLD, C_RST);
+        cctl_stream_printf("       %scctl rapl <pl1> skip%s      (set PL1 only)\n", C_CYN_BLD, C_RST);
+        cctl_stream_printf("       %scctl rapl <pl2>%s           (one value = PL2 only)\n\n", C_CYN_BLD, C_RST);
+        cctl_stream_printf("  %sLimits:%s PL1 1-%dW (up to %dW with EC profile code 2), PL2 up to %dW (must be > PL1)\n",
                 C_DIM, C_RST, RAPL_PL1_MAX_WATTS, RAPL_PL1_MAX_WATTS_MAX, RAPL_PL2_MAX_WATTS);
         g_stream_mode = prev;
         return 0;
@@ -929,10 +927,10 @@ static int cmd_rapl(int argc, char **argv)
             if (safe_atoi(argv[2], &pl1) < 0 || pl1 < 1)
                 return fail("Invalid PL1 value '%s' (use a wattage 1-%d or 'skip')", argv[2], pl1_cap);
             if (pl1 > pl1_cap) {
-                fprintf(stderr, "Error: PL1 %dW exceeds the %dW limit for the current mode\n",
+                cctl_stream_fprintf(stderr, "Error: PL1 %dW exceeds the %dW limit for the current mode\n",
                         pl1, pl1_cap);
                 if (pl1_cap == RAPL_PL1_MAX_WATTS)
-                    fprintf(stderr, "       90W PL1 is supported only in 'max' mode (EC profile code 2) "
+                    cctl_stream_fprintf(stderr, "       90W PL1 is supported only in 'max' mode (EC profile code 2) "
                                     "(see Mode in 'cctl status')\n");
                 return 1;
             }
@@ -1008,8 +1006,8 @@ static int cmd_kbb(int argc, char **argv)
         g_stream_line = 0;
         int cur_bri = kbd_get_brightness();
         if (cur_bri >= 0)
-            printf("%sCurrent Brightness:%s %s%d%%%s\n\n", C_YLW, C_RST, C_CYN, cur_bri, C_RST);
-        printf("%sUsage:%s %scctl kbb <0-100>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+            cctl_stream_printf("%sCurrent Brightness:%s %s%d%%%s\n\n", C_YLW, C_RST, C_CYN, cur_bri, C_RST);
+        cctl_stream_printf("%sUsage:%s %scctl kbb <0-100>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         g_stream_mode = prev;
         return 0;
     }
@@ -1039,26 +1037,26 @@ static int cmd_kbe(int argc, char **argv)
         g_stream_line = 0;
         struct kbe_state ks;
         if (kbe_is_running(&ks)) {
-            printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
-            printf("  %sStatus:%s              %s%s%s (active, PID %d)\n", C_CYN, C_RST, C_GRN, ks.effect, C_RST, (int)ks.pid);
+            cctl_stream_printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
+            cctl_stream_printf("  %sStatus:%s              %s%s%s (active, PID %d)\n", C_CYN, C_RST, C_GRN, ks.effect, C_RST, (int)ks.pid);
             const struct kbe_effect_def *cur = kbe_find_effect(ks.effect);
             if (cur && strcmp(cur->name, "temp") == 0) {
                 int t = read_cpu_temp();
                 if (t > 0)
-                    printf("  %sLive CPU Temp:%s       %s%d°C%s\n", C_CYN, C_RST, t >= 85 ? C_RED : (t >= 70 ? C_YLW : C_GRN), t, C_RST);
+                    cctl_stream_printf("  %sLive CPU Temp:%s       %s%d°C%s\n", C_CYN, C_RST, t >= 85 ? C_RED : (t >= 70 ? C_YLW : C_GRN), t, C_RST);
             }
-            printf("  %sOriginal Color:%s      RGB(%d, %d, %d)\n", C_CYN, C_RST, ks.orig_r, ks.orig_g, ks.orig_b);
+            cctl_stream_printf("  %sOriginal Color:%s      RGB(%d, %d, %d)\n", C_CYN, C_RST, ks.orig_r, ks.orig_g, ks.orig_b);
             int bri_pct = (ks.orig_bri * 100 + 127) / 255;
-            printf("  %sOriginal Brightness:%s %d%% (raw %d)\n\n", C_CYN, C_RST, bri_pct, ks.orig_bri);
+            cctl_stream_printf("  %sOriginal Brightness:%s %d%% (raw %d)\n\n", C_CYN, C_RST, bri_pct, ks.orig_bri);
         } else {
-            printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
-            printf("  %sStatus:%s              %snone%s (stopped)\n\n", C_CYN, C_RST, C_DIM, C_RST);
+            cctl_stream_printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
+            cctl_stream_printf("  %sStatus:%s              %snone%s (stopped)\n\n", C_CYN, C_RST, C_DIM, C_RST);
         }
-        printf("%sAvailable Effects:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("%sAvailable Effects:%s\n", C_YLW, C_RST);
         for (size_t i = 0; i < sizeof(kbe_effects) / sizeof(kbe_effects[0]); i++) {
-            printf("  %s%-16s%s %s\n", C_CYN, kbe_effects[i].name, C_RST, kbe_effects[i].desc);
+            cctl_stream_printf("  %s%-16s%s %s\n", C_CYN, kbe_effects[i].name, C_RST, kbe_effects[i].desc);
         }
-        printf("\n%sUsage:%s %scctl kbe <effect>  |  cctl kbe stop%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        cctl_stream_printf("\n%sUsage:%s %scctl kbe <effect>  |  cctl kbe stop%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         g_stream_mode = prev;
         return 0;
     }
@@ -1072,10 +1070,10 @@ static int cmd_kbe(int argc, char **argv)
 
     const struct kbe_effect_def *fx = kbe_find_effect(sub);
     if (!fx) {
-        fprintf(stderr, "Error: Unknown keyboard effect '%s'\n", sub);
-        fprintf(stderr, "Available effects: ");
+        cctl_stream_fprintf(stderr, "Error: Unknown keyboard effect '%s'\n", sub);
+        cctl_stream_fprintf(stderr, "Available effects: ");
         for (size_t i = 0; i < sizeof(kbe_effects) / sizeof(kbe_effects[0]); i++) {
-            fprintf(stderr, "%s%s", kbe_effects[i].name,
+            cctl_stream_fprintf(stderr, "%s%s", kbe_effects[i].name,
                     i + 1 < sizeof(kbe_effects) / sizeof(kbe_effects[0]) ? ", " : "\n");
         }
         return 1;
@@ -1150,22 +1148,22 @@ static int cmd_bat(int argc, char **argv)
         /* Show current charge mode and thresholds. */
         char charge_type[32] = {0};
         if (bat_read_charge_type(charge_type, sizeof(charge_type)) >= 0)
-            printf("%sCharge mode:%s %s\n", C_CYN, C_RST, charge_type);
+            cctl_stream_printf("%sCharge mode:%s %s\n", C_CYN, C_RST, charge_type);
         else
-            printf("%sCharge mode:%s unavailable\n", C_CYN, C_RST);
+            cctl_stream_printf("%sCharge mode:%s unavailable\n", C_CYN, C_RST);
         int start = bat_read_start();
         int end = bat_read_end();
         if (start < 0 || end < 0) {
-            fprintf(stderr, "Error: Cannot read battery thresholds\n");
+            cctl_stream_fprintf(stderr, "Error: Cannot read battery thresholds\n");
             g_stream_mode = prev;
             return 1;
         }
-        printf("%sCurrent Thresholds:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("%sCurrent Thresholds:%s\n", C_YLW, C_RST);
         if (strcasecmp(charge_type, "Standard") == 0) {
-            printf("  %sCharge thresholds:%s      start %d%% → stop %d%% %s(disabled)%s\n",
+            cctl_stream_printf("  %sCharge thresholds:%s      start %d%% → stop %d%% %s(disabled)%s\n",
                    C_CYN, C_RST, start, end, C_RED, C_RST);
         } else {
-            printf("  %sCharge thresholds:%s      start %d%% → stop %d%%\n", C_CYN, C_RST, start, end);
+            cctl_stream_printf("  %sCharge thresholds:%s      start %d%% → stop %d%%\n", C_CYN, C_RST, start, end);
         }
 
         /* Show available values */
@@ -1174,22 +1172,22 @@ static int cmd_bat(int argc, char **argv)
         bat_start_avail_path(ap, sizeof(ap));
         cnt = read_avail_thresholds(ap, avail, 16);
         if (cnt > 0) {
-            printf("  %sAvailable start values:%s ", C_CYN, C_RST);
+            cctl_stream_printf("  %sAvailable start values:%s ", C_CYN, C_RST);
             for (int i = 0; i < cnt; i++) {
-                printf("%s%d%s%s", avail[i] == start ? C_GRN : "", avail[i], C_RST,
+                cctl_stream_printf("%s%d%s%s", avail[i] == start ? C_GRN : "", avail[i], C_RST,
                        i < cnt - 1 ? " " : "\n");
             }
         }
         bat_end_avail_path(ap, sizeof(ap));
         cnt = read_avail_thresholds(ap, avail, 16);
         if (cnt > 0) {
-            printf("  %sAvailable stop values:%s  ", C_CYN, C_RST);
+            cctl_stream_printf("  %sAvailable stop values:%s  ", C_CYN, C_RST);
             for (int i = 0; i < cnt; i++) {
-                printf("%s%d%s%s", avail[i] == end ? C_GRN : "", avail[i], C_RST,
+                cctl_stream_printf("%s%d%s%s", avail[i] == end ? C_GRN : "", avail[i], C_RST,
                        i < cnt - 1 ? " " : "\n");
             }
         }
-        printf("\n%sUsage:%s %scctl bat <start> <stop>  |  cctl bat standard%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+        cctl_stream_printf("\n%sUsage:%s %scctl bat <start> <stop>  |  cctl bat standard%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
         g_stream_mode = prev;
         return 0;
     }
@@ -1199,11 +1197,11 @@ static int cmd_bat(int argc, char **argv)
     if ((strcmp(argv[2], "standard") == 0 || strcmp(argv[2], "max") == 0) && argc == 3) {
         require_root(argc, argv);
         if (strcmp(argv[2], "max") == 0)
-            fprintf(stderr, "%sDeprecated:%s use 'cctl bat standard' instead of 'cctl bat max'.\n",
+            cctl_stream_fprintf(stderr, "%sDeprecated:%s use 'cctl bat standard' instead of 'cctl bat max'.\n",
                     C_YLW, C_RST);
         int rc = bat_set_charge_type("Standard");
         if (rc == 0)
-            printf("  %s battery charge mode: Standard\n", dry_run ? "Would set" : "Set");
+            cctl_stream_printf("  %s battery charge mode: Standard\n", dry_run ? "Would set" : "Set");
         if (rc == 0) print_done();
         return rc;
     }
@@ -1257,15 +1255,15 @@ static int sudoers_user_is_safe(const char *s)
 static int cctl_uninstall_yes(const char *prompt)
 {
     char answer[64];
-    printf("%s", prompt);
+    cctl_stream_printf("%s", prompt);
     fflush(stdout);
     if (!fgets(answer, sizeof(answer), stdin)) {
-        puts("Cancelled.");
+        cctl_stream_puts("Cancelled.");
         return 0;
     }
     answer[strcspn(answer, "\r\n")] = '\0';
     if (strcmp(answer, "yes") != 0) {
-        puts("Cancelled; type the full word 'yes' to confirm.");
+        cctl_stream_puts("Cancelled; type the full word 'yes' to confirm.");
         return 0;
     }
     return 1;
@@ -1429,7 +1427,7 @@ static int cmd_uninstall(int argc, char **argv)
         return fail("Refusing to remove unsafe contents under /var/lib/cctl");
 
     if (module_stack_loaded) {
-        fprintf(stderr,
+        cctl_stream_fprintf(stderr,
                 "TUXEDO/Clevo drivers are loaded. Use 'cctl drivers-manage' to uninstall them first.\n");
         if (!cctl_uninstall_yes("Proceed anyway and uninstall cctl only, leaving the drivers installed? Type 'yes' to continue: "))
             return 0;
@@ -1440,16 +1438,16 @@ static int cmd_uninstall(int argc, char **argv)
 
     for (size_t i = 0; i < 3; i++) {
         if (cctl_uninstall_remove_file(files[i]) != 0) {
-            perror("Error removing cctl profiles or settings");
+            cctl_stream_perror("Error removing cctl profiles or settings");
             return 1;
         }
     }
     if (have_etc_cctl) {
         if (rmdir("/etc/cctl") != 0) {
             if (errno == ENOTEMPTY || errno == EEXIST)
-                fprintf(stderr, "Keeping /etc/cctl because it contains other files.\n");
+                cctl_stream_fprintf(stderr, "Keeping /etc/cctl because it contains other files.\n");
             else {
-                perror("Error removing /etc/cctl");
+                cctl_stream_perror("Error removing /etc/cctl");
                 return 1;
             }
         }
@@ -1457,16 +1455,16 @@ static int cmd_uninstall(int argc, char **argv)
 
     for (size_t i = 3; i < 6; i++) {
         if (cctl_uninstall_remove_file(files[i]) != 0) {
-            perror("Error removing cctl sudoers files");
+            cctl_stream_perror("Error removing cctl sudoers files");
             return 1;
         }
     }
     if (cctl_uninstall_remove_file(files[6]) != 0) {
-        perror("Error removing /usr/local/bin/cctl");
+        cctl_stream_perror("Error removing /usr/local/bin/cctl");
         return 1;
     }
     if (have_data_dir && cctl_uninstall_remove_tree("/var/lib/cctl", data_dir.st_dev) != 0) {
-        perror("Error removing /var/lib/cctl data");
+        cctl_stream_perror("Error removing /var/lib/cctl data");
         return 1;
     }
 
@@ -1486,7 +1484,7 @@ static int cmd_install(int argc, char **argv)
      * assume EUID==0 at this point. */
     char src[PATH_MAX];
     if (get_self_exe(src, sizeof(src)) < 0) {
-        perror("Error: cannot determine running binary path");
+        cctl_stream_perror("Error: cannot determine running binary path");
         return 1;
     }
 
@@ -1542,7 +1540,7 @@ static int cmd_install(int argc, char **argv)
     /* 1. Copy binary to /usr/local/bin/cctl with mode 0755 */
     char *const args[] = { "install", "-m", "755", src, "/usr/local/bin/cctl", NULL };
     if (run(args, 0, NULL, 0) != 0) {
-        fprintf(stderr, "Error: failed to install binary to /usr/local/bin/cctl\n");
+        cctl_stream_fprintf(stderr, "Error: failed to install binary to /usr/local/bin/cctl\n");
         return 1;
     }
     stream_printf(STREAM_DELAY_US, "Installed: /usr/local/bin/cctl (from %s)\n", src);
@@ -1566,10 +1564,10 @@ static int cmd_install(int argc, char **argv)
      *    A rejected rule never replaces a working one, and sudo can never
      *    be locked out by a bad install. */
     if (!sudoers_user_is_safe(user)) {
-        fprintf(stderr, "Error: username '%s' is not safe to write into sudoers.\n", user);
-        fprintf(stderr, "       Allowed: first character [A-Za-z_], then [A-Za-z0-9_-].\n");
-        fprintf(stderr, "       Create the rule manually with mode 0440:\n");
-        fprintf(stderr, "         echo '<user> ALL=(ALL) NOPASSWD: /usr/local/bin/cctl' "
+        cctl_stream_fprintf(stderr, "Error: username '%s' is not safe to write into sudoers.\n", user);
+        cctl_stream_fprintf(stderr, "       Allowed: first character [A-Za-z_], then [A-Za-z0-9_-].\n");
+        cctl_stream_fprintf(stderr, "       Create the rule manually with mode 0440:\n");
+        cctl_stream_fprintf(stderr, "         echo '<user> ALL=(ALL) NOPASSWD: /usr/local/bin/cctl' "
                         "| sudo EDITOR=tee visudo -f /etc/sudoers.d/cctl\n");
         return 1;
     }
@@ -1582,14 +1580,14 @@ static int cmd_install(int argc, char **argv)
         char *const bak_args[] = { "/bin/cp", "-p",
                                    (char *)sudoers, (char *)sudoers_bak, NULL };
         if (run(bak_args, 0, NULL, 0) != 0)
-            fprintf(stderr, "Warning: could not back up existing sudoers rule to %s\n",
+            cctl_stream_fprintf(stderr, "Warning: could not back up existing sudoers rule to %s\n",
                     sudoers_bak);
     }
 
     unlink(sudoers_tmp); /* stale temp from an earlier failed run */
     int sfd = open(sudoers_tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0440);
     if (sfd < 0) {
-        perror("Error: cannot create sudoers temp file");
+        cctl_stream_perror("Error: cannot create sudoers temp file");
         return 1;
     }
     char rule[320];
@@ -1598,7 +1596,7 @@ static int cmd_install(int argc, char **argv)
     ssize_t w = write(sfd, rule, (size_t)rule_len);
     int close_rc = close(sfd);
     if (w != rule_len || close_rc != 0) {
-        perror("Error: cannot write sudoers temp file");
+        cctl_stream_perror("Error: cannot write sudoers temp file");
         unlink(sudoers_tmp);
         return 1;
     }
@@ -1612,19 +1610,19 @@ static int cmd_install(int argc, char **argv)
         char *const v_args[] = { "visudo", "-c", "-f",
                                  (char *)sudoers_tmp, NULL };
         if (run(v_args, 0, NULL, 0) != 0) {
-            fprintf(stderr,
+            cctl_stream_fprintf(stderr,
                     "Error: visudo rejected the generated sudoers rule — "
                     "keeping the existing one.\n");
             unlink(sudoers_tmp);
             return 1;
         }
     } else {
-        fprintf(stderr,
+        cctl_stream_fprintf(stderr,
                 "Warning: visudo not found — installing rule without syntax validation.\n");
     }
 
     if (rename(sudoers_tmp, sudoers) != 0) {
-        perror("Error: cannot move sudoers rule into place");
+        cctl_stream_perror("Error: cannot move sudoers rule into place");
         unlink(sudoers_tmp);
         return 1;
     }

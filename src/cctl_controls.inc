@@ -7,15 +7,15 @@
 static int set_fnlock(int enabled)
 {
     if (access(FNLOCK_PATH, F_OK) != 0) {
-        fprintf(stderr, "Error: Fn Lock not available (tuxedo_keyboard not loaded?)\n");
+        cctl_stream_fprintf(stderr, "Error: Fn Lock not available (tuxedo_keyboard not loaded?)\n");
         return -1;
     }
     const char *val = enabled ? "1" : "0";
     if (write_sysfs(FNLOCK_PATH, val) < 0) {
-        fprintf(stderr, "Error: Failed to set Fn Lock to %s\n", enabled ? "ON" : "OFF");
+        cctl_stream_fprintf(stderr, "Error: Failed to set Fn Lock to %s\n", enabled ? "ON" : "OFF");
         return -1;
     }
-    printf("  Fn Lock: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
+    cctl_stream_printf("  Fn Lock: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -31,7 +31,7 @@ static int fnlock_toggle(void)
 {
     int cur = get_fnlock();
     if (cur < 0) {
-        fprintf(stderr, "Error: Fn Lock not available (tuxedo_keyboard not loaded?)\n");
+        cctl_stream_fprintf(stderr, "Error: Fn Lock not available (tuxedo_keyboard not loaded?)\n");
         return -1;
     }
     return set_fnlock(!cur);
@@ -46,16 +46,16 @@ static int fnlock_toggle(void)
 static int set_turbo(int enabled)
 {
     if (access(TURBO_PATH, F_OK) != 0) {
-        fprintf(stderr, "Warning: intel_pstate not available, skipping turbo\n");
+        cctl_stream_fprintf(stderr, "Warning: intel_pstate not available, skipping turbo\n");
         return 0; /* non-fatal on AMD/non-pstate */
     }
     /* no_turbo: 0 = turbo ON, 1 = turbo OFF */
     const char *val = enabled ? "0" : "1";
     if (write_sysfs(TURBO_PATH, val) < 0) {
-        fprintf(stderr, "Error: Failed to set turbo to %s\n", enabled ? "ON" : "OFF");
+        cctl_stream_fprintf(stderr, "Error: Failed to set turbo to %s\n", enabled ? "ON" : "OFF");
         return -1;
     }
-    printf("  Turbo boost: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
+    cctl_stream_printf("  Turbo boost: %s%s\n", enabled ? "ON" : "OFF", snapshot_applied_tag());
     return 0;
 }
 
@@ -65,7 +65,13 @@ static int set_turbo(int enabled)
 
 static int set_governor(const char *gov)
 {
-    printf("  Governor: %s%s\n", gov, snapshot_applied_tag());
+    if (cpu_policy_value_available(CPU_AVAILABLE_GOVERNORS_PATH, gov) != 1) {
+        cctl_stream_fprintf(stderr,
+                            "Error: governor '%s' is not listed by the active CPU driver\n",
+                            gov);
+        return -1;
+    }
+    cctl_stream_printf("  Governor: %s%s\n", gov, snapshot_applied_tag());
     return write_to_all_cpus("cpufreq/scaling_governor", gov);
 }
 
@@ -78,24 +84,31 @@ static int set_epp(const char *val)
     /* Check that intel_pstate EPP path exists at all */
     const char *probe = "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference";
     if (access(probe, F_OK) != 0) {
-        fprintf(stderr, "Warning: EPP not available (no intel_pstate), skipping\n");
+        cctl_stream_fprintf(stderr, "Warning: EPP not available (no intel_pstate), skipping\n");
         return 0;
+    }
+
+    if (cpu_policy_value_available(CPU_AVAILABLE_EPP_PATH, val) != 1) {
+        cctl_stream_fprintf(stderr,
+                            "Error: EPP value '%s' is not listed by the active CPU driver\n",
+                            val);
+        return -1;
     }
 
     char cur_gov[64] = {0};
     if (read_sysfs_str(CPU_GOVERNOR_PATH, cur_gov, sizeof(cur_gov)) >= 0) {
         if (strcmp(cur_gov, "performance") == 0 && strcmp(val, "performance") != 0) {
-            fprintf(stderr,
+            cctl_stream_fprintf(stderr,
                     "Error: CPU governor is currently 'performance' — manual EPP control is only supported in 'powersave' mode.\n"
                     "       Change governor first: cctl gov powersave\n");
             return -1;
         }
     }
 
-    printf("  EPP: %s%s\n", val, snapshot_applied_tag());
+    cctl_stream_printf("  EPP: %s%s\n", val, snapshot_applied_tag());
     int rc = write_to_all_cpus("cpufreq/energy_performance_preference", val);
     if (rc < 0) {
-        fprintf(stderr, "Error: Failed to set EPP to '%s'\n", val);
+        cctl_stream_fprintf(stderr, "Error: Failed to set EPP to '%s'\n", val);
         return -1;
     }
     return 0;
@@ -139,7 +152,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 {
     /* Defense in depth: enforce the caller's current-mode or profile ceiling. */
     if (pl1_w > pl1_cap || pl2_w > RAPL_PL2_MAX_WATTS) {
-        fprintf(stderr, "Error: RAPL out of range (PL1 max %dW%s, PL2 max %dW)\n",
+        cctl_stream_fprintf(stderr, "Error: RAPL out of range (PL1 max %dW%s, PL2 max %dW)\n",
                 pl1_cap, pl1_cap > RAPL_PL1_MAX_WATTS ? " with EC profile code 2" : "",
                 RAPL_PL2_MAX_WATTS);
         return -1;
@@ -151,7 +164,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
     int eff_pl1 = pl1_w > 0 ? pl1_w : old_pl1;
     int eff_pl2 = pl2_w > 0 ? pl2_w : old_pl2;
     if (eff_pl1 > 0 && eff_pl2 > 0 && eff_pl2 <= eff_pl1) {
-        fprintf(stderr, "Error: PL2 (%dW) must be greater than PL1 (%dW)\n", eff_pl2, eff_pl1);
+        cctl_stream_fprintf(stderr, "Error: PL2 (%dW) must be greater than PL1 (%dW)\n", eff_pl2, eff_pl1);
         return -1;
     }
 
@@ -161,7 +174,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 
     DIR *d = opendir("/sys/class/powercap");
     if (!d) {
-        fprintf(stderr, "Warning: RAPL not available (no /sys/class/powercap)\n");
+        cctl_stream_fprintf(stderr, "Warning: RAPL not available (no /sys/class/powercap)\n");
         return 0;
     }
 
@@ -208,31 +221,31 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
     int actual_pl1 = -1, actual_pl2 = -1;
     read_rapl_current(&actual_pl1, &actual_pl2);
     if (pl1_w > 0 && actual_pl1 >= 0 && actual_pl1 != pl1_w) {
-        fprintf(stderr, "  Warning: PL1 readback %dW != requested %dW (RAPL may be firmware-locked)\n",
+        cctl_stream_fprintf(stderr, "  Warning: PL1 readback %dW != requested %dW (RAPL may be firmware-locked)\n",
                 actual_pl1, pl1_w);
         err = -1;
     }
     if (pl2_w > 0 && actual_pl2 >= 0 && actual_pl2 != pl2_w) {
-        fprintf(stderr, "  Warning: PL2 readback %dW != requested %dW (RAPL may be firmware-locked)\n",
+        cctl_stream_fprintf(stderr, "  Warning: PL2 readback %dW != requested %dW (RAPL may be firmware-locked)\n",
                 actual_pl2, pl2_w);
         err = -1;
     }
 
     if (pl1_w > 0 && pl2_w > 0) {
         if (old_pl1 >= 0 && old_pl2 >= 0)
-            printf("  RAPL: PL1 %dW -> %dW, PL2 %dW -> %dW%s\n", old_pl1, pl1_w, old_pl2, pl2_w, snapshot_applied_tag());
+            cctl_stream_printf("  RAPL: PL1 %dW -> %dW, PL2 %dW -> %dW%s\n", old_pl1, pl1_w, old_pl2, pl2_w, snapshot_applied_tag());
         else
-            printf("  RAPL: PL1=%dW PL2=%dW%s\n", pl1_w, pl2_w, snapshot_applied_tag());
+            cctl_stream_printf("  RAPL: PL1=%dW PL2=%dW%s\n", pl1_w, pl2_w, snapshot_applied_tag());
     } else if (pl1_w > 0) {
         if (old_pl1 >= 0)
-            printf("  RAPL: PL1 %dW -> %dW%s\n", old_pl1, pl1_w, snapshot_applied_tag());
+            cctl_stream_printf("  RAPL: PL1 %dW -> %dW%s\n", old_pl1, pl1_w, snapshot_applied_tag());
         else
-            printf("  RAPL: PL1=%dW%s\n", pl1_w, snapshot_applied_tag());
+            cctl_stream_printf("  RAPL: PL1=%dW%s\n", pl1_w, snapshot_applied_tag());
     } else if (pl2_w > 0) {
         if (old_pl2 >= 0)
-            printf("  RAPL: PL2 %dW -> %dW%s\n", old_pl2, pl2_w, snapshot_applied_tag());
+            cctl_stream_printf("  RAPL: PL2 %dW -> %dW%s\n", old_pl2, pl2_w, snapshot_applied_tag());
         else
-            printf("  RAPL: PL2=%dW%s\n", pl2_w, snapshot_applied_tag());
+            cctl_stream_printf("  RAPL: PL2=%dW%s\n", pl2_w, snapshot_applied_tag());
     }
     return err;
 }
@@ -297,16 +310,16 @@ static int set_gpu_profile_tuxedo(int profile)
 static int set_gpu_profile(int profile)
 {
     if (profile < 0 || profile > 3) {
-        fprintf(stderr, "Error: Invalid EC profile code %d (must be 0-3)\n", profile);
+        cctl_stream_fprintf(stderr, "Error: Invalid EC profile code %d (must be 0-3)\n", profile);
         return -1;
     }
 
-    printf("  EC profile code: %s (%d)%s\n", gpu_profile_name(profile), profile, snapshot_applied_tag());
+    cctl_stream_printf("  EC profile code: %s (%d)%s\n", gpu_profile_name(profile), profile, snapshot_applied_tag());
 
     if (set_gpu_profile_tuxedo(profile) == 0)
         return 0;
 
-    fprintf(stderr, "  Warning: tuxedo_io not available, EC profile code not set\n");
+    cctl_stream_fprintf(stderr, "  Warning: tuxedo_io not available, EC profile code not set\n");
     return 0; /* non-fatal: CPU settings still applied */
 }
 
@@ -330,8 +343,6 @@ static int set_gpu_profile(int profile)
 #define FAN_MODE_MAX      0x40
 #define FAN_MODE_SILENT   0x20
 #define FAN_DUTY_AUTO     0xFF
-#define EC_FAN_RPM_DIVISOR 2156220
-
 /* tuxedo_io ioctl constants */
 #define R_CL_FANINFO1   0x8008ED10
 #define R_CL_FANINFO2   0x8008ED11
@@ -352,7 +363,7 @@ static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
     int32_t arg = (int32_t)raw_fan1 | ((int32_t)raw_fan2 << 8);
     int res = tuxedo_ioctl(W_CL_FANSPEED, &arg);
     if (res < 0) {
-        perror("Error: tuxedo_io fan duty request failed");
+        cctl_stream_perror("Error: tuxedo_io fan duty request failed");
         return -1;
     }
     return 0;
@@ -369,7 +380,7 @@ static int fan_auto_tuxedo(int32_t mask)
     int32_t arg = mask ? mask : 15;
     int res = tuxedo_ioctl(W_CL_FANAUTO, &arg);
     if (res < 0) {
-        perror("Error: tuxedo_io fan auto request failed");
+        cctl_stream_perror("Error: tuxedo_io fan auto request failed");
         return -1;
     }
     return 0;
@@ -388,7 +399,7 @@ static int fan_auto_all(void)
     if (fan_auto(0) == 0)
         return 0;
 
-    fprintf(stderr, "Warning: tuxedo_io fan auto failed; restoring fans through direct EC control\n");
+    cctl_stream_fprintf(stderr, "Warning: tuxedo_io fan auto failed; restoring fans through direct EC control\n");
     if (legacy_fan_auto(FAN_CPU) < 0)
         return -1;
     return legacy_fan_auto(FAN_GPU);
@@ -403,7 +414,7 @@ static int fan_max_all(void)
     if (fan_set_speeds_tuxedo(FAN_MAX_RAW, FAN_MAX_RAW) == 0)
         return 0;
 
-    fprintf(stderr, "Warning: tuxedo_io max duty failed; trying direct EC max mode\n");
+    cctl_stream_fprintf(stderr, "Warning: tuxedo_io max duty failed; trying direct EC max mode\n");
     uint8_t mode = FAN_MODE_MAX;
     if (send_ec_cmd(EC_CMD_FAN_MODE, &mode, 1) < 0) return -1;
 
@@ -435,9 +446,9 @@ static int fan_set_duty(int fan_idx, int percent, int allow_low)
     int minimum = allow_low ? 0 : 25;
     if (percent < minimum || percent > 100) {
         if (!allow_low && percent >= 0 && percent < 25)
-            fprintf(stderr, "Error: Fan duty %d%% is below the minimum allowed 25%%\n", percent);
+            cctl_stream_fprintf(stderr, "Error: Fan duty %d%% is below the minimum allowed 25%%\n", percent);
         else
-            fprintf(stderr, "Error: Fan duty %d%% out of range (%d-100)\n", percent, minimum);
+            cctl_stream_fprintf(stderr, "Error: Fan duty %d%% out of range (%d-100)\n", percent, minimum);
         return -1;
     }
     uint8_t raw = (uint8_t)((percent * 255) / 100);
@@ -446,13 +457,13 @@ static int fan_set_duty(int fan_idx, int percent, int allow_low)
         /* Individual fan duty: use legacy direct EC port I/O to avoid
          * overriding the other fan's automatic thermal curve */
         uint8_t data[2] = { (uint8_t)fan_idx, raw };
-        printf("  Fan %s duty: %d%% (0x%02X)\n",
+        cctl_stream_printf("  Fan %s duty: %d%% (0x%02X)\n",
                fan_idx == FAN_CPU ? "CPU" : "GPU", percent, raw);
         return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
     }
 
     /* Both fans: use tuxedo_io ioctl */
-    printf("  Fans duty: %d%% (0x%02X)\n", percent, raw);
+    cctl_stream_printf("  Fans duty: %d%% (0x%02X)\n", percent, raw);
     return fan_set_speeds_tuxedo(raw, raw);
 }
 
@@ -464,19 +475,6 @@ static int legacy_fan_auto(int fan_idx)
     uint8_t data[2] = { FAN_DUTY_AUTO, (uint8_t)fan_idx };
     return send_ec_cmd(EC_CMD_FAN_SPEED, data, 2);
 }
-
-/* ========================================================================
- * [LEGACY / PRESERVATION] UNUSED DIRECT EC AUTO-ALL
- * IMPORTANT: This section is kept for preservation — DO NOT DELETE.
- * Full auto uses fan_auto_all() via tuxedo_io W_CL_FANAUTO ioctl.
- * ======================================================================== */
-#if 0
-static int legacy_fan_auto_all(void)
-{
-    if (legacy_fan_auto(FAN_CPU) < 0) return -1;
-    return legacy_fan_auto(FAN_GPU);
-}
-#endif
 
 /* ========================================================================
  * PROFILES
@@ -580,13 +578,6 @@ static int profile_name_valid(const char *name)
     return 1;
 }
 
-static int profile_value_in(const char *value, const char *const choices[])
-{
-    for (size_t i = 0; choices[i]; i++)
-        if (strcmp(value, choices[i]) == 0) return 1;
-    return 0;
-}
-
 static void load_user_profiles(void)
 {
     if (user_profiles_loaded) return;
@@ -594,10 +585,6 @@ static void load_user_profiles(void)
     FILE *fp = fopen(USER_PROFILE_FILE, "r");
     if (!fp) return;
 
-    static const char *const governors[] = { "powersave", "performance", NULL };
-    static const char *const epps[] = {
-        "performance", "balance_performance", "balance_power", "power", NULL
-    };
     char line[256];
     while (user_profile_count < MAX_USER_PROFILES && fgets(line, sizeof(line), fp)) {
         char name[32], gpu_text[16], turbo_text[16], gov[32], epp[32];
@@ -615,8 +602,12 @@ static void load_user_profiles(void)
             (safe_atoi(gpu_text, &gpu) < 0 || gpu < 0 || gpu > 3)) continue;
         if (strcmp(turbo_text, "skip") != 0 &&
             (safe_atoi(turbo_text, &turbo) < 0 || (turbo != 0 && turbo != 1))) continue;
-        if (strcmp(gov, "skip") != 0 && !profile_value_in(gov, governors)) continue;
-        if (strcmp(epp, "skip") != 0 && !profile_value_in(epp, epps)) continue;
+        if (strcmp(gov, "skip") != 0 &&
+            cpu_policy_value_available(CPU_AVAILABLE_GOVERNORS_PATH, gov) != 1)
+            continue;
+        if (strcmp(epp, "skip") != 0 &&
+            cpu_policy_value_available(CPU_AVAILABLE_EPP_PATH, epp) != 1)
+            continue;
         if (fields >= 7) {
             int pl1_max = gpu == 2 || gpu < 0 ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
             if ((strcmp(pl1_text, "skip") != 0 &&
@@ -686,11 +677,11 @@ static void profile_table_row(const char *color, int name_width, const char *nam
                               const char *ec, const char *turbo, const char *gov,
                               const char *epp, const char *tdp, const char *rr)
 {
-    printf("      %s%-*s%s %-7s %-6s %-12s %-19s", color, name_width, name, C_RST,
+    cctl_stream_printf("      %s%-*s%s %-7s %-6s %-12s %-19s", color, name_width, name, C_RST,
            ec, turbo, gov, epp);
-    if (rr) printf(" %-19s %s", tdp, rr);
-    else printf(" %s", tdp);
-    printf("\n");
+    if (rr) cctl_stream_printf(" %-19s %s", tdp, rr);
+    else cctl_stream_printf(" %s", tdp);
+    cctl_stream_printf("\n");
 }
 
 static void print_profile_table(void)
@@ -707,15 +698,15 @@ static void print_profile_table(void)
         if (len > name_width) name_width = len;
     }
     if (show_rr)
-        printf("      %s%-*s %-7s %-6s %-12s %-19s %-19s %s%s\n", C_BLD, (int)name_width,
+        cctl_stream_printf("      %s%-*s %-7s %-6s %-12s %-19s %-19s %s%s\n", C_BLD, (int)name_width,
                "Profile", "EC code", "Turbo", "Governor", "EPP", "EC default TDP",
                "Refresh", C_RST);
     else
-        printf("      %s%-*s %-7s %-6s %-12s %-19s %s%s\n", C_BLD, (int)name_width,
+        cctl_stream_printf("      %s%-*s %-7s %-6s %-12s %-19s %s%s\n", C_BLD, (int)name_width,
                "Profile", "EC code", "Turbo", "Governor", "EPP", "EC default TDP", C_RST);
-    printf("      %s", C_DIM);
-    for (size_t i = 0; i < name_width; i++) printf("─");
-    printf(" ─────── ────── ──────────── ─────────────────── ───────────────────%s%s\n",
+    cctl_stream_printf("      %s", C_DIM);
+    for (size_t i = 0; i < name_width; i++) cctl_stream_printf("─");
+    cctl_stream_printf(" ─────── ────── ──────────── ─────────────────── ───────────────────%s%s\n",
            show_rr ? " ───────" : "", C_RST);
     for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++) {
         const struct profile_def *p = &PROFILES[i];
@@ -754,9 +745,9 @@ static void print_profile_table(void)
                           tdp,
                           show_rr ? profile_rr_label(p->rr, rr_buf, sizeof(rr_buf)) : NULL);
     }
-    printf("\n      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto unless a fan curve is active; bypass with --nosafe.%s\n",
+    cctl_stream_printf("\n      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto unless a fan curve is active; bypass with --nosafe.%s\n",
            C_DIM, C_RST);
-    printf("\n");
+    cctl_stream_printf("\n");
 }
 
 static const struct profile_def *find_profile(const char *name)
@@ -780,7 +771,7 @@ static int profile_apply_refresh_rate(const struct profile_def *p);
 static int profile_apply(const struct profile_def *p)
 {
     int err = 0;
-    printf("Applying: %s\n", p->label);
+    cctl_stream_printf("Applying: %s\n", p->label);
     if (p->gpu_profile >= 0)
         set_gpu_profile(p->gpu_profile); /* non-fatal: CPU settings still apply without tuxedo_io */
     if (p->turbo >= 0 && set_turbo(p->turbo) < 0) err++;

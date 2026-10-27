@@ -39,25 +39,25 @@ static void kbd_restore_state(int r, int g, int b, int bri)
 static int kbd_set_color(int r, int g, int b)
 {
     if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
-        fprintf(stderr, "Error: RGB values must be 0-255\n");
+        cctl_stream_fprintf(stderr, "Error: RGB values must be 0-255\n");
         return -1;
     }
     if (kbd_write_color(r, g, b) < 0) {
-        fprintf(stderr, "Error: Failed to set keyboard color (is tuxedo_keyboard loaded?)\n");
+        cctl_stream_fprintf(stderr, "Error: Failed to set keyboard color (is tuxedo_keyboard loaded?)\n");
         return -1;
     }
     int bri = kbd_get_brightness();
     if (bri >= 0)
-        printf("  Keyboard color: RGB(%d, %d, %d)  [brightness: %d%%]\n", r, g, b, bri);
+        cctl_stream_printf("  Keyboard color: RGB(%d, %d, %d)  [brightness: %d%%]\n", r, g, b, bri);
     else
-        printf("  Keyboard color: RGB(%d, %d, %d)\n", r, g, b);
+        cctl_stream_printf("  Keyboard color: RGB(%d, %d, %d)\n", r, g, b);
     return 0;
 }
 
 static int kbd_set_brightness(int percent)
 {
     if (percent < 0 || percent > 100) {
-        fprintf(stderr, "Error: Brightness must be 0-100%%\n");
+        cctl_stream_fprintf(stderr, "Error: Brightness must be 0-100%%\n");
         return -1;
     }
     int raw = (percent * 255) / 100;
@@ -65,10 +65,10 @@ static int kbd_set_brightness(int percent)
     snprintf(path, sizeof(path), "%s/brightness", KBD_PATH);
 
     if (write_sysfs_int(path, raw) < 0) {
-        fprintf(stderr, "Error: Failed to set keyboard brightness (is tuxedo_keyboard loaded?)\n");
+        cctl_stream_fprintf(stderr, "Error: Failed to set keyboard brightness (is tuxedo_keyboard loaded?)\n");
         return -1;
     }
-    printf("  Keyboard brightness: %d%%\n", percent);
+    cctl_stream_printf("  Keyboard brightness: %d%%\n", percent);
     return 0;
 }
 
@@ -118,10 +118,10 @@ static int kbd_set_preset(const char *name)
     g_stream_error_mode = STREAM_MODE_LINE;
     g_stream_error_line = 0;
 
-    fprintf(stderr, "Error: Unknown preset '%s'\n", name);
-    fprintf(stderr, "Available presets:\n");
+    cctl_stream_fprintf(stderr, "Error: Unknown preset '%s'\n", name);
+    cctl_stream_fprintf(stderr, "Available presets:\n");
     for (const struct kbd_preset *p = kbd_presets; p->name; p++)
-        fprintf(stderr, "  %-8s (%d, %d, %d)\n", p->name, p->r, p->g, p->b);
+        cctl_stream_fprintf(stderr, "  %-8s (%d, %d, %d)\n", p->name, p->r, p->g, p->b);
 
     g_stream_error_mode = prev_mode;
     g_stream_error_line = prev_line;
@@ -139,35 +139,35 @@ static const char *kbd_find_preset_name(int r, int g, int b)
 
 static void kbd_show_presets(void)
 {
-    printf("%sUsage:%s %scctl kbc <R G B | preset>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
-    printf("  %sExamples:%s cctl kbc 255 0 128  |  cctl kbc cyan\n\n", C_DIM, C_RST);
+    cctl_stream_printf("%sUsage:%s %scctl kbc <R G B | preset>%s\n", C_BLD, C_RST, C_CYN_BLD, C_RST);
+    cctl_stream_printf("  %sExamples:%s cctl kbc 255 0 128  |  cctl kbc cyan\n\n", C_DIM, C_RST);
 
     int cur_r = 0, cur_g = 0, cur_b = 0;
     if (kbd_get_color(&cur_r, &cur_g, &cur_b) == 0) {
         const char *pname = kbd_find_preset_name(cur_r, cur_g, cur_b);
         int bri = kbd_get_brightness();
-        printf("%sCurrent Color:%s\n", C_YLW, C_RST);
+        cctl_stream_printf("%sCurrent Color:%s\n", C_YLW, C_RST);
         if (pname) {
-            printf("  %sPreset:%s     %s%s%s\n", C_CYN, C_RST, C_CYN, pname, C_RST);
+            cctl_stream_printf("  %sPreset:%s     %s%s%s\n", C_CYN, C_RST, C_CYN, pname, C_RST);
         } else {
-            printf("  %sPreset:%s     %scustom%s\n", C_CYN, C_RST, C_YLW, C_RST);
+            cctl_stream_printf("  %sPreset:%s     %scustom%s\n", C_CYN, C_RST, C_YLW, C_RST);
         }
         if (bri >= 0)
-            printf("  %sRGB:%s        %sRGB(%d, %d, %d)%s  %s[brightness: %d%%]%s\n\n",
+            cctl_stream_printf("  %sRGB:%s        %sRGB(%d, %d, %d)%s  %s[brightness: %d%%]%s\n\n",
                    C_CYN, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST, C_DIM, bri, C_RST);
         else
-            printf("  %sRGB:%s        %sRGB(%d, %d, %d)%s\n\n",
+            cctl_stream_printf("  %sRGB:%s        %sRGB(%d, %d, %d)%s\n\n",
                    C_CYN, C_RST, C_CYN, cur_r, cur_g, cur_b, C_RST);
     }
 
-    printf("%sAvailable Presets:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("%sAvailable Presets:%s\n", C_YLW, C_RST);
     int col = 0;
     for (const struct kbd_preset *p = kbd_presets; p->name; p++) {
-        printf("  %s%-8s%s (%3d, %3d, %3d)", C_CYN, p->name, C_RST, p->r, p->g, p->b);
+        cctl_stream_printf("  %s%-8s%s (%3d, %3d, %3d)", C_CYN, p->name, C_RST, p->r, p->g, p->b);
         col++;
-        if (col % 2 == 0) printf("\n");
+        if (col % 2 == 0) cctl_stream_printf("\n");
     }
-    if (col % 2 != 0) printf("\n");
+    if (col % 2 != 0) cctl_stream_printf("\n");
 }
 
 /* ========================================================================
@@ -387,7 +387,7 @@ static int kbe_stop(int quiet)
     struct kbe_state ks;
     if (!kbe_is_running(&ks)) {
         if (!quiet)
-            printf("No active keyboard effect is currently running.\n");
+            cctl_stream_printf("No active keyboard effect is currently running.\n");
         return 0;
     }
 
@@ -412,7 +412,7 @@ static int kbe_stop(int quiet)
     unlink(KBE_LOCK_PATH);
 
     if (!quiet)
-        printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", ks.effect, (int)ks.pid);
+        cctl_stream_printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", ks.effect, (int)ks.pid);
 
     return 0;
 }
@@ -489,7 +489,7 @@ static int kbe_worker_begin(struct kbe_worker_ctx *ctx, const char *effect,
         return -1;
     }
     chmod(KBE_STATE_PATH, 0600);
-    fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n%s\n",
+    cctl_stream_fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n%s\n",
             (int)getpid(), proc_starttime(getpid()),
             effect, orig_r, orig_g, orig_b, orig_bri,
             (resume_effect && *resume_effect) ? resume_effect : "none");
@@ -851,6 +851,8 @@ static void fx_temp(int fd, int r, int g, int b, int *step)
         if (t > 0) cur_temp_val = t;
         else if (cur_temp_val < 0) cur_temp_val = 50;
 
+        /* These are keyboard-effect color bands, not cooling or fan safety
+         * thresholds; keep their visual policy local to this effect. */
         if (cur_temp_val < 40) {
             tgt_r = 0; tgt_g = 220; tgt_b = 255;
         } else if (cur_temp_val <= 60) {
@@ -1028,7 +1030,7 @@ static void kbe_daemon_worker(const char *effect, int orig_r, int orig_g, int or
 static int kbe_start_ext(const char *effect, pid_t *out_pid, int quiet)
 {
     if (access(KBD_PATH "/multi_intensity", F_OK) != 0) {
-        fprintf(stderr, "Error: Keyboard backlight interface not found (is tuxedo_keyboard loaded?)\n");
+        cctl_stream_fprintf(stderr, "Error: Keyboard backlight interface not found (is tuxedo_keyboard loaded?)\n");
         return 1;
     }
 
@@ -1049,14 +1051,14 @@ static int kbe_start_ext(const char *effect, pid_t *out_pid, int quiet)
 
     pid_t pid = daemonize();
     if (pid < 0) {
-        fprintf(stderr, "Error: Failed to spawn background effect daemon\n");
+        cctl_stream_fprintf(stderr, "Error: Failed to spawn background effect daemon\n");
         return 1;
     }
 
     if (pid > 0) {
         if (out_pid) *out_pid = pid;
         if (!quiet)
-            printf("Started keyboard effect '%s' [PID %d]\n", effect, (int)pid);
+            cctl_stream_printf("Started keyboard effect '%s' [PID %d]\n", effect, (int)pid);
         return 0;
     }
 
@@ -1176,23 +1178,14 @@ static int kbn_parse_color(const char *text, int *r, int *g, int *b)
     return -1;
 }
 
-static void kbn_sleep_ms(int ms)
-{
-    while (ms > 0 && g_kbe_running) {
-        int chunk = ms > 25 ? 25 : ms;
-        usleep((useconds_t)chunk * 1000);
-        ms -= chunk;
-    }
-}
-
 static void kbn_flash_once(int fd, int r, int g, int b)
 {
     for (int i = 0; i < 3 && g_kbe_running; i++) {
         kbe_write_frame(fd, r, g, b);
-        kbn_sleep_ms(70);
+        kbe_sleep_ms(70);
         if (!g_kbe_running) break;
         kbe_write_frame(fd, 0, 0, 0);
-        if (i < 2) kbn_sleep_ms(70);
+        if (i < 2) kbe_sleep_ms(70);
     }
 }
 
@@ -1202,7 +1195,7 @@ static void kbn_pulse_once(int fd, int r, int g, int b)
         int val = kbe_pulse_wave[i];
         kbe_write_frame(fd, (r * val) / 255, (g * val) / 255,
                         (b * val) / 255);
-        kbn_sleep_ms(22);
+        kbe_sleep_ms(22);
     }
 }
 
@@ -1220,12 +1213,12 @@ static void kbn_police_once(int fd, int r, int g, int b,
     for (int c = 0; c < 2 && g_kbe_running; c++) {
         for (int flash = 0; flash < 2 && g_kbe_running; flash++) {
             kbe_write_frame(fd, colors[c][0], colors[c][1], colors[c][2]);
-            kbn_sleep_ms(60);
+            kbe_sleep_ms(60);
             if (!g_kbe_running) break;
             kbe_write_frame(fd, 0, 0, 0);
-            kbn_sleep_ms(50);
+            kbe_sleep_ms(50);
         }
-        if (c == 0) kbn_sleep_ms(70);
+        if (c == 0) kbe_sleep_ms(70);
     }
 }
 
@@ -1279,7 +1272,7 @@ static int kbn_notify(const char *effect, int r, int g, int b,
             kbn_police_once(ctx.fd_col, r, g, b, alt_r, alt_g, alt_b);
         if (i + 1 < times &&
             (strcmp(effect, "flash") == 0 || strcmp(effect, "pulse") == 0))
-            kbn_sleep_ms(750);
+            kbe_sleep_ms(750);
     }
 
     int completed = g_kbe_running;
@@ -1290,7 +1283,7 @@ static int kbn_notify(const char *effect, int r, int g, int b,
     }
     if (!completed)
         return fail("Keyboard notification interrupted; previous keyboard state restored");
-    printf("Keyboard notification complete (%s, %d time%s).\n", effect,
+    cctl_stream_printf("Keyboard notification complete (%s, %d time%s).\n", effect,
            times, times == 1 ? "" : "s");
     return 0;
 }
