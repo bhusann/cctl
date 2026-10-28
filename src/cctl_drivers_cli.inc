@@ -693,6 +693,12 @@ static void print_help_command(const struct command *cmd)
     print_help_command_indent(cmd, 4);
 }
 
+static void print_agent_skill(void)
+{
+    fwrite(cctl_skill_md, 1, sizeof(cctl_skill_md) - 1, stdout);
+    fflush(stdout);
+}
+
 static void print_usage(const char *prog)
 {
     int prev_stream = g_stream_output;
@@ -715,7 +721,8 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST,
     C_GRN, C_RST, C_RED, C_RST);
 
-    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]\n\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
+    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
+    cctl_stream_printf("          %s%s%s --am%s  (Agent Skill for AI agents)\n\n", C_BLD, C_CYN_BLD, prog, C_RST);
 
     struct cctl_settings help_settings;
     (void)cctl_settings_read(&help_settings);
@@ -911,6 +918,11 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0 ||
         strcmp(argv[1], "-v") == 0) {
         cctl_stream_printf("cctl %s\n", CCTL_VERSION);
+        return 0;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "--am") == 0) {
+        print_agent_skill();
         return 0;
     }
 

@@ -308,6 +308,22 @@ static int editconf_install_helper(const char *src, uid_t owner)
     return 0;
 }
 
+#define EDITCONF_RULES \
+    "# Custom profiles: one profile per line; use 'skip' to leave a setting unchanged.\n" \
+    "# Fields: name ec_profile_code turbo governor epp [pl1_watts pl2_watts [refresh_rate]]\n" \
+    "# name: letters, numbers, hyphen, or underscore; max 31; unique; not a built-in or 'eco'.\n" \
+    "# ec_profile_code: 0-3 or 'skip'. turbo: 0, 1, or 'skip'.\n" \
+    "# governor/epp: a value from 'cctl gov'/'cctl epp', or 'skip'.\n" \
+    "# pl1_watts: 1-45 W (90 W with EC code 2 or EC 'skip'), or 'skip' to leave unchanged.\n" \
+    "# pl2_watts: 1-115 W, greater than PL1, or 'skip'.\n" \
+    "# refresh_rate: a rate such as 165, lowest, highest, or 'skip'.\n" \
+    "# Rows have 5, 7, or 8 fields; at most 32 custom profiles; # comments are allowed.\n" \
+    "# Agent mode:\n" \
+    "#   cctl editconf --am\n" \
+    "#   cctl editconf --am --create <name> <ec> <turbo> <gov> <epp> <pl1> <pl2> <refresh>\n" \
+    "#   cctl editconf --am --delete <name> [<ec> <turbo> <gov> <epp> <pl1> <pl2> <refresh>]\n" \
+    "# Invalid rows are reported as: Invalid custom profile: line N: <reason>\n"
+
 static int editconf_make_temp(char *tmp_path, size_t path_size)
 {
     if (path_size < sizeof("/tmp/cctl-profiles-edit-XXXXXX")) return -1;
@@ -348,11 +364,7 @@ static int editconf_make_temp(char *tmp_path, size_t path_size)
         }
         close(in);
     } else if (errno == ENOENT) {
-        static const char header[] =
-            "# Custom profiles: one profile per line; use 'skip' to leave a setting unchanged.\n"
-            "# name ec_profile_code turbo governor epp pl1_watts pl2_watts [refresh_rate]\n"
-            "# example 3 1 powersave performance 40 60 144\n";
-        if (editconf_write_all(out, header, sizeof(header) - 1) != 0) goto fail;
+        if (editconf_write_all(out, EDITCONF_RULES, sizeof(EDITCONF_RULES) - 1) != 0) goto fail;
     } else {
         goto fail;
     }
@@ -369,8 +381,257 @@ fail:
     return -1;
 }
 
+static int editconf_agent_error(const char *fmt, ...)
+{
+    va_list ap;
+    cctl_stream_fprintf(stderr, "Invalid custom profile: ");
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    return 1;
+}
+
+static int editconf_agent_write(const char *text)
+{
+    char tmp[] = "/tmp/cctl-profiles-edit-XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0)
+        return fail("Could not create a temporary custom-profile file: %s", strerror(errno));
+    int rc = 0;
+    if (fchmod(fd, 0600) != 0 || editconf_write_all(fd, text, strlen(text)) != 0)
+        rc = -1;
+    if (close(fd) != 0) rc = -1;
+    if (rc != 0) {
+        unlink(tmp);
+        return fail("Could not write a temporary custom-profile file");
+    }
+    rc = editconf_install_helper(tmp, getuid());
+    unlink(tmp);
+    return rc;
+}
+
+static char *editconf_read_existing(char *err, size_t err_sz)
+{
+    errno = 0;
+    char *text = fc_read_text(USER_PROFILE_FILE, err, err_sz);
+    if (text) return text;
+    if (errno != ENOENT) return NULL;
+    text = strdup("");
+    if (!text) snprintf(err, err_sz, "out of memory");
+    return text;
+}
+
+static int editconf_has_rules(const char *text)
+{
+    while (*text && isspace((unsigned char)*text)) text++;
+    return strncmp(text, "# Custom profiles: one profile per line", 39) == 0;
+}
+
+static int editconf_agent_field_safe(const char *value)
+{
+    if (!value || !*value)
+        return 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++)
+        if (isspace(*p) || iscntrl(*p))
+            return 0;
+    return 1;
+}
+
+static int editconf_finish_combined(FILE *out, char **combined, char **old,
+                                    int write_failed)
+{
+    if (fclose(out) != 0 || write_failed || !*combined) {
+        free(*combined);
+        *combined = NULL;
+        free(*old);
+        *old = NULL;
+        return -1;
+    }
+    free(*old);
+    *old = NULL;
+    return 0;
+}
+
+static int editconf_make_agent_line(int argc, char **argv, char *line, size_t line_sz)
+{
+    if (argc != 12)
+        return fail("Usage: cctl editconf --am --create <name> <ec> <turbo> <gov> <epp> <pl1> <pl2> <refresh>");
+    for (int i = 4; i < 12; i++) {
+        if (!editconf_agent_field_safe(argv[i]))
+            return editconf_agent_error("arguments must be non-empty single fields without whitespace");
+    }
+    int n = snprintf(line, line_sz, "%s %s %s %s %s %s %s %s\n",
+                     argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11]);
+    if (n < 0 || (size_t)n >= line_sz)
+        return editconf_agent_error("profile row is too long");
+    return 0;
+}
+
+static int user_profile_fields_equal(const struct user_profile_fields *a,
+                                     const struct user_profile_fields *b)
+{
+    return strcmp(a->name, b->name) == 0 &&
+           a->gpu_profile == b->gpu_profile && a->turbo == b->turbo &&
+           strcmp(a->governor, b->governor) == 0 &&
+           strcmp(a->epp, b->epp) == 0 &&
+           a->pl1 == b->pl1 && a->pl2 == b->pl2 &&
+           strcmp(a->refresh, b->refresh) == 0;
+}
+
+static int editconf_agent_create(int argc, char **argv)
+{
+    char line[512], reason[256];
+    if (editconf_make_agent_line(argc, argv, line, sizeof(line)) != 0)
+        return 1;
+    if (validate_user_profiles_text(line, reason, sizeof(reason)) < 0)
+        return editconf_agent_error("%s", reason);
+
+    require_root(argc, argv);
+
+    char err[256];
+    char *old = editconf_read_existing(err, sizeof(err));
+    if (!old)
+        return fail("%s", err);
+
+    char *combined = NULL;
+    size_t combined_len = 0;
+    FILE *out = open_memstream(&combined, &combined_len);
+    if (!out) {
+        free(old);
+        return fail("Could not prepare custom profiles");
+    }
+    int write_failed = 0;
+    if (!editconf_has_rules(old) && fputs(EDITCONF_RULES, out) == EOF)
+        write_failed = 1;
+    if (fputs(old, out) == EOF) write_failed = 1;
+    if (old[0] && old[strlen(old) - 1] != '\n' && fputc('\n', out) == EOF)
+        write_failed = 1;
+    if (fputs(line, out) == EOF) write_failed = 1;
+    if (editconf_finish_combined(out, &combined, &old, write_failed) != 0)
+        return fail("Could not prepare custom profiles");
+
+    if (validate_user_profiles_text(combined, reason, sizeof(reason)) < 0) {
+        free(combined);
+        return editconf_agent_error("%s", reason);
+    }
+
+    int rc = editconf_agent_write(combined);
+    free(combined);
+    if (rc != 0) return rc;
+    cctl_stream_printf("Created custom profile '%s'.\n", argv[4]);
+    return 0;
+}
+
+static int editconf_agent_delete(int argc, char **argv)
+{
+    int full = argc == 12;
+    int name_only = argc == 5;
+    if (!full && !name_only)
+        return fail("Usage: cctl editconf --am --delete <name> [<ec> <turbo> <gov> <epp> <pl1> <pl2> <refresh>]");
+
+    char target_line[512];
+    struct user_profile_fields target;
+    memset(&target, 0, sizeof(target));
+    int target_parsed = 0;
+    if (full) {
+        char reason[256];
+        if (editconf_make_agent_line(argc, argv, target_line, sizeof(target_line)) != 0)
+            return 1;
+        if (validate_user_profiles_text(target_line, reason, sizeof(reason)) < 0)
+            return editconf_agent_error("%s", reason);
+        if (parse_user_profile_line(target_line, &target, reason, sizeof(reason)) != 1)
+            return editconf_agent_error("%s", reason);
+        target_parsed = 1;
+    } else {
+        if (!profile_name_valid(argv[4]))
+            return editconf_agent_error("profile name must use only letters, numbers, hyphens, or underscores (max 31 characters)");
+        snprintf(target.name, sizeof(target.name), "%s", argv[4]);
+    }
+
+    require_root(argc, argv);
+
+    char err[256];
+    char *old = editconf_read_existing(err, sizeof(err));
+    if (!old)
+        return fail("%s", err);
+
+    char *combined = NULL;
+    size_t combined_len = 0;
+    FILE *out = open_memstream(&combined, &combined_len);
+    if (!out) {
+        free(old);
+        return fail("Could not prepare custom profiles");
+    }
+
+    int found = 0, mismatch = 0, write_failed = 0;
+    const char *p = old;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        struct user_profile_fields current;
+        int parsed = 0;
+        if (len <= 255) {
+            char line[256];
+            memcpy(line, p, len);
+            if (len > 0 && line[len - 1] == '\r') len--;
+            line[len] = '\0';
+            parsed = parse_user_profile_line(line, &current, err, sizeof(err));
+        }
+        int remove = 0;
+        if (parsed == 1 && strcmp(current.name, target.name) == 0) {
+            found = 1;
+            if (!target_parsed || user_profile_fields_equal(&current, &target))
+                remove = 1;
+            else
+                mismatch = 1;
+        }
+        if (!remove) {
+            if (fwrite(p, 1, len, out) != len) write_failed = 1;
+            if (nl && fputc('\n', out) == EOF) write_failed = 1;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    if (editconf_finish_combined(out, &combined, &old, write_failed) != 0)
+        return fail("Could not prepare custom profiles");
+
+    if (!found) {
+        free(combined);
+        return editconf_agent_error("profile '%s' does not exist", argv[4]);
+    }
+    if (mismatch) {
+        free(combined);
+        return editconf_agent_error("profile '%s' does not match the supplied fields", argv[4]);
+    }
+
+    char reason[256];
+    if (validate_user_profiles_text(combined, reason, sizeof(reason)) < 0) {
+        free(combined);
+        return editconf_agent_error("%s", reason);
+    }
+
+    int rc = editconf_agent_write(combined);
+    free(combined);
+    if (rc != 0) return rc;
+    cctl_stream_printf("Deleted custom profile '%s'.\n", argv[4]);
+    return 0;
+}
+
 static int cmd_editconf(int argc, char **argv)
 {
+    if (argc >= 3 && strcmp(argv[2], "--am") == 0) {
+        if (argc == 3) {
+            fputs(EDITCONF_RULES, stdout);
+            fflush(stdout);
+            return 0;
+        }
+        if (argc >= 4 && strcmp(argv[3], "--create") == 0)
+            return editconf_agent_create(argc, argv);
+        if (argc >= 4 && strcmp(argv[3], "--delete") == 0)
+            return editconf_agent_delete(argc, argv);
+        return fail("Usage: cctl editconf --am [--create ... | --delete ...]");
+    }
     if (argc == 4 && strcmp(argv[2], "__install") == 0) {
         if (geteuid() != 0)
             return fail("Internal profile installer must run as root");
@@ -518,20 +779,17 @@ static int cmd_set_impl(int argc, char **argv)
             stream_printf(STREAM_DELAY_US, "  RAPL limits: unchanged (use cctl rapl to change them)\n");
         }
         if (p->rr && *p->rr && strcmp(p->rr, "skip") != 0 && has_display_support()) {
-            if (strcmp(p->rr, "lowest") == 0) {
+            int lowest = strcmp(p->rr, "lowest") == 0;
+            int highest = strcmp(p->rr, "highest") == 0;
+            if (lowest || highest) {
                 struct display_info dinfo;
                 if (is_x11_xrandr_available(&dinfo) && dinfo.rate_count > 0 &&
                     dinfo.internal) {
-                    int min_idx = 0;
-                    double min_val = strtod(dinfo.available_rates[0], NULL);
-                    for (int j = 1; j < dinfo.rate_count; j++) {
-                        double v = strtod(dinfo.available_rates[j], NULL);
-                        if (v > 0.0 && (min_val <= 0.0 || v < min_val)) { min_val = v; min_idx = j; }
-                    }
-                    if (strcmp(p->name, "powersave") == 0)
-                        stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (you can change refresh rate in this mode using cctl rr) (preview only)\n", dinfo.available_rates[min_idx]);
+                    int idx = rr_extreme_index(&dinfo, highest);
+                    if (lowest && strcmp(p->name, "powersave") == 0)
+                        stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (you can change refresh rate in this mode using cctl rr) (preview only)\n", dinfo.available_rates[idx]);
                     else
-                        stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (preview only)\n", dinfo.available_rates[min_idx]);
+                        stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (preview only)\n", dinfo.available_rates[idx]);
                 }
             } else {
                 stream_printf(STREAM_DELAY_US, "  Refresh rate: %sHz (preview only)\n", p->rr);

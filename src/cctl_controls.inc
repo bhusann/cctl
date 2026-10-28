@@ -605,6 +605,30 @@ struct user_profile_fields {
     int field_count;
 };
 
+static int profile_refresh_valid(const char *value)
+{
+    if (strcmp(value, "skip") == 0 || strcmp(value, "lowest") == 0 ||
+        strcmp(value, "highest") == 0)
+        return 1;
+
+    int digits = 0, dots = 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (isdigit(*p)) {
+            digits++;
+        } else if (*p == '.') {
+            if (++dots > 1) return 0;
+        } else {
+            return 0;
+        }
+    }
+    if (!digits) return 0;
+
+    char *end = NULL;
+    errno = 0;
+    double rate = strtod(value, &end);
+    return errno == 0 && end != value && *end == '\0' && rate > 0.0;
+}
+
 /* Parse and validate one profile row. Returns 1 for a profile, 0 for a
  * comment/blank row, and -1 with a user-facing reason for invalid input. */
 static int parse_user_profile_line(const char *line,
@@ -695,14 +719,9 @@ static int parse_user_profile_line(const char *line,
             return -1;
         }
     }
-    if (fields == 8 && strcmp(profile->refresh, "skip") != 0) {
-        for (const unsigned char *p = (const unsigned char *)profile->refresh;
-             *p; p++) {
-            if (!isalnum(*p) && *p != '.') {
-                snprintf(err, err_sz, "refresh rate may contain only numbers and a decimal point, or 'skip'");
-                return -1;
-            }
-        }
+    if (fields == 8 && !profile_refresh_valid(profile->refresh)) {
+        snprintf(err, err_sz, "refresh rate must be a positive number, 'lowest', 'highest', or 'skip'");
+        return -1;
     }
     return 1;
 }
@@ -817,13 +836,13 @@ static void load_user_profiles(void)
  * visibility rule used by the DISPLAY section (cctl rr / cctl scale). */
 static int has_display_support(void);
 
-/* Refresh cell for the profile table: "lowest", "<rate>Hz", or "--" when unset. */
+/* Refresh cell for the profile table: "lowest"/"highest", "<rate>Hz", or "--" when unset. */
 static const char *profile_rr_label(const char *rr, char *buf, size_t len)
 {
     if (!rr || !*rr || strcmp(rr, "skip") == 0)
         snprintf(buf, len, "--");
-    else if (strcmp(rr, "lowest") == 0)
-        snprintf(buf, len, "lowest");
+    else if (strcmp(rr, "lowest") == 0 || strcmp(rr, "highest") == 0)
+        snprintf(buf, len, "%s", rr);
     else
         snprintf(buf, len, "%sHz", rr);
     return buf;

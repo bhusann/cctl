@@ -2157,6 +2157,22 @@ static int fc_start_profile(const struct fancurve_profile *prof)
 
 /* ----------------------------------------------------------- commands */
 
+#define FC_RULES_TEXT \
+    "## Fan curve profile\n" \
+    "## Replace each \"--\" with a number, keeping the quotes.\n" \
+    "## Example: { \"temp\": \"45\", \"fan\": \"60\" }\n" \
+    "## Auto example (final point only): { \"temp\": \"88\", \"fan\": \"a\" }\n" \
+    "## The final point starts with fan set to \"a\"; change it if desired.\n" \
+    "## Leave \"name\" unchanged; it must match the file name.\n" \
+    "## temp = temperature in Celsius (0-95), increasing from top to bottom\n" \
+    "## fan = fan speed in percent (25-100), or \"a\" for EC auto on the final point\n" \
+    "## At/above the final \"a\" point, both fans go to EC auto; the curve\n" \
+    "## resumes below (that temperature - hysteresis).\n" \
+    "## hysteresis = temperature deadband in Celsius (0-20)\n" \
+    "## interval_ms = polling interval in milliseconds (250-60000)\n" \
+    "## Keep 2-16 points; add or remove point lines as needed.\n" \
+    "## Agent mode: cctl fancurve create --am <name> <points> <hysteresis> <ms> <temp1> <fan1> ...\n"
+
 static char *fc_make_template(const char *name, int npoints)
 {
     char escaped[FANCURVE_NAME_MAX * 2 + 1];
@@ -2177,19 +2193,7 @@ static char *fc_make_template(const char *name, int npoints)
 
     size_t off = 0;
     int n = snprintf(buf, cap,
-                     "## Fan curve profile\n"
-                     "## Replace each \"--\" with a number, keeping the quotes.\n"
-                     "## Example: { \"temp\": \"45\", \"fan\": \"60\" }\n"
-                     "## Auto example (final point only): { \"temp\": \"88\", \"fan\": \"a\" }\n"
-                     "## The final point starts with fan set to \"a\"; change it if desired.\n"
-                     "## Leave \"name\" unchanged; it must match the file name.\n"
-                     "## temp = temperature in Celsius (0-95), increasing from top to bottom\n"
-                     "## fan = fan speed in percent (25-100), or \"a\" for EC auto on the final point\n"
-                     "## At/above the final \"a\" point, both fans go to EC auto; the curve\n"
-                     "## resumes below (that temperature - hysteresis).\n"
-                     "## hysteresis = temperature deadband in Celsius (0-20)\n"
-                     "## interval_ms = polling interval in milliseconds (250-60000)\n"
-                     "## Keep 2-16 points; add or remove point lines as needed.\n"
+                     FC_RULES_TEXT
                      "{\n"
                      "  \"name\": \"%s\",\n"
                      "  \"hysteresis\": %d,\n"
@@ -2407,8 +2411,136 @@ static void fc_print_shell_quoted(const char *s)
     cctl_stream_putchar('\'');
 }
 
+static int fc_agent_error(const char *fmt, ...)
+{
+    va_list ap;
+    cctl_stream_fprintf(stderr, "Invalid fan curve: ");
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    return 1;
+}
+
+static int fc_cmd_create_agent(int argc, char **argv)
+{
+    const char *pos[64];
+    int npos = 0;
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--am") == 0) continue;
+        if (npos >= (int)(sizeof(pos) / sizeof(pos[0])))
+            return fc_agent_error("too many arguments");
+        pos[npos++] = argv[i];
+    }
+
+    if (npos == 0) {
+        fputs(FC_RULES_TEXT, stdout);
+        fflush(stdout);
+        return 0;
+    }
+    if (npos < 4) {
+        cctl_stream_fprintf(stderr, "Usage: cctl fancurve create --am <name> <points> <hysteresis> <ms> <temp1> <fan1> ...\n");
+        return 1;
+    }
+
+    const char *name = pos[0];
+    if (!fancurve_name_valid(name))
+        return fc_agent_error("invalid profile name '%s'", name);
+
+    int npoints = 0;
+    if (safe_atoi(pos[1], &npoints) < 0 ||
+        npoints < FANCURVE_MIN_POINTS || npoints > FANCURVE_MAX_POINTS)
+        return fc_agent_error("points must contain %d-%d entries",
+                              FANCURVE_MIN_POINTS, FANCURVE_MAX_POINTS);
+
+    if (npos != 4 + npoints * 2)
+        return fc_agent_error("expected %d temperature/fan pairs after <hysteresis> <ms>",
+                              npoints);
+
+    struct fancurve_profile prof;
+    memset(&prof, 0, sizeof(prof));
+    snprintf(prof.name, sizeof(prof.name), "%s", name);
+    prof.npoints = npoints;
+    if (safe_atoi(pos[2], &prof.hysteresis) < 0) prof.hysteresis = -1;
+    if (safe_atoi(pos[3], &prof.interval_ms) < 0) prof.interval_ms = -1;
+
+    for (int i = 0; i < npoints; i++) {
+        int temp = -1;
+        int fan = 0;
+        if (safe_atoi(pos[4 + i * 2], &temp) < 0) temp = -1;
+        const char *fan_text = pos[5 + i * 2];
+        if (strcmp(fan_text, "a") == 0 || strcmp(fan_text, "auto") == 0) {
+            fan = FANCURVE_FAN_AUTO;
+        } else if (safe_atoi(fan_text, &fan) < 0) {
+            fan = 0;
+        }
+        prof.points[i].temp = temp;
+        prof.points[i].fan = fan;
+    }
+
+    char err[256];
+    if (fancurve_validate(&prof, name, err, sizeof(err)) < 0)
+        return fc_agent_error("%s", err);
+
+    require_root(argc, argv);
+    if (fancurve_profile_exists(name))
+        return fail("fan curve '%s' already exists; view and delete it before creating it again", name);
+
+    char escaped[FANCURVE_NAME_MAX * 2 + 1];
+    size_t e = 0;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (*p == '"' || *p == '\\') escaped[e++] = '\\';
+        escaped[e++] = (char)*p;
+    }
+    escaped[e] = '\0';
+
+    size_t cap = 512 + (size_t)npoints * 80;
+    char *text = malloc(cap);
+    if (!text) return fail("out of memory");
+    size_t off = 0;
+    int n = snprintf(text, cap,
+                     "{\n  \"name\": \"%s\",\n  \"hysteresis\": %d,\n"
+                     "  \"interval_ms\": %d,\n  \"points\": [\n",
+                     escaped, prof.hysteresis, prof.interval_ms);
+    if (n < 0 || (size_t)n >= cap) { free(text); return fail("out of memory"); }
+    off = (size_t)n;
+
+    for (int i = 0; i < npoints; i++) {
+        if (prof.points[i].fan == FANCURVE_FAN_AUTO) {
+            n = snprintf(text + off, cap - off,
+                         "    { \"temp\": \"%d\", \"fan\": \"a\" }%s\n",
+                         prof.points[i].temp, i + 1 < npoints ? "," : "");
+        } else {
+            n = snprintf(text + off, cap - off,
+                         "    { \"temp\": \"%d\", \"fan\": \"%d\" }%s\n",
+                         prof.points[i].temp, prof.points[i].fan,
+                         i + 1 < npoints ? "," : "");
+        }
+        if (n < 0 || (size_t)n >= cap - off) { free(text); return fail("out of memory"); }
+        off += (size_t)n;
+    }
+    n = snprintf(text + off, cap - off, "  ]\n}\n");
+    if (n < 0 || (size_t)n >= cap - off) { free(text); return fail("out of memory"); }
+    off += (size_t)n;
+
+    if (fc_write_profile(name, text, off, err, sizeof(err)) < 0) {
+        free(text);
+        return fail("%s", err);
+    }
+    free(text);
+    cctl_stream_printf("Created fan curve '%s'.\n", name);
+    cctl_stream_printf("Activate it with: cctl fancurve start ");
+    fc_print_shell_quoted(name);
+    cctl_stream_putchar('\n');
+    return 0;
+}
+
 static int fc_cmd_create(int argc, char **argv)
 {
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--am") == 0)
+            return fc_cmd_create_agent(argc, argv);
+    }
     if (argc != 4)
         return fail("Usage: cctl fancurve create <name>");
 

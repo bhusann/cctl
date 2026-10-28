@@ -664,8 +664,9 @@ static int nvidia_find_pci_address(char *buf, size_t bufsz)
 static int nvidia_pm_set(int on)
 {
     char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
-    int flags = on ? 0 : RUN_FILTER_NVIDIA_INIT_WARNING;
-    return run(args, flags, NULL, 0);
+    /* Disabling persistence can print a deprecated-init-on-probe warning.
+     * The caller reports failures; success needs no output. */
+    return run(args, on ? 0 : RUN_SILENT, NULL, 0);
 }
 
 /* Keep persistence enabled while either cctl-managed clock lock remains. */

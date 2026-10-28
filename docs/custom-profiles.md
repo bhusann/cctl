@@ -37,13 +37,13 @@ after all rows pass validation.
 | Field | Accepted values | Meaning |
 | --- | --- | --- |
 | `name` | Letters, numbers, `-`, `_` | Name used with `cctl set`. |
-| `EC-code` | `0`–`3` | Laptop power mode: `0` silent, `1` power saving, `2` high performance, `3` standard. |
+| `EC-code` | `0`–`3`, or `skip` | Laptop power mode: `0` silent, `1` power saving, `2` high performance, `3` standard. |
 | `Turbo` | `1`, `0`, `skip` | Enable, disable, or leave Turbo unchanged. |
 | `Governor` | Any value shown by `cctl gov`, or `skip` | Choose how the CPU adjusts its speed. |
 | `EPP` | Any value shown by `cctl epp`, or `skip` | Set the CPU's performance versus efficiency preference. |
 | `PL1` | Watts, or `skip` | Set the sustained CPU power limit. |
 | `PL2` | Watts, or `skip` | Set the short-term CPU power limit. It must be higher than PL1 when both are set. |
-| `Refresh` | A refresh rate such as `60` or `165`, or `skip` | Set the laptop display refresh rate when available. |
+| `Refresh` | `lowest`, `highest`, a refresh rate such as `60` or `165`, or `skip` | Set the laptop display refresh rate when available. |
 
 You can omit the optional power-limit fields and refresh rate when they are at
 the end of the line. To include a refresh rate without setting power limits,

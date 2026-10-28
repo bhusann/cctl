@@ -11,6 +11,8 @@ DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1)
 DBUS_LIBS   := $(shell pkg-config --libs dbus-1)
 LDLIBS   += -lm -pthread $(DBUS_LIBS)
 
+.DEFAULT_GOAL := cctl
+
 # Default optimisation (overridable: `make CFLAGS="-O2 -g"`)
 CFLAGS   ?= -Os
 
@@ -31,7 +33,13 @@ INCLUDES = src/cctl_core.inc src/cctl_controls.inc src/cctl_platform.inc src/cct
            src/cctl_fancurve.inc \
            src/cctl_telemetry.inc src/cctl_runtime.inc src/cctl_nvidia.inc \
            src/cctl_snapshot.inc src/cctl_commands.inc src/cctl_drivers_cli.inc \
+           src/cctl_skill.inc SKILL.md \
            src/cctl_monitor_common.h src/cctl_shared.h
+
+# `cctl --am` prints this skill. Keep the embedded copy in sync with SKILL.md.
+src/cctl_skill.inc: SKILL.md tools/gen_skill_inc.py
+	python3 tools/gen_skill_inc.py SKILL.md $@
+
 
 # ── Default: only cctl binary (no NVIDIA support) ────────────────────────────
 cctl: $(SOURCES) $(INCLUDES)

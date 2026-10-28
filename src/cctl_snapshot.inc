@@ -354,28 +354,31 @@ static const char *cctl_snapshot_battery_mode_label(const char *mode)
     return "--";
 }
 
-static int cctl_snapshot_read_current(struct cctl_snapshot_data *st)
+static int cctl_snapshot_read_current(struct cctl_snapshot_data *st,
+                                      unsigned long long mask)
 {
     cctl_snapshot_init(st);
 
     /* Read EC code live from the TCC offset; GPU locks use cctl runtime data. */
     st->ec_profile_code = cctl_live_ec_state(NULL, NULL);
-    struct fancurve_state curve;
-    if (fc_is_running(&curve)) {
-        if (curve.profile_known) {
-            st->fancurve_profile = curve.profile;
-        } else {
-            char err[256];
-            if (fc_load_profile(curve.name, &st->fancurve_profile,
-                                err, sizeof(err)) < 0) {
-                cctl_stream_fprintf(stderr,
-                    "Error: cannot include the active fan curve in the snapshot: %s\n", err);
-                return -1;
+    if (!(mask & MASK_FANCURVE)) {
+        struct fancurve_state curve;
+        if (fc_is_running(&curve)) {
+            if (curve.profile_known) {
+                st->fancurve_profile = curve.profile;
+            } else {
+                char err[256];
+                if (fc_load_profile(curve.name, &st->fancurve_profile,
+                                    err, sizeof(err)) < 0) {
+                    cctl_stream_fprintf(stderr,
+                        "Error: cannot include the active fan curve in the snapshot: %s\n", err);
+                    return -1;
+                }
             }
+            st->fancurve_state = SNAPSHOT_FANCURVE_EMBEDDED;
+        } else {
+            st->fancurve_state = SNAPSHOT_FANCURVE_NONE;
         }
-        st->fancurve_state = SNAPSHOT_FANCURVE_EMBEDDED;
-    } else {
-        st->fancurve_state = SNAPSHOT_FANCURVE_NONE;
     }
 
     struct mode_runtime_data mode;
@@ -818,7 +821,9 @@ static void cctl_snapshot_preview_restore(const char *name,
     int preview_cur_pl1 = -1, preview_cur_pl2 = -1;
     read_rapl_current(&preview_cur_pl1, &preview_cur_pl2);
     int preview_pl1_cap = st->ec_profile_code == 2
-                        ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
+                        ? RAPL_PL1_MAX_WATTS_MAX :
+                          st->ec_profile_code >= 0 ? RAPL_PL1_MAX_WATTS :
+                          rapl_pl1_ceiling();
 
     if (st->pl1 >= 0) {
         if (!rapl_pl1_within_cap(st->pl1, preview_pl1_cap))
@@ -828,7 +833,8 @@ static void cctl_snapshot_preview_restore(const char *name,
         cctl_stream_printf("  %-22s %s\n", "PL1", value);
     } else SNAPSHOT_PREVIEW("PL1", "skip (not saved)");
     if (st->pl2 >= 0) {
-        int eff_p1 = (st->pl1 >= 0 && !(st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2))
+        int eff_p1 = (st->pl1 >= 0 &&
+                      rapl_pl1_within_cap(st->pl1, preview_pl1_cap))
                      ? st->pl1 : preview_cur_pl1;
         if (!rapl_pl2_within_cap(st->pl2))
             snprintf(value, sizeof(value), "%dW (skipped: maximum is %dW)",
@@ -897,14 +903,20 @@ static void cctl_snapshot_preview_restore(const char *name,
         cctl_stream_printf("  %-22s %s\n", "Fan curve", value);
     } else SNAPSHOT_PREVIEW("Fan curve", "curve config unavailable in older snapshot");
 #undef SNAPSHOT_PREVIEW
+    int curve_saved = st->fancurve_state != SNAPSHOT_FANCURVE_SKIP;
     struct fancurve_state current_curve;
     if (fc_any_active(&current_curve))
         cctl_stream_puts("Fan safety: active curve keeps control during restore; initial AUTO is skipped.");
     else if (nosafe)
         cctl_stream_puts("Fan safety: initial AUTO skipped (--mask nosafe).");
-    else
+    else if (curve_saved)
         cctl_stream_puts("Fan safety: fans set to AUTO before restore; saved curve state is applied last.");
-    cctl_stream_puts("Manual fan speeds are not saved; the saved fan curve configuration is restored last.");
+    else
+        cctl_stream_puts("Fan safety: fans set to AUTO before restore; current curve state is preserved.");
+    if (curve_saved)
+        cctl_stream_puts("Manual fan speeds are not saved; the saved fan curve configuration is restored last.");
+    else
+        cctl_stream_puts("Manual fan speeds are not saved; the current fan curve state is left unchanged.");
 }
 
 static const char *cctl_snapshot_value(int value, char *buf, size_t size)
@@ -995,7 +1007,7 @@ static int cctl_snapshot_save(const char *name, unsigned long long mask)
     }
 
     struct cctl_snapshot_data st;
-    if (cctl_snapshot_read_current(&st) != 0)
+    if (cctl_snapshot_read_current(&st, mask) != 0)
         return 1;
     cctl_snapshot_apply_mask(&st, mask);
     if (cctl_snapshot_write_file(name, &st) != 0) {
@@ -1326,10 +1338,8 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     int need_pl2 = (st->pl2 >= 0 && st->pl2 != cur_pl2);
 
     cctl_snapshot_divider();
-    int snapshot_pl1_cap = st->ec_profile_code == 2
-                         ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
     int pl1_rejected = 0;
-    if (st->pl1 > 0 && !rapl_pl1_within_cap(st->pl1, snapshot_pl1_cap)) {
+    if (st->pl1 > 0 && !rapl_pl1_within_cap(st->pl1, pl1_cap)) {
         if (st->pl2 >= 0) {
             cctl_stream_printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
                    "        Skipping PL1 and restoring PL2 (%dW) alone.\n",

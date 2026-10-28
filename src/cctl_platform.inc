@@ -716,6 +716,21 @@ static int rr_set(const char *rate)
     return rr_set_ext(rate, NULL);
 }
 
+static int rr_extreme_index(const struct display_info *info, int highest)
+{
+    int idx = -1;
+    double value = 0.0;
+    for (int i = 0; i < info->rate_count; i++) {
+        double candidate = strtod(info->available_rates[i], NULL);
+        if (!isfinite(candidate) || candidate <= 0.0) continue;
+        if (idx < 0 || (highest ? candidate > value : candidate < value)) {
+            value = candidate;
+            idx = i;
+        }
+    }
+    return idx >= 0 ? idx : 0;
+}
+
 static int profile_apply_refresh_rate(const struct profile_def *p)
 {
     if (!p || !p->rr || !*p->rr || strcmp(p->rr, "skip") == 0)
@@ -733,20 +748,14 @@ static int profile_apply_refresh_rate(const struct profile_def *p)
     if (!info.internal)
         return 0;
 
-    if (strcmp(p->rr, "lowest") == 0) {
-        int min_idx = 0;
-        double min_val = strtod(info.available_rates[0], NULL);
-        for (int i = 1; i < info.rate_count; i++) {
-            double v = strtod(info.available_rates[i], NULL);
-            if (v > 0.0 && (min_val <= 0.0 || v < min_val)) {
-                min_val = v;
-                min_idx = i;
-            }
-        }
-        const char *note = (strcmp(p->name, "powersave") == 0)
+    int lowest = strcmp(p->rr, "lowest") == 0;
+    int highest = strcmp(p->rr, "highest") == 0;
+    if (lowest || highest) {
+        int idx = rr_extreme_index(&info, highest);
+        const char *note = (lowest && strcmp(p->name, "powersave") == 0)
             ? "(you can change refresh rate in this mode using cctl rr)"
             : NULL;
-        return rr_set_ext(info.available_rates[min_idx], note);
+        return rr_set_ext(info.available_rates[idx], note);
     }
 
     return rr_set_ext(p->rr, NULL);
