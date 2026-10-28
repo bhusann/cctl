@@ -167,7 +167,9 @@ static int cmd_options(int argc, char **argv)
         opt_name = "default";
         opt_val = argv[2];
     } else {
-        return fail("Usage: cctl options streamtext <on|off>\n       cctl options default <help|status>\n       cctl options experimental-fan <on|off>");
+        return fail_line("Usage: cctl options streamtext <on|off>\n"
+                         "       cctl options default <help|status>\n"
+                         "       cctl options experimental-fan <on|off>");
     }
 
     require_root(argc, argv);
@@ -424,8 +426,9 @@ static char *editconf_read_existing(char *err, size_t err_sz)
 
 static int editconf_has_rules(const char *text)
 {
+    static const char prefix[] = "# Custom profiles: one profile per line";
     while (*text && isspace((unsigned char)*text)) text++;
-    return strncmp(text, "# Custom profiles: one profile per line", 39) == 0;
+    return strncmp(text, prefix, sizeof(prefix) - 1) == 0;
 }
 
 static int editconf_agent_field_safe(const char *value)

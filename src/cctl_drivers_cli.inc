@@ -721,8 +721,9 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST,
     C_GRN, C_RST, C_RED, C_RST);
 
-    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]\n", C_BLD, C_RST, C_CYN_BLD, prog, C_RST);
-    cctl_stream_printf("          %s%s%s --am%s  (Agent Skill for AI agents)\n\n", C_BLD, C_CYN_BLD, prog, C_RST);
+    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]  |  %s%s%s --am%s  (Agent Skill for AI agents)\n\n",
+                       C_BLD, C_RST, C_CYN_BLD, prog, C_RST,
+                       C_BLD, C_CYN_BLD, prog, C_RST);
 
     struct cctl_settings help_settings;
     (void)cctl_settings_read(&help_settings);

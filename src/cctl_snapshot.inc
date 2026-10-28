@@ -904,10 +904,7 @@ static void cctl_snapshot_preview_restore(const char *name,
     } else SNAPSHOT_PREVIEW("Fan curve", "curve config unavailable in older snapshot");
 #undef SNAPSHOT_PREVIEW
     int curve_saved = st->fancurve_state != SNAPSHOT_FANCURVE_SKIP;
-    struct fancurve_state current_curve;
-    if (fc_any_active(&current_curve))
-        cctl_stream_puts("Fan safety: active curve keeps control during restore; initial AUTO is skipped.");
-    else if (nosafe)
+    if (nosafe)
         cctl_stream_puts("Fan safety: initial AUTO skipped (--mask nosafe).");
     else if (curve_saved)
         cctl_stream_puts("Fan safety: fans set to AUTO before restore; saved curve state is applied last.");
@@ -1163,14 +1160,6 @@ static void cctl_snapshot_apply_fan_safety(const char *target, int nosafe,
         return;
     }
 
-    struct fancurve_state curve_st;
-    if (fc_is_running(&curve_st)) {
-        cctl_stream_printf("  Fan curve '%s' active; keeping curve control.\n",
-               curve_st.name);
-        *fan_safety_bypassed = 1;
-        return;
-    }
-
     cctl_stream_printf("  Setting fans to AUTO for %s...\n", target);
     if (cctl_snapshot_apply_step("automatic fan control", fan_auto_all(), errors) == 0)
         *fans_auto_applied = 1;
@@ -1233,12 +1222,7 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     int fan_safety_bypassed = 0;
     cctl_stream_printf("Restoring snapshot '%s' one setting at a time...\n", name);
 
-    struct fancurve_state current_curve;
-    int curve_active_at_start = fc_is_running(&current_curve);
-    if (curve_active_at_start) {
-        cctl_stream_printf("Active fan curve detected; it keeps control during restore.\n");
-        fan_safety_bypassed = 1;
-    } else if (!nosafe) {
+    if (!nosafe) {
         cctl_stream_printf("Setting both fans to AUTO before snapshot restore...\n");
         if (fan_auto_all() != 0) {
             cctl_stream_fprintf(stderr,
@@ -1653,7 +1637,7 @@ static int cmd_snapshot(int argc, char **argv)
         cctl_stream_printf("  'bat' masks battery mode and thresholds; 'fancurve' preserves curve config.\n");
         cctl_stream_printf("\n%sFan settings:%s manual fan speeds are not saved. The active fan curve\n"
                "  configuration is saved and restored last; --mask fancurve preserves it.\n"
-        "  Restore sets fans to AUTO first if no curve is active; nosafe skips it.\n",
+        "  Restore sets fans to AUTO first; nosafe skips this step.\n",
                C_YLW, C_RST);
         g_stream_mode = prev;
         return 0;

@@ -2348,7 +2348,7 @@ static void fc_print_usage(void)
     cctl_stream_printf("  %s%-19s%s Edit a profile in the editor\n", C_CYN, "edit|e <name>", C_RST);
     cctl_stream_printf("  %s%-19s%s Delete an inactive profile (--noconfirm skips the prompt)\n",
            C_CYN, "del <name>", C_RST);
-    cctl_stream_printf("  %s%-19s%s Stream live worker diagnostics (Ctrl-C to stop)\n",
+    cctl_stream_printf("  %s%-19s%s Follow worker diagnostics across starts/stops (Ctrl-C to stop)\n",
            C_CYN, "log", C_RST);
 
     g_stream_mode = prev;
@@ -2445,7 +2445,7 @@ static int fc_cmd_create_agent(int argc, char **argv)
 
     const char *name = pos[0];
     if (!fancurve_name_valid(name))
-        return fc_agent_error("invalid profile name '%s'", name);
+        return fc_agent_error("invalid profile name '%.64s'", name);
 
     int npoints = 0;
     if (safe_atoi(pos[1], &npoints) < 0 ||
@@ -2681,9 +2681,8 @@ static int fc_cmd_log(int argc, char **argv)
 
     require_root(argc, argv);
 
-    struct fancurve_state st;
-    if (!fc_is_running(&st))
-        return fail("No fan curve is active");
+    struct fancurve_state watched;
+    int attached = fc_is_running(&watched);
 
     struct stat sb;
     if (lstat(FANCURVE_LOG_FIFO, &sb) == 0) {
@@ -2715,8 +2714,13 @@ static int fc_cmd_log(int argc, char **argv)
     g_stream_mode = STREAM_MODE_LINE;
     g_stream_line = 0;
 
-    cctl_stream_printf("%sFan Curve Log:%s %s%s%s [PID %d]\n",
-           C_YLW, C_RST, C_GRN, st.name, C_RST, (int)st.pid);
+    if (attached) {
+        cctl_stream_printf("%sFan Curve Log:%s %s%s%s [PID %d]\n",
+               C_YLW, C_RST, C_GRN, watched.name, C_RST, (int)watched.pid);
+    } else {
+        cctl_stream_printf("%sFan Curve Log:%s waiting for a fan curve to start...\n",
+               C_YLW, C_RST);
+    }
     cctl_stream_printf("%sLive worker activity; earlier messages are not saved. Press Ctrl-C to stop.%s\n\n",
            C_DIM, C_RST);
     fflush(stdout);
@@ -2725,6 +2729,18 @@ static int fc_cmd_log(int argc, char **argv)
     size_t line_len = 0;
     int ticks = 0;
     while (g_fancurve_running) {
+        if (!attached) {
+            struct fancurve_state current;
+            if (fc_is_running(&current)) {
+                watched = current;
+                attached = 1;
+                ticks = 0;
+                cctl_stream_printf("\n%sFan curve started:%s %s%s%s [PID %d]\n",
+                       C_YLW, C_RST, C_GRN, watched.name, C_RST, (int)watched.pid);
+                fflush(stdout);
+            }
+        }
+
         ssize_t n = read(fd, buf, sizeof(buf));
         if (n > 0) {
             for (ssize_t i = 0; i < n; i++) {
@@ -2745,14 +2761,22 @@ static int fc_cmd_log(int argc, char **argv)
         if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) break;
 
         if (fc_sleep_ms(100) < 0) break;
-        if (++ticks >= 10) {
+        if (attached && ++ticks >= 10) {
             ticks = 0;
             struct fancurve_state current;
-            if (!fc_is_running(&current) || current.pid != st.pid ||
-                current.starttime != st.starttime) {
-                cctl_stream_printf("\nFan curve stopped.\n");
+            if (!fc_is_running(&current) ||
+                current.pid != watched.pid ||
+                current.starttime != watched.starttime) {
+                if (line_len) {
+                    fc_print_log_line(line, line_len);
+                    line_len = 0;
+                }
+                cctl_stream_printf("\n%sFan curve stopped.%s Waiting for the next fan curve to start...\n",
+                       C_YLW, C_RST);
+                cctl_stream_printf("%sPress Ctrl-C to exit.%s\n", C_DIM, C_RST);
                 fflush(stdout);
-                break;
+                attached = 0;
+                ticks = 0;
             }
         }
     }

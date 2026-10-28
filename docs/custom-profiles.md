@@ -49,12 +49,30 @@ You can omit the optional power-limit fields and refresh rate when they are at
 the end of the line. To include a refresh rate without setting power limits,
 write `skip skip` before it.
 
+## EC code defaults
+
+These codes are firmware power modes managed by the laptop's built-in
+embedded controller (EC); they are not Linux governor or EPP settings.
+
+| EC code | Mode | EC default PL1 | EC default PL2 | GPU power cap |
+| ---: | --- | ---: | ---: | ---: |
+| `0` | Silent | 15 W | 30 W | 70 W |
+| `1` | Power saving | 15 W | 30 W | 70 W |
+| `2` | High performance | 90 W | 115 W | 100 W (unlocked) |
+| `3` | Standard | 45 W | 115 W | 70 W |
+
+All four modes also use the EC's TCC thermal target (its thermal throttling
+point). These are the EC defaults; after applying a code, you can adjust CPU
+power with `cctl rapl <pl1> <pl2>` and limit NVIDIA GPU clocks with
+`cctl nvidia clock` or `cctl nvidia memclock` on supported builds. The EC may
+still enforce its own lower limits.
+
 ## Power and fan safety
 
-PL2 can be set up to 115 W. PL1 is limited to 45 W in most modes and up to
-90 W in high-performance mode (EC code `2`). The laptop may enforce lower
-power limits in silent, power-saving, and standard modes, even when a larger
-limit is requested.
+The table above shows the EC defaults. cctl still validates RAPL limits: PL2
+can be set up to 115 W. PL1 can be set up to 45 W in most modes and up to 90 W
+in high-performance mode (EC code `2`). The EC may enforce lower limits even
+when a larger limit is requested.
 
 Applying EC code `2` or `3` normally returns the fans to automatic control for
 safety. Add `--nosafe` to `cctl set <name>` to keep the current fan setting.

@@ -206,9 +206,8 @@ under `/var/lib/cctl/fancurves/`.
   Replacing an existing profile requires confirmation. Editing or deleting the
   currently active profile is refused.
 - While active, the curve owns both fans. `cctl fan auto` stops it before
-  restoring EC auto; other fan overrides are refused. `cctl set`, Turbo, and
-  snapshot fan-safety steps skip changes that would take control away from the
-  curve.
+  restoring EC auto; other fan overrides are refused. `cctl set` and Turbo skip
+  changes that would take control away from the curve.
 - Snapshot format 5 embeds the active curve's hysteresis, interval, and all
   temperature/fan points in the snapshot file; it does not depend on the saved
   profile file at restore time. The worker publishes its active configuration
@@ -222,10 +221,10 @@ under `/var/lib/cctl/fancurves/`.
   Format 4 remains readable with fan-curve config and no battery mode; format 3
   uses the referenced profile file when available and format 2 skips curve
   state. Earlier formats have no saved battery mode. `--mask fancurve` skips
-  saved curve state. At restore start, cctl sets both fans to EC AUTO only if
-  no curve is active; an active curve keeps fan control. The target curve state
-  is applied last. `--mask nosafe` bypasses the initial AUTO step. The `bat`
-  mask skips charge mode and thresholds.
+  saved curve state. At restore start, cctl always sets both fans to EC AUTO,
+  even when a curve is active. The target curve state is applied last.
+  `--mask nosafe` bypasses the initial AUTO step. The `bat` mask skips charge
+  mode and thresholds.
   Manual fan duties are not captured, and snapshots do not start automatically
   at boot.
 - The worker listens for login1 `PrepareForSleep` signals over the system D-Bus
