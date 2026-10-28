@@ -52,18 +52,18 @@ Fan curves adjust both fans as the laptop heats up. Create a curve, fill in its
 temperature and fan-speed points, then start it:
 
 ```bash
-cctl fancurve                         # Show saved curves and the active curve
+cctl fancurve                         # Show saved curves and the active curve (alias: fanc)
 cctl fancurve create <name>           # Create a curve and open it for editing
-cctl fancurve view <name>             # Check and display a curve
+cctl fancurve view [name]             # List saved curves or check and display one
 cctl fancurve edit <name>             # Edit a saved curve
-cctl fancurve start <name>            # Start or restart a curve
-cctl fancurve stop                    # Stop the curve and return fans to automatic control
+cctl fancurve start|s <name>          # Start or restart a curve
+cctl fancurve stop|st                # Stop the curve and return fans to automatic control
 cctl fancurve log                     # Stream colored diagnostics from the active curve
 cctl fancurve del <name> [--noconfirm] # Delete a saved curve
 ```
 
-Short forms: `s` for `start`, `c` for `create`, `v` for `view`, and `e` for
-`edit`.
+`fanc` is a shorter command name. Short forms: `s` for `start`, `st` for
+`stop`, `c` for `create`, `v` for `view`, and `e` for `edit`.
 
 `log` shows new activity from the running curve, with colors for failures,
 safety actions, and fan-speed changes. Earlier messages are not saved; press
@@ -103,13 +103,21 @@ stops unexpectedly, the fans also return to automatic control. Curves require
 an up-to-date driver; run `cctl drivers-manage` if cctl asks you to update it.
 
 While a curve is running, it keeps control of both fans. Other manual fan
-changes are unavailable until the curve stops. Applying a profile or restoring
-a snapshot leaves fan control with the curve. `cctl fan auto` stops the curve
-and returns the fans to automatic control.
+changes are unavailable until the curve stops. Applying a profile leaves fan
+control with the curve. Snapshot restore keeps an already active curve in
+control during the other settings, then applies the snapshot's curve state last.
+That final step can stop the current curve if the snapshot recorded no curve,
+or replace it with the saved curve configuration.
+`cctl fan auto` stops the curve and returns the fans to automatic control.
 
 You cannot edit or delete the curve that is currently running; stop it first.
 Deleting a saved curve asks for confirmation; add `--noconfirm` to skip the
-prompt. Curves run only for the current boot and are not included in snapshots.
+prompt. A snapshot copies the active curve settings and temperature/fan points,
+then restores that configuration after all other settings. It can restore the
+curve even if you later delete its saved profile. If no curve was active when
+the snapshot was saved, restore stops any currently running curve. Manual fan
+speeds are not included. Curves still run only for the current boot and do not
+start automatically at boot.
 When a login manager supports sleep notifications, cctl returns fans to
 automatic control before sleep and resumes the curve after wake. If the wake
 notification is missed, cctl keeps EC automatic control and resumes the curve
@@ -162,20 +170,24 @@ spaces or other symbols. `snap` is a shorter alias for `snapshot`.
 `snap delete` asks for confirmation before removing a snapshot; add
 `--noconfirm` to skip the prompt (for example, `cctl snap del mypcwork --noconfirm`).
 Add `--dry-run` to `snap restore` to preview the settings and skipped
-fields without applying changes. Restoring EC code `2`/`3` sets fans to AUTO;
-restoring Turbo ON does so only when the active EC code is `2`/`3`. If a fan
-curve is active, restore leaves fan control with the curve and skips the AUTO
-change. Add `nosafe` to the restore mask to bypass automatic fan changes
-(for example, `cctl snap r mypcwork --mask nosafe`).
+fields without applying changes. If no fan curve is active when restore starts,
+cctl sets both fans to AUTO before applying the saved settings. If a curve is
+already active, cctl leaves it in control during the other settings and skips
+that initial AUTO step. The snapshot's curve setting is handled last and may
+stop or replace the active curve.
+Use `nosafe` in the restore mask to skip the initial AUTO step when no curve is
+active (for example, `cctl snap r mypcwork --mask nosafe`).
 Available names are `nvidia_clock`, `nvidia_memclock`,
 `ec_code`, `turbo`, `gov`, `epp`, `pl1`, `pl2`, `kbe`, `kbc`, `kbb`,
-`fn_lock`, `webcam`, `mic`, `bat`, `rr`, and `scale`; `nosafe` is restore-only.
+`fn_lock`, `webcam`, `mic`, `bat`, `rr`, `scale`, and `fancurve`; `nosafe` is restore-only.
 `kbc` masks keyboard
-color, `kbb` brightness, `kbe` effect, and `bat` both battery thresholds.
+color, `kbb` brightness, `kbe` effect, and `bat` battery charge mode and thresholds.
+Use `fancurve` to leave curve state unchanged while saving or restoring.
 
 Snapshots save system settings, CPU power settings, keyboard settings, Fn Lock,
-webcam and microphone states, battery thresholds, GPU clock settings, and
-display settings. Fan settings are not saved or restored.
+webcam and microphone states, battery mode and thresholds, GPU clock settings, display
+settings, and the active fan-curve configuration. Manual fan speeds are not
+saved.
 
 ### NVIDIA GPU
 ```bash

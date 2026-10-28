@@ -198,9 +198,8 @@ under `/var/lib/cctl/fancurves/`.
   `/run/cctl_curve.lock`. `/run/cctl_curve.state` records PID, process start
   time, profile name, and start time. Matching the process start time prevents
   a reused PID from being mistaken for the worker. `stop` waits for that
-  worker to exit before returning. `set` and `off` remain accepted as aliases
-  for `start` and `stop` for compatibility, though help shows the primary
-  command names.
+  worker to exit before returning. `s` aliases `start`, and `st` aliases
+  `stop`; legacy `set` and `off` are also accepted.
 - `create` and `edit` open the configured editor as the invoking user. When
   the profile directory is not writable, a restricted `fancurve __install`
   helper validates the temporary file and profile before installing it.
@@ -210,7 +209,25 @@ under `/var/lib/cctl/fancurves/`.
   restoring EC auto; other fan overrides are refused. `cctl set`, Turbo, and
   snapshot fan-safety steps skip changes that would take control away from the
   curve.
-- Fan curves are not included in snapshots and are not started at boot.
+- Snapshot format 5 embeds the active curve's hysteresis, interval, and all
+  temperature/fan points in the snapshot file; it does not depend on the saved
+  profile file at restore time. The worker publishes its active configuration
+  in `/run/cctl_curve.state`, allowing a snapshot to capture the values the
+  worker actually runs even if its profile file was removed or changed.
+  Both `cctl fancurve start` and snapshot restore use the same
+  `fc_start_profile()` validation and restart path.
+  Restore applies curve state last and starts an embedded configuration with
+  the internal label `snapshot-<snapshot_name>`; the start message identifies
+  the source snapshot.
+  Format 4 remains readable with fan-curve config and no battery mode; format 3
+  uses the referenced profile file when available and format 2 skips curve
+  state. Earlier formats have no saved battery mode. `--mask fancurve` skips
+  saved curve state. At restore start, cctl sets both fans to EC AUTO only if
+  no curve is active; an active curve keeps fan control. The target curve state
+  is applied last. `--mask nosafe` bypasses the initial AUTO step. The `bat`
+  mask skips charge mode and thresholds.
+  Manual fan duties are not captured, and snapshots do not start automatically
+  at boot.
 - The worker listens for login1 `PrepareForSleep` signals over the system D-Bus
   and holds a delay inhibitor while active. On suspend it closes its armed
   `tuxedo_io` descriptor, triggering the driver's EC-auto close recovery; on

@@ -245,6 +245,7 @@ enum run_flags {
     RUN_SILENT  = 1 << 0, /* redirect stdout & stderr to /dev/null */
     RUN_CAPTURE = 1 << 1, /* capture stdout into out buffer */
     RUN_RAW     = 1 << 2, /* inherit raw stdout/stdin (e.g. interactive editors) */
+    RUN_FILTER_NVIDIA_INIT_WARNING = 1 << 3,
 };
 
 /* Unified process spawner: replaces run_cmd, run_cmd_silent, popen, system, and fork/pipe.
@@ -254,8 +255,10 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
     if ((flags & RUN_CAPTURE) && out && out_sz > 0)
         out[0] = '\0';
     int pipefd[2] = { -1, -1 };
+    int filter_nvidia_warning = (flags & RUN_FILTER_NVIDIA_INIT_WARNING) != 0;
     int stream_child = !(flags & (RUN_CAPTURE | RUN_SILENT | RUN_RAW)) &&
-                       g_stream_output && !json_output && isatty(STDOUT_FILENO);
+                       (filter_nvidia_warning ||
+                        (g_stream_output && !json_output && isatty(STDOUT_FILENO)));
 
     if (((flags & RUN_CAPTURE) || stream_child) && pipe(pipefd) != 0)
         return -1;
@@ -275,6 +278,8 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
         if ((flags & RUN_CAPTURE) || stream_child) {
             close(pipefd[0]);
             dup2(pipefd[1], STDOUT_FILENO);
+            if (filter_nvidia_warning)
+                dup2(pipefd[1], STDERR_FILENO);
             close(pipefd[1]);
             if (flags & RUN_CAPTURE) {
                 int devnull = open("/dev/null", O_WRONLY);
@@ -321,16 +326,37 @@ static int run(char *const argv[], int flags, char *out, size_t out_sz)
     } else if (stream_child) {
         close(pipefd[1]);
         char buf[512];
+        char line[4096];
+        size_t line_len = 0;
+        static const char nvidia_warning[] =
+            "Warning: Persistence mode is deprecated while GPU init-on-probe is enabled.";
         for (;;) {
             ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
             if (n > 0) {
-                buf[n] = '\0';
-                stream_write(buf, STREAM_DELAY_US);
+                if (!filter_nvidia_warning) {
+                    buf[n] = '\0';
+                    stream_write(buf, STREAM_DELAY_US);
+                    continue;
+                }
+                for (ssize_t i = 0; i < n; i++) {
+                    line[line_len++] = buf[i];
+                    if (buf[i] == '\n' || line_len == sizeof(line) - 1) {
+                        line[line_len] = '\0';
+                        if (!strstr(line, nvidia_warning))
+                            stream_write(line, STREAM_DELAY_US);
+                        line_len = 0;
+                    }
+                }
             } else if (n < 0 && errno == EINTR) {
                 continue;
             } else {
                 break;
             }
+        }
+        if (line_len > 0) {
+            line[line_len] = '\0';
+            if (!filter_nvidia_warning || !strstr(line, nvidia_warning))
+                stream_write(line, STREAM_DELAY_US);
         }
         close(pipefd[0]);
     }
@@ -1019,6 +1045,8 @@ static int rapl_pl1_ceiling(void)
 #define MUX_VAL_DGPU     0x02
 #define MUX_VAL_MSHYBRID 0x03
 
+static int has_display_support(void);
+
 /* Read and validate the UEFI Setup variable, optionally returning its blob.
  * Returns MUX_VAL_DGPU / MUX_VAL_MSHYBRID on success, -1 on error. */
 static int mux_read_blob(unsigned char *blob)
@@ -1298,10 +1326,9 @@ static int mux_switch(void)
                   C_DIM, mux_mode_str(current), C_RST,
                   C_BLD, mux_mode_str(target), C_RST);
     stream_printf(STREAM_DELAY_US, "%sReboot to apply.%s\n", C_YLW, C_RST);
-    if (target == MUX_VAL_DGPU) {
+    if (target == MUX_VAL_DGPU && has_display_support()) {
         stream_printf(STREAM_DELAY_US,
-               "After reboot in dGPU mode, the X11 display may start at 40 Hz due to a hardware quirk.\n"
-               "Run 'cctl rr 165' to restore 165 Hz.\n");
+               "X11 may start at 40 Hz after reboot; run 'cctl rr 165' to restore 165 Hz.\n");
     }
     g_stream_mode = prev_stream_mode;
     return 0;

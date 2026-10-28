@@ -28,6 +28,10 @@ The profile file is `/var/lib/cctl/profiles.conf`; `cctl editconf` opens it for
 you. If you have profiles in the old `/etc/cctl/profiles.conf` file, copy them
 to the new file once.
 
+Before saving, cctl checks every profile row. If a row is invalid, it reports
+the line and problem, then lets you reopen the editor. The file is saved only
+after all rows pass validation.
+
 ## Profile fields
 
 | Field | Accepted values | Meaning |
@@ -35,8 +39,8 @@ to the new file once.
 | `name` | Letters, numbers, `-`, `_` | Name used with `cctl set`. |
 | `EC-code` | `0`–`3` | Laptop power mode: `0` silent, `1` power saving, `2` high performance, `3` standard. |
 | `Turbo` | `1`, `0`, `skip` | Enable, disable, or leave Turbo unchanged. |
-| `Governor` | `powersave`, `performance`, `skip` | Choose how the CPU adjusts its speed. |
-| `EPP` | `performance`, `balance_performance`, `balance_power`, `power`, `skip` | Set the CPU's performance versus efficiency preference. |
+| `Governor` | Any value shown by `cctl gov`, or `skip` | Choose how the CPU adjusts its speed. |
+| `EPP` | Any value shown by `cctl epp`, or `skip` | Set the CPU's performance versus efficiency preference. |
 | `PL1` | Watts, or `skip` | Set the sustained CPU power limit. |
 | `PL2` | Watts, or `skip` | Set the short-term CPU power limit. It must be higher than PL1 when both are set. |
 | `Refresh` | A refresh rate such as `60` or `165`, or `skip` | Set the laptop display refresh rate when available. |

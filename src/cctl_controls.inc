@@ -147,11 +147,26 @@ static int read_rapl_current(int *pl1, int *pl2)
     return (*pl1 >= 0 || *pl2 >= 0) ? 0 : -1;
 }
 
+static int rapl_pl1_within_cap(int pl1_w, int pl1_cap)
+{
+    return pl1_w <= 0 || pl1_w <= pl1_cap;
+}
+
+static int rapl_pl2_within_cap(int pl2_w)
+{
+    return pl2_w <= 0 || pl2_w <= RAPL_PL2_MAX_WATTS;
+}
+
+static int rapl_pl2_above_pl1(int pl1_w, int pl2_w)
+{
+    return pl1_w <= 0 || pl2_w <= 0 || pl2_w > pl1_w;
+}
+
 /* Set RAPL power limits. Pass pl1_w/pl2_w <= 0 to skip that limit. */
 static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 {
     /* Defense in depth: enforce the caller's current-mode or profile ceiling. */
-    if (pl1_w > pl1_cap || pl2_w > RAPL_PL2_MAX_WATTS) {
+    if (!rapl_pl1_within_cap(pl1_w, pl1_cap) || !rapl_pl2_within_cap(pl2_w)) {
         cctl_stream_fprintf(stderr, "Error: RAPL out of range (PL1 max %dW%s, PL2 max %dW)\n",
                 pl1_cap, pl1_cap > RAPL_PL1_MAX_WATTS ? " with EC profile code 2" : "",
                 RAPL_PL2_MAX_WATTS);
@@ -163,7 +178,7 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
 
     int eff_pl1 = pl1_w > 0 ? pl1_w : old_pl1;
     int eff_pl2 = pl2_w > 0 ? pl2_w : old_pl2;
-    if (eff_pl1 > 0 && eff_pl2 > 0 && eff_pl2 <= eff_pl1) {
+    if (!rapl_pl2_above_pl1(eff_pl1, eff_pl2)) {
         cctl_stream_fprintf(stderr, "Error: PL2 (%dW) must be greater than PL1 (%dW)\n", eff_pl2, eff_pl1);
         return -1;
     }
@@ -578,6 +593,182 @@ static int profile_name_valid(const char *name)
     return 1;
 }
 
+struct user_profile_fields {
+    char name[32];
+    char governor[32];
+    char epp[32];
+    char refresh[32];
+    int gpu_profile;
+    int turbo;
+    int pl1;
+    int pl2;
+    int field_count;
+};
+
+/* Parse and validate one profile row. Returns 1 for a profile, 0 for a
+ * comment/blank row, and -1 with a user-facing reason for invalid input. */
+static int parse_user_profile_line(const char *line,
+                                   struct user_profile_fields *profile,
+                                   char *err, size_t err_sz)
+{
+    const unsigned char *first = (const unsigned char *)line;
+    while (*first && isspace(*first)) first++;
+    if (!*first || *first == '#') return 0;
+
+    char gpu_text[16], turbo_text[16], pl1_text[16] = "skip";
+    char pl2_text[16] = "skip", extra[2];
+    snprintf(profile->refresh, sizeof(profile->refresh), "skip");
+    profile->gpu_profile = -1;
+    profile->turbo = -1;
+    profile->pl1 = -1;
+    profile->pl2 = -1;
+    int fields = sscanf(line, "%31s %15s %15s %31s %31s %15s %15s %31s %1s",
+                        profile->name, gpu_text, turbo_text,
+                        profile->governor, profile->epp,
+                        pl1_text, pl2_text, profile->refresh, extra);
+    if (fields != 5 && fields != 7 && fields != 8) {
+        snprintf(err, err_sz, "expected 5, 7, or 8 fields");
+        return -1;
+    }
+    profile->field_count = fields;
+
+    if (!profile_name_valid(profile->name)) {
+        snprintf(err, err_sz, "profile name must use only letters, numbers, hyphens, or underscores (max 31 characters)");
+        return -1;
+    }
+    if (strcmp(gpu_text, "skip") != 0 &&
+        (safe_atoi(gpu_text, &profile->gpu_profile) < 0 ||
+         profile->gpu_profile < 0 || profile->gpu_profile > 3)) {
+        snprintf(err, err_sz, "EC profile code must be 0-3 or 'skip'");
+        return -1;
+    }
+    if (strcmp(turbo_text, "skip") != 0 &&
+        (safe_atoi(turbo_text, &profile->turbo) < 0 ||
+         (profile->turbo != 0 && profile->turbo != 1))) {
+        snprintf(err, err_sz, "Turbo must be 0, 1, or 'skip'");
+        return -1;
+    }
+    if (strcmp(profile->governor, "skip") != 0) {
+        int available = cpu_policy_value_available(CPU_AVAILABLE_GOVERNORS_PATH,
+                                                   profile->governor);
+        if (available != 1) {
+            if (available < 0)
+                snprintf(err, err_sz, "cannot read available CPU governors");
+            else
+                snprintf(err, err_sz, "governor '%s' is unavailable on this system",
+                         profile->governor);
+            return -1;
+        }
+    }
+    if (strcmp(profile->epp, "skip") != 0) {
+        int available = cpu_policy_value_available(CPU_AVAILABLE_EPP_PATH,
+                                                   profile->epp);
+        if (available != 1) {
+            if (available < 0)
+                snprintf(err, err_sz, "cannot read available EPP values");
+            else
+                snprintf(err, err_sz, "EPP value '%s' is unavailable on this system",
+                         profile->epp);
+            return -1;
+        }
+    }
+
+    if (fields >= 7) {
+        int pl1_max = profile->gpu_profile == 2 || profile->gpu_profile < 0
+                    ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
+        if (strcmp(pl1_text, "skip") != 0 &&
+            (safe_atoi(pl1_text, &profile->pl1) < 0 || profile->pl1 < 1 ||
+             !rapl_pl1_within_cap(profile->pl1, pl1_max))) {
+            snprintf(err, err_sz, "PL1 must be 1-%d W for the selected EC profile, or 'skip'",
+                     pl1_max);
+            return -1;
+        }
+        if (strcmp(pl2_text, "skip") != 0 &&
+            (safe_atoi(pl2_text, &profile->pl2) < 0 || profile->pl2 < 1 ||
+             !rapl_pl2_within_cap(profile->pl2))) {
+            snprintf(err, err_sz, "PL2 must be 1-%d W or 'skip'",
+                     RAPL_PL2_MAX_WATTS);
+            return -1;
+        }
+        if (!rapl_pl2_above_pl1(profile->pl1, profile->pl2)) {
+            snprintf(err, err_sz, "PL2 must be greater than PL1");
+            return -1;
+        }
+    }
+    if (fields == 8 && strcmp(profile->refresh, "skip") != 0) {
+        for (const unsigned char *p = (const unsigned char *)profile->refresh;
+             *p; p++) {
+            if (!isalnum(*p) && *p != '.') {
+                snprintf(err, err_sz, "refresh rate may contain only numbers and a decimal point, or 'skip'");
+                return -1;
+            }
+        }
+    }
+    return 1;
+}
+
+static int validate_user_profiles_text(const char *text, char *err,
+                                       size_t err_sz)
+{
+    char names[MAX_USER_PROFILES][32];
+    int count = 0;
+    unsigned int line_number = 1;
+    const char *line_start = text;
+
+    while (*line_start) {
+        const char *newline = strchr(line_start, '\n');
+        size_t len = newline ? (size_t)(newline - line_start) : strlen(line_start);
+        const unsigned char *first = (const unsigned char *)line_start;
+        const unsigned char *end = first + len;
+        while (first < end && isspace(*first)) first++;
+        int parsed = 0;
+        struct user_profile_fields profile;
+        char reason[256];
+        if (first < end && *first != '#') {
+            if (len > 255) {
+                snprintf(err, err_sz, "line %u: profile row is too long (maximum 255 characters)",
+                         line_number);
+                return -1;
+            }
+            char line[256];
+            memcpy(line, line_start, len);
+            if (len > 0 && line[len - 1] == '\r') len--;
+            line[len] = '\0';
+            parsed = parse_user_profile_line(line, &profile,
+                                             reason, sizeof(reason));
+        }
+        if (parsed < 0) {
+            snprintf(err, err_sz, "line %u: %.220s", line_number, reason);
+            return -1;
+        }
+        if (parsed > 0) {
+            int duplicate = strcmp(profile.name, "eco") == 0;
+            for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++)
+                if (strcmp(PROFILES[i].name, profile.name) == 0)
+                    duplicate = 1;
+            for (int i = 0; i < count; i++)
+                if (strcmp(names[i], profile.name) == 0)
+                    duplicate = 1;
+            if (duplicate) {
+                snprintf(err, err_sz, "line %u: profile name '%s' is already used",
+                         line_number, profile.name);
+                return -1;
+            }
+            if (count == MAX_USER_PROFILES) {
+                snprintf(err, err_sz, "line %u: maximum of %d custom profiles reached",
+                         line_number, MAX_USER_PROFILES);
+                return -1;
+            }
+            snprintf(names[count++], sizeof(names[0]), "%s", profile.name);
+        }
+
+        if (!newline) break;
+        line_start = newline + 1;
+        line_number++;
+    }
+    return 0;
+}
+
 static void load_user_profiles(void)
 {
     if (user_profiles_loaded) return;
@@ -587,70 +778,35 @@ static void load_user_profiles(void)
 
     char line[256];
     while (user_profile_count < MAX_USER_PROFILES && fgets(line, sizeof(line), fp)) {
-        char name[32], gpu_text[16], turbo_text[16], gov[32], epp[32];
-        char pl1_text[16] = "skip", pl2_text[16] = "skip", rr_text[32] = "skip", extra[2];
-        int gpu = -1, turbo = -1, pl1 = -1, pl2 = -1;
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
-        int fields = sscanf(line, "%31s %15s %15s %31s %31s %15s %15s %31s %1s",
-                            name, gpu_text, turbo_text, gov, epp,
-                            pl1_text, pl2_text, rr_text, extra);
-        if (fields != 5 && fields != 7 && fields != 8)
+        struct user_profile_fields profile;
+        char parse_error[256];
+        if (parse_user_profile_line(line, &profile,
+                                    parse_error, sizeof(parse_error)) != 1)
             continue;
-        if (!profile_name_valid(name))
-            continue;
-        if (strcmp(gpu_text, "skip") != 0 &&
-            (safe_atoi(gpu_text, &gpu) < 0 || gpu < 0 || gpu > 3)) continue;
-        if (strcmp(turbo_text, "skip") != 0 &&
-            (safe_atoi(turbo_text, &turbo) < 0 || (turbo != 0 && turbo != 1))) continue;
-        if (strcmp(gov, "skip") != 0 &&
-            cpu_policy_value_available(CPU_AVAILABLE_GOVERNORS_PATH, gov) != 1)
-            continue;
-        if (strcmp(epp, "skip") != 0 &&
-            cpu_policy_value_available(CPU_AVAILABLE_EPP_PATH, epp) != 1)
-            continue;
-        if (fields >= 7) {
-            int pl1_max = gpu == 2 || gpu < 0 ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
-            if ((strcmp(pl1_text, "skip") != 0 &&
-                 (safe_atoi(pl1_text, &pl1) < 0 || pl1 < 1 || pl1 > pl1_max)) ||
-                (strcmp(pl2_text, "skip") != 0 &&
-                 (safe_atoi(pl2_text, &pl2) < 0 || pl2 < 1 || pl2 > RAPL_PL2_MAX_WATTS)))
-                continue;
-            if (pl1 > 0 && pl2 > 0 && pl2 <= pl1)
-                continue;
-        }
-        if (fields == 8 && strcmp(rr_text, "skip") != 0) {
-            int valid_rr = 1;
-            for (const char *p = rr_text; *p; p++) {
-                if (!isalnum((unsigned char)*p) && *p != '.') {
-                    valid_rr = 0;
-                    break;
-                }
-            }
-            if (!valid_rr) continue;
-        }
         int duplicate = 0;
-        if (strcmp(name, "eco") == 0) duplicate = 1; /* reserved alias for built-in silent */
+        if (strcmp(profile.name, "eco") == 0) duplicate = 1; /* reserved alias for built-in silent */
         for (size_t i = 0; i < sizeof(PROFILES) / sizeof(PROFILES[0]); i++)
-            if (strcmp(PROFILES[i].name, name) == 0) duplicate = 1;
+            if (strcmp(PROFILES[i].name, profile.name) == 0) duplicate = 1;
         for (int i = 0; i < user_profile_count; i++)
-            if (strcmp(user_profile_names[i], name) == 0) duplicate = 1;
+            if (strcmp(user_profile_names[i], profile.name) == 0) duplicate = 1;
         if (duplicate) continue;
 
         int i = user_profile_count++;
-        snprintf(user_profile_names[i], sizeof(user_profile_names[i]), "%s", name);
+        snprintf(user_profile_names[i], sizeof(user_profile_names[i]), "%s", profile.name);
         snprintf(user_profile_governors[i], sizeof(user_profile_governors[i]), "%s",
-                 strcmp(gov, "skip") == 0 ? "skip" : gov);
+                 strcmp(profile.governor, "skip") == 0 ? "skip" : profile.governor);
         snprintf(user_profile_epps[i], sizeof(user_profile_epps[i]), "%s",
-                 strcmp(epp, "skip") == 0 ? "skip" : epp);
+                 strcmp(profile.epp, "skip") == 0 ? "skip" : profile.epp);
         snprintf(user_profile_rrs[i], sizeof(user_profile_rrs[i]), "%s",
-                 (fields == 8 && strcmp(rr_text, "skip") != 0) ? rr_text : "skip");
+                 (profile.field_count == 8 && strcmp(profile.refresh, "skip") != 0)
+                 ? profile.refresh : "skip");
         user_profiles[i] = (struct profile_def) {
             .name = user_profile_names[i], .label = user_profile_names[i],
             .color = PROF_COL_BLU, .help_desc = "User-defined profile",
-            .gpu_profile = gpu, .turbo = turbo,
+            .gpu_profile = profile.gpu_profile, .turbo = profile.turbo,
             .gov = user_profile_governors[i], .epp = user_profile_epps[i],
             .pulse_r = 0, .pulse_g = 0, .pulse_b = 0, .ec_tdp = "custom",
-            .rapl_pl1 = pl1, .rapl_pl2 = pl2,
+            .rapl_pl1 = profile.pl1, .rapl_pl2 = profile.pl2,
             .rr = (strcmp(user_profile_rrs[i], "skip") == 0 ? NULL : user_profile_rrs[i])
         };
     }

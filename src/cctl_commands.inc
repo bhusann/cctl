@@ -265,6 +265,10 @@ static int editconf_install_helper(const char *src, uid_t owner)
     char err[256];
     char *text = fc_read_owned_text(src, owner, err, sizeof(err));
     if (!text) return fail("%s", err);
+    if (validate_user_profiles_text(text, err, sizeof(err)) < 0) {
+        free(text);
+        return fail("Invalid custom profile: %s", err);
+    }
 
     const char *dir = "/var/lib/cctl";
     if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
@@ -394,10 +398,40 @@ static int cmd_editconf(int argc, char **argv)
 
     char *const edit_args[] = { "/bin/sh", "-c", "exec $EDITOR \"$1\"",
                                 "cctl-editconf", temp, NULL };
-    int rc = run(edit_args, RUN_RAW, NULL, 0);
-    if (rc != 0) {
-        unlink(temp);
-        return fail("Editor exited with status %d", rc);
+    int rc;
+    for (;;) {
+        rc = run(edit_args, RUN_RAW, NULL, 0);
+        if (rc != 0) {
+            unlink(temp);
+            return fail("Editor exited with status %d", rc);
+        }
+
+        char read_err[256];
+        char *edited = fc_read_text(temp, read_err, sizeof(read_err));
+        if (!edited) {
+            unlink(temp);
+            return fail("Could not validate custom profiles: %s", read_err);
+        }
+        char profile_err[256];
+        if (validate_user_profiles_text(edited, profile_err,
+                                        sizeof(profile_err)) == 0) {
+            free(edited);
+            break;
+        }
+
+        cctl_stream_fprintf(stderr, "%sInvalid custom profile:%s %s\n",
+                            C_RED, C_RST, profile_err);
+        cctl_stream_printf("Reopen the editor? [Y/n] ");
+        fflush(stdout);
+        char answer[16];
+        int got_answer = fgets(answer, sizeof(answer), stdin) != NULL;
+        cctl_stream_putchar('\n');
+        if (!got_answer || answer[0] == 'n' || answer[0] == 'N') {
+            free(edited);
+            unlink(temp);
+            return fail("No changes saved.");
+        }
+        free(edited);
     }
 
     if (geteuid() == 0) {
@@ -427,7 +461,7 @@ static void print_max_profile_note(void)
            C_YLW, C_RST);
 }
 
-static int cmd_set(int argc, char **argv)
+static int cmd_set_impl(int argc, char **argv)
 {
     int nosafe = 0;
     const char *pos[1] = {NULL};
@@ -550,6 +584,27 @@ static int cmd_set(int argc, char **argv)
             print_done();
         }
     }
+    return rc;
+}
+
+static int cmd_set(int argc, char **argv)
+{
+    int prev_mode = g_stream_mode;
+    int prev_line = g_stream_line;
+    int prev_error_mode = g_stream_error_mode;
+    int prev_error_line = g_stream_error_line;
+
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
+    g_stream_error_mode = STREAM_MODE_LINE;
+    g_stream_error_line = 0;
+
+    int rc = cmd_set_impl(argc, argv);
+
+    g_stream_mode = prev_mode;
+    g_stream_line = prev_line;
+    g_stream_error_mode = prev_error_mode;
+    g_stream_error_line = prev_error_line;
     return rc;
 }
 
@@ -1082,10 +1137,40 @@ static int cmd_kbe(int argc, char **argv)
     return kbe_start(fx->name);
 }
 
+static void kbn_print_usage(void)
+{
+    int prev_mode = g_stream_mode;
+    int prev_line = g_stream_line;
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
+
+    cctl_stream_printf("%sUsage:%s %scctl kbn <effect> <color> [times]%s\n\n",
+           C_BLD, C_RST, C_CYN_BLD, C_RST);
+    cctl_stream_printf("%sEffects:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  %sflash%s    <color> [times]  Brief on/off flash\n", C_CYN, C_RST);
+    cctl_stream_printf("  %spulse%s    <color> [times]  Heartbeat pulse\n", C_CYN, C_RST);
+    cctl_stream_printf("  %ssos%s      <color> [times]  SOS signal\n", C_CYN, C_RST);
+    cctl_stream_printf("  %spolice%s   [<color1> <color2> [times]]\n", C_CYN, C_RST);
+    cctl_stream_printf("           Alternating lights (red/blue by default)\n");
+    cctl_stream_printf("\n%sColors:%s azure, blue, coral, cyan, green, lime, orange, pink,\n",
+           C_YLW, C_RST);
+    cctl_stream_printf("        purple, red, white, yellow, or a hex color such as '#ff3040'\n");
+    cctl_stream_printf("%sTimes:%s 1-20 repeats (default: 1)\n\n", C_YLW, C_RST);
+    cctl_stream_printf("%sExamples:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  cctl kbn pulse red 2\n");
+    cctl_stream_printf("  cctl kbn police\n");
+    cctl_stream_printf("  cctl kbn police orange pink 2\n");
+
+    g_stream_mode = prev_mode;
+    g_stream_line = prev_line;
+}
+
 static int cmd_kbn(int argc, char **argv)
 {
-    if (argc < 3)
-        return fail("Usage: cctl kbn <flash|pulse|sos> <color> [times]\n       cctl kbn police [<color1> <color2> [times]]");
+    if (argc < 3) {
+        kbn_print_usage();
+        return 0;
+    }
     const char *effect = argv[2];
     int r = 255, g = 0, b = 0, alt_r = 0, alt_g = 0, alt_b = 255;
     int times = 1;
@@ -1103,14 +1188,17 @@ static int cmd_kbn(int argc, char **argv)
                 (safe_atoi(argv[5], &times) < 0 || times < 1 || times > 20))
                 return fail("Times must be a whole number from 1 to 20");
         } else {
-            return fail("Usage: cctl kbn police [<color1> <color2> [times]]");
+            kbn_print_usage();
+            return 1;
         }
     } else {
         if (strcmp(effect, "flash") != 0 && strcmp(effect, "pulse") != 0 &&
             strcmp(effect, "sos") != 0)
             return fail("Unknown notification effect '%s'; use flash, pulse, sos, or police", effect);
-        if (argc != 4 && argc != 5)
-            return fail("Usage: cctl kbn <flash|pulse|sos> <color> [times]");
+        if (argc != 4 && argc != 5) {
+            kbn_print_usage();
+            return 1;
+        }
         if (kbn_parse_color(argv[3], &r, &g, &b) < 0)
             return fail("Unknown color '%s'; use a kbc preset or #RRGGBB", argv[3]);
         if (argc == 5 &&

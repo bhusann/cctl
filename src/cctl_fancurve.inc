@@ -73,6 +73,8 @@ struct fancurve_state {
     time_t epoch;
     int sleep_monitor;
     char name[FANCURVE_NAME_MAX + 1];
+    int profile_known;
+    struct fancurve_profile profile;
 };
 
 /* ---------------------------------------------------------------- names */
@@ -1009,6 +1011,35 @@ static int fc_read_state(struct fancurve_state *st)
         st->sleep_monitor = (int)value;
     }
 
+    if (fgets(line, sizeof(line), fp)) {
+        int hyst, interval, points;
+        char extra;
+        line[strcspn(line, "\r\n")] = '\0';
+        if (sscanf(line, "config=%d %d %d%c", &hyst, &interval, &points, &extra) == 3 &&
+            points >= FANCURVE_MIN_POINTS && points <= FANCURVE_MAX_POINTS) {
+            struct fancurve_profile profile = {0};
+            snprintf(profile.name, sizeof(profile.name), "%s", st->name);
+            profile.hysteresis = hyst;
+            profile.interval_ms = interval;
+            profile.npoints = points;
+            int valid = 1;
+            for (int i = 0; i < points; i++) {
+                if (!fgets(line, sizeof(line), fp)) { valid = 0; break; }
+                line[strcspn(line, "\r\n")] = '\0';
+                if (sscanf(line, "point=%d %d%c", &profile.points[i].temp,
+                           &profile.points[i].fan, &extra) != 2) {
+                    valid = 0;
+                    break;
+                }
+            }
+            char err[128];
+            if (valid && fancurve_validate(&profile, NULL, err, sizeof(err)) == 0) {
+                st->profile = profile;
+                st->profile_known = 1;
+            }
+        }
+    }
+
     fclose(fp);
     return 0;
 }
@@ -1630,10 +1661,14 @@ static int fc_worker_begin(struct fancurve_worker_ctx *ctx,
     if (!fp) goto fail;
     state_fd = -1; /* owned by fp */
 
-    cctl_stream_fprintf(fp, "%d %ld\n%s\n%ld\n%d\n",
+    int failed = cctl_stream_fprintf(fp, "%d %ld\n%s\n%ld\n%d\nconfig=%d %d %d\n",
             (int)getpid(), proc_starttime(getpid()), prof->name, (long)time(NULL),
-            ctx->sleep_monitor_active);
-    if (fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
+            ctx->sleep_monitor_active, prof->hysteresis, prof->interval_ms,
+            prof->npoints) < 0;
+    for (int i = 0; !failed && i < prof->npoints; i++)
+        failed = cctl_stream_fprintf(fp, "point=%d %d\n", prof->points[i].temp,
+                                     prof->points[i].fan) < 0;
+    if (failed || fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
         fclose(fp);
         fp = NULL;
         goto fail;
@@ -2107,6 +2142,19 @@ static int fc_start(const struct fancurve_profile *prof)
     exit(0);
 }
 
+/* Shared validated restart path for the CLI and snapshot restore. */
+static int fc_start_profile(const struct fancurve_profile *prof)
+{
+    char err[256];
+    if (fancurve_validate(prof, NULL, err, sizeof(err)) < 0)
+        return fail("%s", err);
+
+    struct fancurve_state current;
+    if (fc_is_running(&current) && fc_stop_worker(1, 1) != 0)
+        return -1;
+    return fc_start(prof);
+}
+
 /* ----------------------------------------------------------- commands */
 
 static char *fc_make_template(const char *name, int npoints)
@@ -2287,12 +2335,12 @@ static void fc_print_usage(void)
            C_BLD, C_RST, C_CYN_BLD, C_RST);
     cctl_stream_printf("%sActions:%s\n", C_YLW, C_RST);
     cctl_stream_printf("  %s%-19s%s Stop the daemon and return both fans to EC automatic control\n",
-           C_CYN, "stop", C_RST);
+           C_CYN, "stop|st", C_RST);
     cctl_stream_printf("  %s%-19s%s Start a curve (restarts a running curve)\n",
            C_CYN, "start|s <name>", C_RST);
     cctl_stream_printf("  %s%-19s%s Create a profile: prompt for point count, then open the editor\n",
            C_CYN, "create|c <name>", C_RST);
-    cctl_stream_printf("  %s%-19s%s Validate and show a profile\n", C_CYN, "view|v <name>", C_RST);
+    cctl_stream_printf("  %s%-19s%s List profiles, or validate and show one profile\n", C_CYN, "view|v [name]", C_RST);
     cctl_stream_printf("  %s%-19s%s Edit a profile in the editor\n", C_CYN, "edit|e <name>", C_RST);
     cctl_stream_printf("  %s%-19s%s Delete an inactive profile (--noconfirm skips the prompt)\n",
            C_CYN, "del <name>", C_RST);
@@ -2336,11 +2384,7 @@ static int fc_cmd_start(int argc, char **argv)
 
     require_root(argc, argv);
 
-    struct fancurve_state st;
-    if (fc_is_running(&st))
-        fc_stop_worker(1, 1);
-
-    return fc_start(&prof);
+    return fc_start_profile(&prof);
 }
 
 static int fc_cmd_stop(int argc, char **argv)
@@ -2457,8 +2501,12 @@ static int fc_cmd_edit(int argc, char **argv)
 
 static int fc_cmd_view(int argc, char **argv)
 {
+    if (argc == 3) {
+        require_root(argc, argv);
+        return fc_list_profiles();
+    }
     if (argc != 4)
-        return fail("Usage: cctl fancurve view <name>");
+        return fail("Usage: cctl fancurve view [name]");
 
     if (geteuid() != 0 && access(FANCURVE_STATE_PATH, F_OK) == 0)
         require_root(argc, argv);
@@ -2645,7 +2693,8 @@ static int cmd_fancurve(int argc, char **argv)
         fc_print_usage();
         return 0;
     }
-    if (strcmp(action, "stop") == 0 || strcmp(action, "off") == 0)
+    if (strcmp(action, "stop") == 0 || strcmp(action, "st") == 0 ||
+        strcmp(action, "off") == 0)
         return fc_cmd_stop(argc, argv);
     if (strcmp(action, "start") == 0 || strcmp(action, "s") == 0 ||
         strcmp(action, "set") == 0)

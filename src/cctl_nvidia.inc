@@ -664,7 +664,8 @@ static int nvidia_find_pci_address(char *buf, size_t bufsz)
 static int nvidia_pm_set(int on)
 {
     char *const args[] = { "nvidia-smi", "-pm", on ? "1" : "0", NULL };
-    return run(args, 0, NULL, 0);
+    int flags = on ? 0 : RUN_FILTER_NVIDIA_INIT_WARNING;
+    return run(args, flags, NULL, 0);
 }
 
 /* Keep persistence enabled while either cctl-managed clock lock remains. */
@@ -953,7 +954,7 @@ static int nvidia_clock_show_target(const struct nvidia_clk_target *tgt)
 #define NVIDIA_USAGE_STR "nvidia {clock|memclock}"
 #endif
 
-static int cmd_nvidia(int argc, char **argv)
+static int cmd_nvidia_impl(int argc, char **argv)
 {
     if (argc < 3) {
         int prev = g_stream_mode;
@@ -1051,6 +1052,32 @@ static int cmd_nvidia(int argc, char **argv)
         return 1;
     }
     return 0;
+}
+
+static int cmd_nvidia(int argc, char **argv)
+{
+    int clock_command = argc >= 3 &&
+        (strcmp(argv[2], "clock") == 0 || strcmp(argv[2], "memclock") == 0);
+    if (!clock_command)
+        return cmd_nvidia_impl(argc, argv);
+
+    int prev_mode = g_stream_mode;
+    int prev_line = g_stream_line;
+    int prev_error_mode = g_stream_error_mode;
+    int prev_error_line = g_stream_error_line;
+
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
+    g_stream_error_mode = STREAM_MODE_LINE;
+    g_stream_error_line = 0;
+
+    int rc = cmd_nvidia_impl(argc, argv);
+
+    g_stream_mode = prev_mode;
+    g_stream_line = prev_line;
+    g_stream_error_mode = prev_error_mode;
+    g_stream_error_line = prev_error_line;
+    return rc;
 }
 
 static int cmd_status(int argc, char **argv)

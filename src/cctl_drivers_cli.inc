@@ -561,7 +561,7 @@ static const struct command commands[] = {
 
     /* Fan */
     { "fan",            0, cmd_fan,             SEC_FAN,       "auto|max",                          "Set both fans (auto: EC-controlled, max: full speed)", NULL },
-    { "fancurve",       0, cmd_fancurve,        SEC_FAN,       "[action] [name]",                  "Manage fan curves (no arg: status & help)", NULL },
+    { "fancurve",       0, cmd_fancurve,        SEC_FAN,       "[action] [name]",                  "Manage fan curves (alias: fanc; no arg: status & help)", NULL },
 
     /* Experimental fan controls */
     { "fan",            0, cmd_fan,             SEC_EXPERIMENTAL, "silent [--nosafe]",                 "Quiet mode; applies silent/eco profile unless --nosafe", NULL },
@@ -941,7 +941,8 @@ int main(int argc, char **argv)
     int rc = 0;
     size_t num_cmds = sizeof(commands) / sizeof(commands[0]);
     for (size_t i = 0; i < num_cmds; i++) {
-        const char *dispatch_name = strcmp(argv[1], "snap") == 0 ? "snapshot" : argv[1];
+        const char *dispatch_name = strcmp(argv[1], "snap") == 0 ? "snapshot" :
+                                    strcmp(argv[1], "fanc") == 0 ? "fancurve" : argv[1];
         if (strcmp(commands[i].name, dispatch_name) == 0) {
             cmd_found = 1;
             if (commands[i].needs_root && !dry_run)

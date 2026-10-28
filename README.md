@@ -156,7 +156,7 @@ how to choose profile settings and includes examples and safety limits.
 
 Command names:
 - Profiles and setup: `set`, `editconf`, `install`, `uninstall`, `drivers-manage`
-- Keyboard and fans: `kbc`, `kbb`, `kbe`, `kbn`, `fn`, `fan`, `fancurve`
+- Keyboard and fans: `kbc`, `kbb`, `kbe`, `kbn`, `fn`, `fan`, `fancurve` (alias `fanc`)
 - GPU and privacy: `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic`
 - Battery and system info: `bat`, `status`, `--version`
 - Monitors: `cpumon`, `gpumon`
@@ -183,8 +183,10 @@ for details.
 
 To restore saved settings at startup, save them with `cctl snap save <name>` and
 configure your service manager (for example, systemd or runit) to run
-`cctl snap restore <name>`. Snapshots do not include fan settings or active fan
-curves; fan curves do not start automatically at boot.
+`cctl snap restore <name>`. Snapshots include battery charge mode and the active
+fan-curve settings and temperature/fan points, and restore that configuration
+last. Manual fan speeds are not saved. Curves do not start automatically at
+boot unless your startup setup restores a snapshot containing one.
 
 > **Caution:** cctl writes the EC directly. Don't run TCC (`tccd`), NBFC, or
 > another Clevo fan daemon at the same time — they will fight over fan speed and

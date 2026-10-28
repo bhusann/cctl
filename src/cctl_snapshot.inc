@@ -19,9 +19,20 @@ struct cctl_snapshot_data {
     char kbd_effect[32];
     int fn_lock, webcam, microphone;
     int battery_start, battery_stop;
+    char battery_mode[16];
     char display_rate[16];
     int display_scale_known, display_scale_set;
     char display_scale[32];
+    int fancurve_state;
+    struct fancurve_profile fancurve_profile;
+    char fancurve_legacy_name[FANCURVE_NAME_MAX + 1];
+};
+
+enum snapshot_fancurve_state {
+    SNAPSHOT_FANCURVE_SKIP = -1,
+    SNAPSHOT_FANCURVE_NONE = 0,
+    SNAPSHOT_FANCURVE_EMBEDDED = 1,
+    SNAPSHOT_FANCURVE_LEGACY = 2
 };
 
 enum snapshot_field {
@@ -29,7 +40,8 @@ enum snapshot_field {
     SNAPSHOT_GOVERNOR, SNAPSHOT_EPP, SNAPSHOT_PL1, SNAPSHOT_PL2, SNAPSHOT_KBD_R, SNAPSHOT_KBD_G,
     SNAPSHOT_KBD_B, SNAPSHOT_KBD_BRIGHTNESS, SNAPSHOT_KBD_EFFECT, SNAPSHOT_FN_LOCK,
     SNAPSHOT_WEBCAM, SNAPSHOT_MICROPHONE, SNAPSHOT_BATTERY_START, SNAPSHOT_BATTERY_STOP,
-    SNAPSHOT_DISPLAY_RATE, SNAPSHOT_DISPLAY_SCALE,
+    SNAPSHOT_DISPLAY_RATE, SNAPSHOT_DISPLAY_SCALE, SNAPSHOT_FANCURVE,
+    SNAPSHOT_BATTERY_MODE,
     SNAPSHOT_FIELD_COUNT
 };
 
@@ -51,7 +63,8 @@ enum snapshot_mask {
     MASK_BAT           = 1ULL << 14,
     MASK_RR            = 1ULL << 15,
     MASK_SCALE         = 1ULL << 16,
-    MASK_NOSAFE        = 1ULL << 17
+    MASK_NOSAFE        = 1ULL << 17,
+    MASK_FANCURVE      = 1ULL << 18
 };
 
 struct snapshot_mask_option {
@@ -66,6 +79,7 @@ static const struct snapshot_mask_option snapshot_mask_options[] = {
     { "kbe", MASK_KBE }, { "kbc", MASK_KBC }, { "kbb", MASK_KBB },
     { "fn_lock", MASK_FN_LOCK }, { "webcam", MASK_WEBCAM }, { "mic", MASK_MIC },
     { "bat", MASK_BAT }, { "rr", MASK_RR }, { "scale", MASK_SCALE },
+    { "fancurve", MASK_FANCURVE },
     { "nosafe", MASK_NOSAFE }
 };
 
@@ -116,12 +130,17 @@ static void cctl_snapshot_apply_mask(struct cctl_snapshot_data *st,
     if (mask & MASK_FN_LOCK) st->fn_lock = -1;
     if (mask & MASK_WEBCAM) st->webcam = -1;
     if (mask & MASK_MIC) st->microphone = -1;
-    if (mask & MASK_BAT) st->battery_start = st->battery_stop = -1;
+    if (mask & MASK_BAT) {
+        st->battery_start = st->battery_stop = -1;
+        snprintf(st->battery_mode, sizeof(st->battery_mode), "skip");
+    }
     if (mask & MASK_RR) snprintf(st->display_rate, sizeof(st->display_rate), "skip");
     if (mask & MASK_SCALE) {
         st->display_scale_known = -1;
         snprintf(st->display_scale, sizeof(st->display_scale), "skip");
     }
+    if (mask & MASK_FANCURVE)
+        st->fancurve_state = SNAPSHOT_FANCURVE_SKIP;
 }
 
 static void cctl_snapshot_init(struct cctl_snapshot_data *st)
@@ -138,9 +157,11 @@ static void cctl_snapshot_init(struct cctl_snapshot_data *st)
     snprintf(st->kbd_effect, sizeof(st->kbd_effect), "skip");
     st->fn_lock = st->webcam = st->microphone = -1;
     st->battery_start = st->battery_stop = -1;
+    snprintf(st->battery_mode, sizeof(st->battery_mode), "skip");
     snprintf(st->display_rate, sizeof(st->display_rate), "skip");
     st->display_scale_known = -1;
     snprintf(st->display_scale, sizeof(st->display_scale), "skip");
+    st->fancurve_state = SNAPSHOT_FANCURVE_SKIP;
 }
 
 static int cctl_snapshot_name_valid(const char *name)
@@ -306,12 +327,56 @@ static int cctl_snapshot_list(void)
     return 0;
 }
 
-static void cctl_snapshot_read_current(struct cctl_snapshot_data *st)
+static void cctl_snapshot_curve_summary(const struct fancurve_profile *profile,
+                                        char *out, size_t out_size)
+{
+    size_t used = 0;
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    for (int i = 0; profile && i < profile->npoints; i++) {
+        const struct fancurve_point *point = &profile->points[i];
+        char fan[16];
+        if (point->fan == FANCURVE_FAN_AUTO)
+            snprintf(fan, sizeof(fan), "auto");
+        else
+            snprintf(fan, sizeof(fan), "%d%%", point->fan);
+        int wrote = snprintf(out + used, out_size - used, "%s%dC=%s",
+                             i ? ", " : "", point->temp, fan);
+        if (wrote < 0 || (size_t)wrote >= out_size - used) break;
+        used += (size_t)wrote;
+    }
+}
+
+static const char *cctl_snapshot_battery_mode_label(const char *mode)
+{
+    if (strcmp(mode, "standard") == 0) return "Standard";
+    if (strcmp(mode, "custom") == 0) return "Custom";
+    return "--";
+}
+
+static int cctl_snapshot_read_current(struct cctl_snapshot_data *st)
 {
     cctl_snapshot_init(st);
 
     /* Read EC code live from the TCC offset; GPU locks use cctl runtime data. */
     st->ec_profile_code = cctl_live_ec_state(NULL, NULL);
+    struct fancurve_state curve;
+    if (fc_is_running(&curve)) {
+        if (curve.profile_known) {
+            st->fancurve_profile = curve.profile;
+        } else {
+            char err[256];
+            if (fc_load_profile(curve.name, &st->fancurve_profile,
+                                err, sizeof(err)) < 0) {
+                cctl_stream_fprintf(stderr,
+                    "Error: cannot include the active fan curve in the snapshot: %s\n", err);
+                return -1;
+            }
+        }
+        st->fancurve_state = SNAPSHOT_FANCURVE_EMBEDDED;
+    } else {
+        st->fancurve_state = SNAPSHOT_FANCURVE_NONE;
+    }
 
     struct mode_runtime_data mode;
     if (mode_runtime_read(&mode) == 0) {
@@ -379,6 +444,14 @@ static void cctl_snapshot_read_current(struct cctl_snapshot_data *st)
     st->microphone = mic_is_enabled();
     st->battery_start = bat_read_start();
     st->battery_stop = bat_read_end();
+    char charge_mode[32] = {0};
+    if (bat_read_charge_type(charge_mode, sizeof(charge_mode)) >= 0) {
+        if (strcasecmp(charge_mode, "Standard") == 0)
+            snprintf(st->battery_mode, sizeof(st->battery_mode), "standard");
+        else if (strcasecmp(charge_mode, "Custom") == 0)
+            snprintf(st->battery_mode, sizeof(st->battery_mode), "custom");
+    }
+    return 0;
 }
 
 static int cctl_snapshot_write_int(FILE *fp, const char *key, int value)
@@ -393,6 +466,32 @@ static int cctl_snapshot_write_clock(FILE *fp, const char *key, int known, int i
     if (known < 0) return cctl_stream_fprintf(fp, "%s=skip\n", key) < 0 ? -1 : 0;
     if (!is_set) return cctl_stream_fprintf(fp, "%s=none\n", key) < 0 ? -1 : 0;
     return cctl_stream_fprintf(fp, "%s=%d,%d\n", key, min, max) < 0 ? -1 : 0;
+}
+
+static int cctl_snapshot_write_fancurve(FILE *fp,
+                                        const struct cctl_snapshot_data *st)
+{
+    if (st->fancurve_state == SNAPSHOT_FANCURVE_SKIP)
+        return cctl_stream_fprintf(fp, "fancurve=skip\n") < 0 ? -1 : 0;
+    if (st->fancurve_state == SNAPSHOT_FANCURVE_NONE)
+        return cctl_stream_fprintf(fp, "fancurve=none\n") < 0 ? -1 : 0;
+    if (st->fancurve_state != SNAPSHOT_FANCURVE_EMBEDDED)
+        return -1;
+
+    const struct fancurve_profile *profile = &st->fancurve_profile;
+    if (cctl_stream_fprintf(fp, "fancurve=curve:%d:%d:",
+                            profile->hysteresis, profile->interval_ms) < 0)
+        return -1;
+    for (int i = 0; i < profile->npoints; i++) {
+        const struct fancurve_point *point = &profile->points[i];
+        if (cctl_stream_fprintf(fp, "%s%d,%s", i ? ";" : "", point->temp,
+                point->fan == FANCURVE_FAN_AUTO ? "a" : "") < 0)
+            return -1;
+        if (point->fan != FANCURVE_FAN_AUTO &&
+            cctl_stream_fprintf(fp, "%d", point->fan) < 0)
+            return -1;
+    }
+    return cctl_stream_fprintf(fp, "\n") < 0 ? -1 : 0;
 }
 
 static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot_data *st)
@@ -412,7 +511,7 @@ static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot
         int e = errno; close(fd); unlink(temp_path); errno = e; return -1;
     }
 
-    int failed = cctl_stream_fprintf(fp, "# cctl saved snapshot format 2\nversion=2\n") < 0;
+    int failed = cctl_stream_fprintf(fp, "# cctl saved snapshot format 5\nversion=5\n") < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "ec_profile_code", st->ec_profile_code) < 0;
     if (!failed) failed = cctl_snapshot_write_clock(fp, "nvidia_clock", st->core_clock_known,
                                                   st->core_clock_set, st->core_clock_min,
@@ -434,12 +533,14 @@ static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot
     if (!failed) failed = cctl_snapshot_write_int(fp, "microphone", st->microphone) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "battery_start", st->battery_start) < 0;
     if (!failed) failed = cctl_snapshot_write_int(fp, "battery_stop", st->battery_stop) < 0;
+    if (!failed) failed = cctl_stream_fprintf(fp, "battery_mode=%s\n", st->battery_mode) < 0;
     if (!failed) failed = cctl_stream_fprintf(fp, "display_rate=%s\n", st->display_rate) < 0;
     if (!failed) {
         const char *scale = st->display_scale_known < 0 ? "skip" :
                             st->display_scale_set ? st->display_scale : "none";
         failed = cctl_stream_fprintf(fp, "display_scale=%s\n", scale) < 0;
     }
+    if (!failed) failed = cctl_snapshot_write_fancurve(fp, st) < 0;
 
     if (!failed && fflush(fp) != 0) failed = 1;
     if (!failed && fsync(fd) != 0) failed = 1;
@@ -489,6 +590,56 @@ static int cctl_snapshot_copy_token(char *dst, size_t size, const char *value)
     return 0;
 }
 
+static int cctl_snapshot_parse_curve_int(char **cursor, int *value, char delimiter)
+{
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(*cursor, &end, 10);
+    if (errno || end == *cursor || parsed < INT_MIN || parsed > INT_MAX ||
+        !end || *end != delimiter)
+        return -1;
+    *value = (int)parsed;
+    *cursor = end + 1;
+    return 0;
+}
+
+static int cctl_snapshot_parse_fancurve_config(const char *value,
+                                                struct fancurve_profile *profile)
+{
+    if (strncmp(value, "curve:", 6) != 0) return -1;
+    memset(profile, 0, sizeof(*profile));
+    snprintf(profile->name, sizeof(profile->name), "snapshot");
+    char *cursor = (char *)value + 6;
+    if (cctl_snapshot_parse_curve_int(&cursor, &profile->hysteresis, ':') < 0 ||
+        cctl_snapshot_parse_curve_int(&cursor, &profile->interval_ms, ':') < 0)
+        return -1;
+
+    while (*cursor) {
+        if (profile->npoints >= FANCURVE_MAX_POINTS) return -1;
+        struct fancurve_point *point = &profile->points[profile->npoints];
+        if (cctl_snapshot_parse_curve_int(&cursor, &point->temp, ',') < 0)
+            return -1;
+        if (*cursor == 'a') {
+            point->fan = FANCURVE_FAN_AUTO;
+            cursor++;
+        } else {
+            errno = 0;
+            char *end = NULL;
+            long fan = strtol(cursor, &end, 10);
+            if (errno || end == cursor || fan < INT_MIN || fan > INT_MAX)
+                return -1;
+            point->fan = (int)fan;
+            cursor = end;
+        }
+        profile->npoints++;
+        if (*cursor == '\0') break;
+        if (*cursor++ != ';' || *cursor == '\0') return -1;
+    }
+
+    char err[128];
+    return fancurve_validate(profile, NULL, err, sizeof(err));
+}
+
 static int cctl_snapshot_parse_field(struct cctl_snapshot_data *st, const char *key,
                                   const char *value, unsigned long long *seen)
 {
@@ -496,23 +647,19 @@ static int cctl_snapshot_parse_field(struct cctl_snapshot_data *st, const char *
 #define SNAPSHOT_FIELD(name, index, expression) \
     if (strcmp(key, name) == 0) { field = index; rc = (expression); }
     SNAPSHOT_FIELD("version", SNAPSHOT_VERSION,
-                strcmp(value, "2") == 0 ? 0 : -1)
+                (strcmp(value, "2") == 0 || strcmp(value, "3") == 0 ||
+                 strcmp(value, "4") == 0 || strcmp(value, "5") == 0) ? 0 : -1)
     else SNAPSHOT_FIELD("ec_profile_code", SNAPSHOT_EC, cctl_snapshot_parse_int(value, 0, 3, &st->ec_profile_code))
     else SNAPSHOT_FIELD("nvidia_clock", SNAPSHOT_GPU_CLOCK, cctl_snapshot_parse_clock(value, &st->core_clock_known, &st->core_clock_set, &st->core_clock_min, &st->core_clock_max))
     else SNAPSHOT_FIELD("nvidia_memclock", SNAPSHOT_MEM_CLOCK, cctl_snapshot_parse_clock(value, &st->mem_clock_known, &st->mem_clock_set, &st->mem_clock_min, &st->mem_clock_max))
     else SNAPSHOT_FIELD("turbo", SNAPSHOT_TURBO, cctl_snapshot_parse_int(value, 0, 1, &st->turbo))
     else if (strcmp(key, "governor") == 0) {
         field = SNAPSHOT_GOVERNOR;
-        rc = (strcmp(value, "skip") == 0 || strcmp(value, "powersave") == 0 ||
-              strcmp(value, "performance") == 0)
-             ? cctl_snapshot_copy_token(st->governor, sizeof(st->governor), value) : -1;
+        rc = cctl_snapshot_copy_token(st->governor, sizeof(st->governor), value);
     }
     else if (strcmp(key, "epp") == 0) {
         field = SNAPSHOT_EPP;
-        rc = (strcmp(value, "skip") == 0 || strcmp(value, "performance") == 0 ||
-              strcmp(value, "balance_performance") == 0 || strcmp(value, "balance_power") == 0 ||
-              strcmp(value, "power") == 0)
-             ? cctl_snapshot_copy_token(st->epp, sizeof(st->epp), value) : -1;
+        rc = cctl_snapshot_copy_token(st->epp, sizeof(st->epp), value);
     }
     else SNAPSHOT_FIELD("pl1_watts", SNAPSHOT_PL1, cctl_snapshot_parse_int(value, 1, 90, &st->pl1))
     else SNAPSHOT_FIELD("pl2_watts", SNAPSHOT_PL2, cctl_snapshot_parse_int(value, 1, 115, &st->pl2))
@@ -535,6 +682,14 @@ static int cctl_snapshot_parse_field(struct cctl_snapshot_data *st, const char *
     else SNAPSHOT_FIELD("microphone", SNAPSHOT_MICROPHONE, cctl_snapshot_parse_int(value, 0, 1, &st->microphone))
     else SNAPSHOT_FIELD("battery_start", SNAPSHOT_BATTERY_START, cctl_snapshot_parse_int(value, 1, 100, &st->battery_start))
     else SNAPSHOT_FIELD("battery_stop", SNAPSHOT_BATTERY_STOP, cctl_snapshot_parse_int(value, 1, 100, &st->battery_stop))
+    else if (strcmp(key, "battery_mode") == 0) {
+        field = SNAPSHOT_BATTERY_MODE;
+        if (strcmp(value, "skip") == 0 || strcmp(value, "standard") == 0 ||
+            strcmp(value, "custom") == 0) {
+            snprintf(st->battery_mode, sizeof(st->battery_mode), "%s", value);
+            rc = 0;
+        }
+    }
     else if (strcmp(key, "display_rate") == 0) {
         field = SNAPSHOT_DISPLAY_RATE;
         size_t len = strlen(value);
@@ -564,6 +719,26 @@ static int cctl_snapshot_parse_field(struct cctl_snapshot_data *st, const char *
                 st->display_scale_known = st->display_scale_set = 1;
                 snprintf(st->display_scale, sizeof(st->display_scale), "%s", value);
             }
+        }
+    }
+    else if (strcmp(key, "fancurve") == 0) {
+        field = SNAPSHOT_FANCURVE;
+        if (strcmp(value, "skip") == 0) {
+            st->fancurve_state = SNAPSHOT_FANCURVE_SKIP;
+            rc = 0;
+        } else if (strcmp(value, "none") == 0) {
+            st->fancurve_state = SNAPSHOT_FANCURVE_NONE;
+            rc = 0;
+        } else if (strncmp(value, "profile:", 8) == 0 &&
+                   fancurve_name_valid(value + 8)) {
+            st->fancurve_state = SNAPSHOT_FANCURVE_LEGACY;
+            snprintf(st->fancurve_legacy_name, sizeof(st->fancurve_legacy_name),
+                     "%s", value + 8);
+            rc = 0;
+        } else if (cctl_snapshot_parse_fancurve_config(
+                       value, &st->fancurve_profile) == 0) {
+            st->fancurve_state = SNAPSHOT_FANCURVE_EMBEDDED;
+            rc = 0;
         }
     }
 #undef SNAPSHOT_FIELD
@@ -598,32 +773,32 @@ static int cctl_snapshot_read_file(const char *name, struct cctl_snapshot_data *
         if (!eq) { failed = 1; break; }
         *eq++ = '\0';
         if (strcmp(line, "version") == 0)
-            file_version = strcmp(eq, "2") == 0 ? 2 : 0;
+            file_version = (strcmp(eq, "2") == 0 || strcmp(eq, "3") == 0 ||
+                            strcmp(eq, "4") == 0 || strcmp(eq, "5") == 0)
+                         ? atoi(eq) : 0;
         if (cctl_snapshot_parse_field(st, line, eq, &seen) != 0) { failed = 1; break; }
     }
     unsigned long long required = (1ULL << SNAPSHOT_FIELD_COUNT) - 1;
+    if (file_version < 3)
+        required &= ~(1ULL << SNAPSHOT_FANCURVE);
+    if (file_version < 5)
+        required &= ~(1ULL << SNAPSHOT_BATTERY_MODE);
     if (ferror(fp) || file_version == 0 || seen != required) failed = 1;
     fclose(fp);
+    if (!failed && st->fancurve_state == SNAPSHOT_FANCURVE_LEGACY) {
+        char err[256];
+        if (fc_load_profile(st->fancurve_legacy_name, &st->fancurve_profile,
+                            err, sizeof(err)) == 0)
+            st->fancurve_state = SNAPSHOT_FANCURVE_EMBEDDED;
+    }
     return failed ? -1 : 0;
-}
-
-static int cctl_snapshot_restore_needs_fan_auto(const struct cctl_snapshot_data *st)
-{
-    if (ec_profile_needs_fan_auto(st->ec_profile_code))
-        return 1;
-    if (st->turbo != 1)
-        return 0;
-
-    int ec_code = st->ec_profile_code >= 0
-                ? st->ec_profile_code : cctl_live_ec_state(NULL, NULL);
-    return ec_profile_needs_fan_auto(ec_code);
 }
 
 static void cctl_snapshot_preview_restore(const char *name,
                                           const struct cctl_snapshot_data *st,
                                           int nosafe)
 {
-    char value[96];
+    char value[512];
     cctl_stream_printf("Dry run: snapshot '%s' would restore these settings; nothing was changed.\n",
            name);
 #define SNAPSHOT_PREVIEW(label, expression) do { \
@@ -642,9 +817,11 @@ static void cctl_snapshot_preview_restore(const char *name,
     SNAPSHOT_PREVIEW("EPP", strcmp(st->epp, "skip") == 0 ? "skip (not saved)" : st->epp);
     int preview_cur_pl1 = -1, preview_cur_pl2 = -1;
     read_rapl_current(&preview_cur_pl1, &preview_cur_pl2);
+    int preview_pl1_cap = st->ec_profile_code == 2
+                        ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
 
     if (st->pl1 >= 0) {
-        if (st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2)
+        if (!rapl_pl1_within_cap(st->pl1, preview_pl1_cap))
             snprintf(value, sizeof(value), "%dW (skipped: requires EC profile code 2)", st->pl1);
         else
             snprintf(value, sizeof(value), "%dW", st->pl1);
@@ -653,7 +830,10 @@ static void cctl_snapshot_preview_restore(const char *name,
     if (st->pl2 >= 0) {
         int eff_p1 = (st->pl1 >= 0 && !(st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2))
                      ? st->pl1 : preview_cur_pl1;
-        if (eff_p1 > 0 && st->pl2 <= eff_p1)
+        if (!rapl_pl2_within_cap(st->pl2))
+            snprintf(value, sizeof(value), "%dW (skipped: maximum is %dW)",
+                     st->pl2, RAPL_PL2_MAX_WATTS);
+        else if (!rapl_pl2_above_pl1(eff_p1, st->pl2))
             snprintf(value, sizeof(value), "%dW (skipped: not > %s PL1 %dW)", st->pl2,
                      st->pl1 < 0 ? "current" : "effective", eff_p1);
         else
@@ -688,6 +868,9 @@ static void cctl_snapshot_preview_restore(const char *name,
     if (st->microphone >= 0) SNAPSHOT_PREVIEW("Microphone", st->microphone ? "on" : "off");
     else SNAPSHOT_PREVIEW("Microphone", "skip (not saved)");
 
+    SNAPSHOT_PREVIEW("Battery charge mode",
+        strcmp(st->battery_mode, "skip") == 0 ? "skip (not saved)" :
+        cctl_snapshot_battery_mode_label(st->battery_mode));
     if (st->battery_start >= 0 || st->battery_stop >= 0) {
         char start[24], stop[24];
         int current_start = st->battery_start >= 0 ? st->battery_start : bat_read_start();
@@ -705,22 +888,23 @@ static void cctl_snapshot_preview_restore(const char *name,
     SNAPSHOT_PREVIEW("Refresh rate", strcmp(st->display_rate, "skip") == 0 ? "skip (not saved)" : st->display_rate);
     if (st->display_scale_known < 0) SNAPSHOT_PREVIEW("Display scale", "skip (not saved)");
     else SNAPSHOT_PREVIEW("Display scale", st->display_scale_set ? st->display_scale : "native (reset)");
+    if (st->fancurve_state == SNAPSHOT_FANCURVE_SKIP)
+        SNAPSHOT_PREVIEW("Fan curve", "skip (not saved)");
+    else if (st->fancurve_state == SNAPSHOT_FANCURVE_NONE)
+        SNAPSHOT_PREVIEW("Fan curve", "none (stop an active curve)");
+    else if (st->fancurve_state == SNAPSHOT_FANCURVE_EMBEDDED) {
+        cctl_snapshot_curve_summary(&st->fancurve_profile, value, sizeof(value));
+        cctl_stream_printf("  %-22s %s\n", "Fan curve", value);
+    } else SNAPSHOT_PREVIEW("Fan curve", "curve config unavailable in older snapshot");
 #undef SNAPSHOT_PREVIEW
-    int needs_fan_auto = cctl_snapshot_restore_needs_fan_auto(st);
-    struct fancurve_state curve_st;
-    int curve_active = fc_any_active(&curve_st);
-    if (!nosafe && needs_fan_auto && curve_active) {
-        char curve_label[160];
-        fc_active_label(&curve_st, curve_label, sizeof(curve_label));
-        cctl_stream_printf("Fan safety: skipped; %s keeps control of the fans.\n", curve_label);
-    } else if (!nosafe && needs_fan_auto) {
-        cctl_stream_puts("Fan safety: fans would be set to AUTO (use --mask nosafe to bypass).");
-    } else if (nosafe && needs_fan_auto) {
-        cctl_stream_puts("Fan safety: automatic fan change bypassed (--mask nosafe).");
-    } else {
-        cctl_stream_puts("Fan safety: no automatic fan change for these targets.");
-    }
-    cctl_stream_puts("Fan settings are not saved in snapshots.");
+    struct fancurve_state current_curve;
+    if (fc_any_active(&current_curve))
+        cctl_stream_puts("Fan safety: active curve keeps control during restore; initial AUTO is skipped.");
+    else if (nosafe)
+        cctl_stream_puts("Fan safety: initial AUTO skipped (--mask nosafe).");
+    else
+        cctl_stream_puts("Fan safety: fans set to AUTO before restore; saved curve state is applied last.");
+    cctl_stream_puts("Manual fan speeds are not saved; the saved fan curve configuration is restored last.");
 }
 
 static const char *cctl_snapshot_value(int value, char *buf, size_t size)
@@ -765,11 +949,23 @@ static void cctl_snapshot_view(const char *name, const struct cctl_snapshot_data
     cctl_stream_printf("  Battery thresholds: %s%% → %s%%\n",
            cctl_snapshot_value(st->battery_start, buf, sizeof(buf)),
            cctl_snapshot_value(st->battery_stop, buf + 32, sizeof(buf) - 32));
+    cctl_stream_printf("  Battery charge mode: %s\n",
+           cctl_snapshot_battery_mode_label(st->battery_mode));
     cctl_stream_printf("  Refresh rate: %s%s\n", strcmp(st->display_rate, "skip") == 0 ? "--" : st->display_rate,
            strcmp(st->display_rate, "skip") == 0 ? "" : "Hz");
     if (st->display_scale_known < 0) cctl_stream_printf("  Display scale: --\n");
     else if (st->display_scale_set) cctl_stream_printf("  Display scale: %s\n", st->display_scale);
     else cctl_stream_printf("  Display scale: native (1x1)\n");
+    if (st->fancurve_state == SNAPSHOT_FANCURVE_SKIP)
+        cctl_stream_printf("  Fan curve: --\n");
+    else if (st->fancurve_state == SNAPSHOT_FANCURVE_NONE)
+        cctl_stream_printf("  Fan curve: none (stopped)\n");
+    else if (st->fancurve_state == SNAPSHOT_FANCURVE_EMBEDDED) {
+        char curve_summary[512];
+        cctl_snapshot_curve_summary(&st->fancurve_profile,
+                                    curve_summary, sizeof(curve_summary));
+        cctl_stream_printf("  Fan curve points: %s\n", curve_summary);
+    } else cctl_stream_printf("  Fan curve: unavailable (older snapshot)\n");
     g_stream_mode = prev;
 }
 
@@ -799,7 +995,8 @@ static int cctl_snapshot_save(const char *name, unsigned long long mask)
     }
 
     struct cctl_snapshot_data st;
-    cctl_snapshot_read_current(&st);
+    if (cctl_snapshot_read_current(&st) != 0)
+        return 1;
     cctl_snapshot_apply_mask(&st, mask);
     if (cctl_snapshot_write_file(name, &st) != 0) {
         cctl_stream_perror("Error: could not save snapshot");
@@ -849,6 +1046,98 @@ static int cctl_snapshot_apply_step(const char *name, int rc, int *errors)
     return 0;
 }
 
+static void cctl_snapshot_restore_battery(const struct cctl_snapshot_data *st,
+                                          int *errors)
+{
+    int have_targets = st->battery_start >= 0 || st->battery_stop >= 0;
+    int current_start = bat_read_start();
+    int current_stop = bat_read_end();
+    int target_start = st->battery_start >= 0 ? st->battery_start : current_start;
+    int target_stop = st->battery_stop >= 0 ? st->battery_stop : current_stop;
+    int thresholds_available = target_start > 0 && target_stop > 0;
+    int thresholds_match = thresholds_available &&
+                           current_start == target_start && current_stop == target_stop;
+    char current_mode[32] = {0};
+    int have_mode = bat_read_charge_type(current_mode, sizeof(current_mode)) >= 0;
+
+    if (strcmp(st->battery_mode, "standard") == 0) {
+        int thresholds_reapplied = have_targets && thresholds_available && !thresholds_match;
+        if (thresholds_reapplied)
+            cctl_snapshot_apply_step("battery thresholds",
+                bat_set(target_start, target_stop), errors);
+        else if (have_targets && !thresholds_available) {
+            cctl_stream_fprintf(stderr,
+                "  %sCould not restore saved battery thresholds; current values are unavailable.%s\n",
+                C_RED, C_RST);
+            (*errors)++;
+        }
+        if (have_targets && thresholds_available && !thresholds_reapplied)
+            cctl_stream_printf("  Charge thresholds: start %d%% → stop %d%%%s\n",
+                               target_start, target_stop, snapshot_unchanged_tag());
+
+        if (!thresholds_reapplied && have_mode &&
+            strcasecmp(current_mode, "Standard") == 0) {
+            cctl_stream_printf("  Battery charge mode: Standard%s\n",
+                               snapshot_unchanged_tag());
+        } else if (cctl_snapshot_apply_step("battery charge mode",
+                    bat_set_charge_type("Standard"), errors) == 0) {
+            cctl_stream_printf("  Battery charge mode: Standard%s\n",
+                               snapshot_applied_tag());
+        }
+        return;
+    }
+
+    if (strcmp(st->battery_mode, "custom") == 0) {
+        if (have_targets && thresholds_available) {
+            if (have_mode && strcasecmp(current_mode, "Custom") == 0 && thresholds_match) {
+                cctl_stream_printf("  Battery charge mode: Custom%s\n",
+                                   snapshot_unchanged_tag());
+                cctl_stream_printf("  Charge thresholds: start %d%% → stop %d%%%s\n",
+                                   target_start, target_stop, snapshot_unchanged_tag());
+            } else {
+                cctl_snapshot_apply_step("battery thresholds",
+                    bat_set(target_start, target_stop), errors);
+            }
+        } else {
+            if (have_targets) {
+                cctl_stream_fprintf(stderr,
+                    "  %sCould not restore saved battery thresholds; current values are unavailable.%s\n",
+                    C_RED, C_RST);
+                (*errors)++;
+            }
+            if (have_mode && strcasecmp(current_mode, "Custom") == 0) {
+                cctl_stream_printf("  Battery charge mode: Custom%s\n",
+                                   snapshot_unchanged_tag());
+            } else if (cctl_snapshot_apply_step("battery charge mode",
+                        bat_set_charge_type("Custom"), errors) == 0) {
+                cctl_stream_printf("  Battery charge mode: Custom%s\n",
+                                   snapshot_applied_tag());
+            }
+        }
+        return;
+    }
+
+    /* Older snapshots and masked fields have no saved mode. Preserve the
+     * original behavior: restoring thresholds selects Custom mode. */
+    if (!have_targets) {
+        cctl_stream_printf("  %sSkipping battery settings (not saved).%s\n", C_DIM, C_RST);
+    } else if (thresholds_available && have_mode &&
+               strcasecmp(current_mode, "Custom") == 0 && thresholds_match) {
+        cctl_stream_printf("  Battery charge mode: Custom%s\n",
+                           snapshot_unchanged_tag());
+        cctl_stream_printf("  Charge thresholds: start %d%% → stop %d%%%s\n",
+                           target_start, target_stop, snapshot_unchanged_tag());
+    } else if (thresholds_available) {
+        cctl_snapshot_apply_step("battery thresholds",
+            bat_set(target_start, target_stop), errors);
+    } else {
+        cctl_stream_fprintf(stderr,
+            "  %sCould not restore saved battery thresholds; current values are unavailable.%s\n",
+            C_RED, C_RST);
+        (*errors)++;
+    }
+}
+
 static void cctl_snapshot_apply_fan_safety(const char *target, int nosafe,
                                            int *fans_auto_applied,
                                            int *fan_safety_bypassed,
@@ -875,6 +1164,52 @@ static void cctl_snapshot_apply_fan_safety(const char *target, int nosafe,
         *fans_auto_applied = 1;
 }
 
+static void cctl_snapshot_restore_fancurve(const char *snapshot_name,
+                                           const struct cctl_snapshot_data *st,
+                                           int *errors)
+{
+    if (st->fancurve_state == SNAPSHOT_FANCURVE_SKIP) {
+        cctl_stream_printf("  %sSkipping fan curve (not saved).%s\n", C_DIM, C_RST);
+        return;
+    }
+
+    struct fancurve_state current;
+    int active = fc_is_running(&current);
+    if (st->fancurve_state == SNAPSHOT_FANCURVE_NONE) {
+        if (!active) {
+            cctl_stream_printf("  Fan curve: none (stopped)%s\n", snapshot_unchanged_tag());
+            return;
+        }
+        cctl_stream_printf("  Fan curve: stopping active curve (snapshot has none)\n");
+        cctl_snapshot_apply_step("fan curve stop", fc_stop_worker(1, 1), errors);
+        return;
+    }
+
+    struct fancurve_profile profile = st->fancurve_profile;
+    if (st->fancurve_state == SNAPSHOT_FANCURVE_LEGACY) {
+        char err[256];
+        if (fc_load_profile(st->fancurve_legacy_name, &profile,
+                            err, sizeof(err)) < 0) {
+            cctl_stream_fprintf(stderr,
+                "  %sCould not restore the fan curve from this older snapshot: %s.%s\n",
+                C_RED, err, C_RST);
+            (*errors)++;
+            return;
+        }
+    }
+    snprintf(profile.name, sizeof(profile.name), "snapshot-%s", snapshot_name);
+    char curve_summary[512];
+    cctl_snapshot_curve_summary(&profile, curve_summary, sizeof(curve_summary));
+
+    if (active) {
+        cctl_stream_printf("  Fan curve: replacing active curve with points %s\n",
+                           curve_summary);
+    } else {
+        cctl_stream_printf("  Fan curve: starting points %s\n", curve_summary);
+    }
+    cctl_snapshot_apply_step("fan curve restore", fc_start_profile(&profile), errors);
+}
+
 static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_data *st, int nosafe)
 {
     int prev = g_stream_mode;
@@ -885,6 +1220,25 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     int fans_auto_applied = 0;
     int fan_safety_bypassed = 0;
     cctl_stream_printf("Restoring snapshot '%s' one setting at a time...\n", name);
+
+    struct fancurve_state current_curve;
+    int curve_active_at_start = fc_is_running(&current_curve);
+    if (curve_active_at_start) {
+        cctl_stream_printf("Active fan curve detected; it keeps control during restore.\n");
+        fan_safety_bypassed = 1;
+    } else if (!nosafe) {
+        cctl_stream_printf("Setting both fans to AUTO before snapshot restore...\n");
+        if (fan_auto_all() != 0) {
+            cctl_stream_fprintf(stderr,
+                "Error: could not restore EC automatic fan control; snapshot restore was stopped.\n");
+            g_snapshot_restoring = 0;
+            g_stream_mode = prev;
+            return 1;
+        }
+        fans_auto_applied = 1;
+    } else {
+        cctl_stream_printf("Skipping initial fan AUTO (--mask nosafe).\n");
+    }
 
     /* 1. EC profile code: apply the saved code when present. */
     cctl_snapshot_divider();
@@ -972,8 +1326,10 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     int need_pl2 = (st->pl2 >= 0 && st->pl2 != cur_pl2);
 
     cctl_snapshot_divider();
+    int snapshot_pl1_cap = st->ec_profile_code == 2
+                         ? RAPL_PL1_MAX_WATTS_MAX : RAPL_PL1_MAX_WATTS;
     int pl1_rejected = 0;
-    if (st->pl1 > RAPL_PL1_MAX_WATTS && st->ec_profile_code != 2) {
+    if (st->pl1 > 0 && !rapl_pl1_within_cap(st->pl1, snapshot_pl1_cap)) {
         if (st->pl2 >= 0) {
             cctl_stream_printf("  %sNote:%s EC profile code 2 is needed to set RAPL PL1 above 45W (saved: %dW).\n"
                    "        Skipping PL1 and restoring PL2 (%dW) alone.\n",
@@ -989,7 +1345,8 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
 
     int pl2_rejected = 0;
     int eff_pl1 = (st->pl1 >= 0 && !pl1_rejected) ? st->pl1 : cur_pl1;
-    if (st->pl2 >= 0 && eff_pl1 > 0 && st->pl2 <= eff_pl1) {
+    if (st->pl2 > 0 && (!rapl_pl2_within_cap(st->pl2) ||
+                        !rapl_pl2_above_pl1(eff_pl1, st->pl2))) {
         cctl_stream_printf("  %sNote:%s Saved PL2 (%dW) must be greater than %s PL1 (%dW). Skipping PL2.\n",
                C_YLW, C_RST, st->pl2,
                (st->pl1 < 0) ? "current system" : (pl1_rejected ? "live" : "restored"),
@@ -1204,30 +1561,9 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         cctl_stream_printf("  %sSkipping microphone (not saved).%s\n", C_DIM, C_RST);
     }
 
-    /* 11. Battery thresholds: query live state; skip if already matching */
+    /* 11. Battery charge mode and thresholds. */
     cctl_snapshot_divider();
-    if (st->battery_start >= 0 || st->battery_stop >= 0) {
-        int cur_start = bat_read_start();
-        int cur_stop = bat_read_end();
-        char cur_charge_type[32] = {0};
-        int have_charge_type = bat_read_charge_type(cur_charge_type, sizeof(cur_charge_type)) >= 0;
-        int target_start = st->battery_start >= 0 ? st->battery_start : cur_start;
-        int target_stop = st->battery_stop >= 0 ? st->battery_stop : cur_stop;
-        if (cur_start > 0 && cur_stop > 0 && have_charge_type &&
-            strcmp(cur_charge_type, "Custom") == 0 &&
-            target_start == cur_start && target_stop == cur_stop) {
-            cctl_stream_printf("  Set charge thresholds: start %d%% → stop %d%%%s\n",
-                   cur_start, cur_stop, snapshot_unchanged_tag());
-        } else if (target_start > 0 && target_stop > 0) {
-            cctl_snapshot_apply_step("battery thresholds", bat_set(target_start, target_stop), &errors);
-        } else {
-            cctl_stream_fprintf(stderr, "  %sFailed to restore battery thresholds; current values are unavailable.%s\n",
-                    C_RED, C_RST);
-            errors++;
-        }
-    } else {
-        cctl_stream_printf("  %sSkipping battery thresholds (not saved).%s\n", C_DIM, C_RST);
-    }
+    cctl_snapshot_restore_battery(st, &errors);
 
     /* 12. Display refresh rate: query live state; skip if already matching (prevents X11 mode reset / flicker) */
     cctl_snapshot_divider();
@@ -1266,6 +1602,10 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         }
     }
 
+    /* 14. Restore the saved fan curve last, after all other settings. */
+    cctl_snapshot_divider();
+    cctl_snapshot_restore_fancurve(name, st, &errors);
+
     cctl_snapshot_divider();
     g_snapshot_restoring = 0;
 
@@ -1298,11 +1638,12 @@ static int cmd_snapshot(int argc, char **argv)
                CCTL_SNAPSHOT_NAME_MAX);
         cctl_stream_printf("\n%sMask fields:%s\n", C_YLW, C_RST);
         cctl_stream_printf("  nvidia_clock,nvidia_memclock,ec_code,turbo,gov,epp,pl1,pl2,\n");
-        cctl_stream_printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,nosafe\n");
+        cctl_stream_printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,fancurve,nosafe\n");
         cctl_stream_printf("  Use 'nosafe' only with restore to bypass automatic fan safety.\n");
-        cctl_stream_printf("\n%sFan settings:%s not saved by snapshots; restore sets fans to AUTO when\n"
-               "  EC profile code 2/3 is applied, or Turbo ON is restored while EC is 2/3,\n"
-               "  unless masked with nosafe or a fan curve is active.\n",
+        cctl_stream_printf("  'bat' masks battery mode and thresholds; 'fancurve' preserves curve config.\n");
+        cctl_stream_printf("\n%sFan settings:%s manual fan speeds are not saved. The active fan curve\n"
+               "  configuration is saved and restored last; --mask fancurve preserves it.\n"
+        "  Restore sets fans to AUTO first if no curve is active; nosafe skips it.\n",
                C_YLW, C_RST);
         g_stream_mode = prev;
         return 0;
