@@ -740,6 +740,8 @@ static int cmd_set_impl(int argc, char **argv)
                C_BLD, C_RST, C_CYN_BLD, "set", C_RST);
         cctl_stream_printf("%sValid Profiles:%s\n", C_YLW, C_RST);
         print_profile_table();
+        cctl_stream_printf("      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto unless a fan curve is active; bypass with --nosafe.%s\n\n",
+               C_DIM, C_RST);
         g_stream_mode = prev;
         return 0;
     }
@@ -1550,7 +1552,7 @@ static int cmd_bat(int argc, char **argv)
                     C_YLW, C_RST);
         int rc = bat_set_charge_type("Standard");
         if (rc == 0)
-            cctl_stream_printf("  %s battery charge mode: Standard\n", dry_run ? "Would set" : "Set");
+            cctl_stream_printf("  Set battery charge mode: Standard\n");
         if (rc == 0) print_done();
         return rc;
     }

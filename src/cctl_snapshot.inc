@@ -80,7 +80,7 @@ static const struct snapshot_mask_option snapshot_mask_options[] = {
     { "fn_lock", MASK_FN_LOCK }, { "webcam", MASK_WEBCAM }, { "mic", MASK_MIC },
     { "bat", MASK_BAT }, { "rr", MASK_RR }, { "scale", MASK_SCALE },
     { "fancurve", MASK_FANCURVE },
-    { "nosafe", MASK_NOSAFE }
+    { "nosafe", MASK_NOSAFE } /* deprecated alias for --nosafe */
 };
 
 static int cctl_snapshot_parse_mask(const char *arg, unsigned long long *mask)
@@ -317,11 +317,17 @@ static int cctl_snapshot_list(void)
     if (count > 1)
         qsort(names, count, sizeof(*names), cctl_snapshot_compare_names);
 
-    cctl_stream_printf("Saved snapshots: ");
-    if (count == 0) cctl_stream_printf("none");
-    for (size_t i = 0; i < count; i++)
-        cctl_stream_printf("%s%s", i == 0 ? "" : ", ", names[i]);
-    cctl_stream_putchar('\n');
+    cctl_stream_printf("%sSaved snapshots:%s\n", C_YLW, C_RST);
+    if (count == 0) {
+        cctl_stream_printf("  %snone%s\n", C_DIM, C_RST);
+    } else {
+        cctl_stream_printf("  ");
+        for (size_t i = 0; i < count; i++)
+            cctl_stream_printf("%s%s%s%s", i == 0 ? "" : ", ",
+                               C_CYN, names[i], C_RST);
+        cctl_stream_putchar('\n');
+    }
+    cctl_stream_printf("\n%sHelp:%s cctl snapshot -h\n", C_DIM, C_RST);
     for (size_t i = 0; i < count; i++) free(names[i]);
     free(names);
     return 0;
@@ -905,7 +911,7 @@ static void cctl_snapshot_preview_restore(const char *name,
 #undef SNAPSHOT_PREVIEW
     int curve_saved = st->fancurve_state != SNAPSHOT_FANCURVE_SKIP;
     if (nosafe)
-        cctl_stream_puts("Fan safety: initial AUTO skipped (--mask nosafe).");
+        cctl_stream_puts("Fan safety: initial AUTO skipped (--nosafe).");
     else if (curve_saved)
         cctl_stream_puts("Fan safety: fans set to AUTO before restore; saved curve state is applied last.");
     else
@@ -1155,7 +1161,7 @@ static void cctl_snapshot_apply_fan_safety(const char *target, int nosafe,
     if (*fans_auto_applied || *fan_safety_bypassed)
         return;
     if (nosafe) {
-        cctl_stream_printf("  %sSkipping automatic fan control (--mask nosafe).%s\n", C_DIM, C_RST);
+        cctl_stream_printf("  %sSkipping automatic fan control (--nosafe).%s\n", C_DIM, C_RST);
         *fan_safety_bypassed = 1;
         return;
     }
@@ -1233,7 +1239,7 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         }
         fans_auto_applied = 1;
     } else {
-        cctl_stream_printf("Skipping initial fan AUTO (--mask nosafe).\n");
+        cctl_stream_printf("Skipping initial fan AUTO (--nosafe).\n");
     }
 
     /* 1. EC profile code: apply the saved code when present. */
@@ -1614,33 +1620,42 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
     return 0;
 }
 
+static void snapshot_usage(void)
+{
+    int prev = g_stream_mode;
+    g_stream_mode = STREAM_MODE_LINE;
+    g_stream_line = 0;
+    cctl_stream_printf("%sUsage:%s %scctl snap <save|s|restore|r|view|v|delete|del> [name] [options]%s\n",
+           C_BLD, C_RST, C_CYN_BLD, C_RST);
+    cctl_stream_printf("       %scctl snapshot <action> [name] [options]%s\n\n", C_CYN_BLD, C_RST);
+    cctl_stream_printf("%sActions:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  save/s <name> [--mask fields]       Save current settings\n");
+    cctl_stream_printf("  restore/r <name> [--mask fields] [--nosafe] [--dry-run]  Apply or preview settings\n");
+    cctl_stream_printf("  view/v <name>                       Show one saved snapshot\n");
+    cctl_stream_printf("  delete/del <name> [--noconfirm]      Delete a snapshot (prompts by default)\n");
+    cctl_stream_printf("  Names: letters, numbers, '-' and '_' only; no spaces (max %d characters).\n",
+           CCTL_SNAPSHOT_NAME_MAX);
+    cctl_stream_printf("\n%sMask fields:%s\n", C_YLW, C_RST);
+    cctl_stream_printf("  nvidia_clock,nvidia_memclock,ec_code,turbo,gov,epp,pl1,pl2,\n");
+    cctl_stream_printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,fancurve\n");
+    cctl_stream_printf("  Use '--nosafe' only with restore to bypass automatic fan safety.\n");
+    cctl_stream_printf("  '--mask nosafe' is deprecated; use '--nosafe'.\n");
+    cctl_stream_printf("  'bat' masks battery mode and thresholds; 'fancurve' preserves curve config.\n");
+    cctl_stream_printf("\n%sFan settings:%s manual fixed fan duty is not saved. The active fan curve\n"
+           "  configuration is saved and restored last. On save, --mask fancurve omits it;\n"
+           "  on restore, --mask fancurve leaves the current curve unchanged.\n"
+           "  Restore sets fans to AUTO first; --nosafe skips this step.\n"
+           "  Setting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set\n"
+           "  fans to auto unless a fan curve is active; bypass with --nosafe.\n",
+           C_YLW, C_RST);
+    g_stream_mode = prev;
+}
+
 static int cmd_snapshot(int argc, char **argv)
 {
     if (argc < 3) {
-        int prev = g_stream_mode;
-        g_stream_mode = STREAM_MODE_LINE;
-        g_stream_line = 0;
-        cctl_stream_printf("%sUsage:%s %scctl snap <save|s|restore|r|view|v|delete|del> [name] [options]%s\n",
-               C_BLD, C_RST, C_CYN_BLD, C_RST);
-        cctl_stream_printf("       %scctl snapshot <action> [name] [options]%s\n\n", C_CYN_BLD, C_RST);
-        cctl_stream_printf("%sActions:%s\n", C_YLW, C_RST);
-        cctl_stream_printf("  save/s <name> [--mask fields]       Save current settings\n");
-        cctl_stream_printf("  restore/r <name> [--mask fields] [--dry-run]  Apply or preview settings\n");
-        cctl_stream_printf("  view/v [name]                       List snapshots or show one snapshot\n");
-        cctl_stream_printf("  delete/del <name> [--noconfirm]      Delete a snapshot (prompts by default)\n");
-        cctl_stream_printf("  Names: letters, numbers, '-' and '_' only; no spaces (max %d characters).\n",
-               CCTL_SNAPSHOT_NAME_MAX);
-        cctl_stream_printf("\n%sMask fields:%s\n", C_YLW, C_RST);
-        cctl_stream_printf("  nvidia_clock,nvidia_memclock,ec_code,turbo,gov,epp,pl1,pl2,\n");
-        cctl_stream_printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,fancurve,nosafe\n");
-        cctl_stream_printf("  Use 'nosafe' only with restore to bypass automatic fan safety.\n");
-        cctl_stream_printf("  'bat' masks battery mode and thresholds; 'fancurve' preserves curve config.\n");
-        cctl_stream_printf("\n%sFan settings:%s manual fan speeds are not saved. The active fan curve\n"
-               "  configuration is saved and restored last; --mask fancurve preserves it.\n"
-        "  Restore sets fans to AUTO first; nosafe skips this step.\n",
-               C_YLW, C_RST);
-        g_stream_mode = prev;
-        return 0;
+        require_root(argc, argv);
+        return cctl_snapshot_list();
     }
 
     const char *action = argv[2];
@@ -1649,25 +1664,39 @@ static int cmd_snapshot(int argc, char **argv)
     else if (strcmp(action, "v") == 0) action = "view";
     else if (strcmp(action, "del") == 0) action = "delete";
 
-    if (strcmp(action, "view") == 0 && argc == 3) {
-        require_root(argc, argv);
-        return cctl_snapshot_list();
+    if (strcmp(action, "--help") == 0 || strcmp(action, "-h") == 0 ||
+        strcmp(action, "help") == 0) {
+        snapshot_usage();
+        return 0;
     }
-    if (argc < 4 || argc > 7)
-        return fail("Usage: cctl snap <save|s|restore|r|view|v|delete|del> [name] [--mask fields] [--dry-run] [--noconfirm]");
+    if (strcmp(action, "save") != 0 && strcmp(action, "restore") != 0 &&
+        strcmp(action, "view") != 0 && strcmp(action, "delete") != 0) {
+        snapshot_usage();
+        return 1;
+    }
+
+    if (strcmp(action, "view") == 0 && argc == 3)
+        return fail("Usage: cctl snapshot view <name>");
+    if (argc < 4 || argc > 7) {
+        snapshot_usage();
+        return 1;
+    }
     const char *name = argv[3];
     if (!cctl_snapshot_name_valid(name))
         return fail("Snapshot names must be 1-%d characters using only letters, numbers, '-' or '_'",
                     CCTL_SNAPSHOT_NAME_MAX);
 
     unsigned long long mask = 0;
-    int have_mask = 0, snapshot_dry_run = 0, snapshot_noconfirm = 0;
+    int have_mask = 0, snapshot_dry_run = 0, snapshot_noconfirm = 0, snapshot_nosafe = 0;
     for (int i = 4; i < argc; i++) {
         if (strcmp(argv[i], "--mask") == 0) {
             if (have_mask || i + 1 >= argc ||
                 cctl_snapshot_parse_mask(argv[++i], &mask) != 0)
                 return fail("Invalid mask list (see 'cctl snap' for available fields)");
             have_mask = 1;
+        } else if (strcmp(argv[i], "--nosafe") == 0) {
+            if (snapshot_nosafe) return fail("--nosafe was specified more than once");
+            snapshot_nosafe = 1;
         } else if (strcmp(argv[i], "--dry-run") == 0) {
             if (snapshot_dry_run) return fail("--dry-run was specified more than once");
             snapshot_dry_run = 1;
@@ -1682,6 +1711,8 @@ static int cmd_snapshot(int argc, char **argv)
         return fail("--mask is supported only for snapshot save and restore");
     if ((mask & MASK_NOSAFE) && strcmp(action, "restore") != 0)
         return fail("--mask nosafe is supported only for snapshot restore");
+    if (snapshot_nosafe && strcmp(action, "restore") != 0)
+        return fail("--nosafe is supported only for snapshot restore");
     if (snapshot_dry_run && strcmp(action, "restore") != 0)
         return fail("--dry-run is supported only for snapshot restore");
     if (snapshot_noconfirm && strcmp(action, "delete") != 0 && strcmp(action, "del") != 0)
@@ -1697,6 +1728,8 @@ static int cmd_snapshot(int argc, char **argv)
     }
     if (strcmp(action, "view") == 0 || strcmp(action, "restore") == 0) {
         require_root(argc, argv);
+        if (strcmp(action, "restore") == 0 && (mask & MASK_NOSAFE))
+            cctl_stream_fprintf(stderr, "Warning: '--mask nosafe' is deprecated; use '--nosafe' instead.\n");
         struct cctl_snapshot_data st;
         if (cctl_snapshot_read_file(name, &st) != 0)
             return fail("Cannot read snapshot '%s' (missing or invalid file)", name);
@@ -1705,11 +1738,12 @@ static int cmd_snapshot(int argc, char **argv)
             return 0;
         }
         cctl_snapshot_apply_mask(&st, mask);
+        int nosafe = snapshot_nosafe || (mask & MASK_NOSAFE) != 0;
         if (snapshot_dry_run) {
-            cctl_snapshot_preview_restore(name, &st, (mask & MASK_NOSAFE) != 0);
+            cctl_snapshot_preview_restore(name, &st, nosafe);
             return 0;
         }
-        return cctl_snapshot_restore(name, &st, (mask & MASK_NOSAFE) != 0);
+        return cctl_snapshot_restore(name, &st, nosafe);
     }
     return fail("Unknown snapshot action '%s' (use save, restore, view, or delete)", argv[2]);
 }

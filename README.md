@@ -162,9 +162,9 @@ Command names:
 - Monitors: `cpumon`, `gpumon`
 - Display: `rr`, `scale`
 - CPU controls: `turbo`, `gov`, `epp`, `rapl`
-- Snapshots: `snap` (alias `snapshot`), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del`
+- Snapshots: `snap` (alias `snapshot`; bare `snap` lists saved snapshots), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del`
 - Application settings: `options`
-- Help: `--help`
+- Help & Agent Skill: `--help`, `--am`
 
 Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).
 

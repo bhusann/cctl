@@ -54,7 +54,7 @@ temperature and fan-speed points, then start it:
 ```bash
 cctl fancurve                         # Show saved curves and the active curve (alias: fanc)
 cctl fancurve create <name>           # Create a curve and open it for editing
-cctl fancurve view [name]             # List saved curves or check and display one
+cctl fancurve view <name>             # Validate and display one saved curve
 cctl fancurve edit <name>             # Edit a saved curve
 cctl fancurve start|s <name>          # Start or restart a curve
 cctl fancurve stop|st                # Stop the curve and return fans to automatic control
@@ -156,10 +156,10 @@ cctl --version                  # Print version and exit (also -V, -v)
 
 ### Snapshots
 ```bash
-cctl snap view                   # List saved snapshot names
+cctl snap                        # List saved snapshot names
 cctl snap save <name> [--mask fields]      # Save current settings (alias: s)
 cctl snap view <name>            # Show a saved snapshot (alias: v)
-cctl snap restore <name> [--mask fields] [--dry-run] # Apply or preview (alias: r)
+cctl snap restore <name> [--mask fields] [--nosafe] [--dry-run] # Apply or preview (alias: r)
 cctl snap delete <name> [--noconfirm] # Delete a saved snapshot (alias: del)
 ```
 
@@ -170,14 +170,16 @@ spaces or other symbols. `snap` is a shorter alias for `snapshot`.
 `snap delete` asks for confirmation before removing a snapshot; add
 `--noconfirm` to skip the prompt (for example, `cctl snap del mypcwork --noconfirm`).
 Add `--dry-run` to `snap restore` to preview the settings and skipped
-fields without applying changes. Restore sets both fans to AUTO before applying
-the saved settings, even when a fan curve is active. The snapshot's curve
+fields without applying changes. Only `cctl set` and `cctl snap restore` accept
+`--dry-run`. Restore sets both fans to AUTO before applying the saved settings,
+even when a fan curve is active. The snapshot's curve
 setting is handled last and may stop or replace the active curve.
-Use `nosafe` in the restore mask to skip the initial AUTO step (for example,
-`cctl snap r mypcwork --mask nosafe`).
+Use `--nosafe` to skip the initial AUTO step (for example,
+`cctl snap r mypcwork --mask kbe,kbc --nosafe`).
+`--mask nosafe` still works but is deprecated; use `--nosafe` instead.
 Available names are `nvidia_clock`, `nvidia_memclock`,
 `ec_code`, `turbo`, `gov`, `epp`, `pl1`, `pl2`, `kbe`, `kbc`, `kbb`,
-`fn_lock`, `webcam`, `mic`, `bat`, `rr`, `scale`, and `fancurve`; `nosafe` is restore-only.
+`fn_lock`, `webcam`, `mic`, `bat`, `rr`, `scale`, and `fancurve`.
 `kbc` masks keyboard
 color, `kbb` brightness, `kbe` effect, and `bat` battery charge mode and thresholds.
 Use `fancurve` to leave curve state unchanged while saving or restoring.

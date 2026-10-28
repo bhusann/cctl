@@ -1367,7 +1367,6 @@ static int fc_arm_auto_on_close(int fd)
 
 static int fc_auto_all_quiet(void)
 {
-    if (dry_run) return 0;
     int32_t mask = 15;
     return tuxedo_ioctl(W_CL_FANAUTO, &mask);
 }
@@ -2344,7 +2343,7 @@ static void fc_print_usage(void)
            C_CYN, "start|s <name>", C_RST);
     cctl_stream_printf("  %s%-19s%s Create a profile: prompt for point count, then open the editor\n",
            C_CYN, "create|c <name>", C_RST);
-    cctl_stream_printf("  %s%-19s%s List profiles, or validate and show one profile\n", C_CYN, "view|v [name]", C_RST);
+    cctl_stream_printf("  %s%-19s%s Validate and show one saved profile\n", C_CYN, "view|v <name>", C_RST);
     cctl_stream_printf("  %s%-19s%s Edit a profile in the editor\n", C_CYN, "edit|e <name>", C_RST);
     cctl_stream_printf("  %s%-19s%s Delete an inactive profile (--noconfirm skips the prompt)\n",
            C_CYN, "del <name>", C_RST);
@@ -2633,12 +2632,8 @@ static int fc_cmd_edit(int argc, char **argv)
 
 static int fc_cmd_view(int argc, char **argv)
 {
-    if (argc == 3) {
-        require_root(argc, argv);
-        return fc_list_profiles();
-    }
     if (argc != 4)
-        return fail("Usage: cctl fancurve view [name]");
+        return fail("Usage: cctl fancurve view <name>");
 
     if (geteuid() != 0 && access(FANCURVE_STATE_PATH, F_OK) == 0)
         require_root(argc, argv);
@@ -2826,13 +2821,9 @@ static int cmd_fancurve(int argc, char **argv)
 {
     if (argc < 3) {
         require_root(argc, argv);
-        int prev = g_stream_mode;
-        g_stream_mode = STREAM_MODE_LINE;
-        g_stream_line = 0;
         int rc = fc_list_profiles();
-        cctl_stream_printf("\n");
-        fc_print_usage();
-        g_stream_mode = prev;
+        if (rc == 0)
+            cctl_stream_printf("\n%sHelp:%s cctl fanc -h\n", C_DIM, C_RST);
         return rc;
     }
 

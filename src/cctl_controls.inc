@@ -225,11 +225,6 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
     }
     closedir(d);
 
-    if (dry_run) {
-        stream_printf(STREAM_DELAY_US, "Dry run: RAPL limits would be applied\n");
-        return 0;
-    }
-
     /* Readback verification: detect locked RAPL limits that silently
      * reject writes.  A mismatch means firmware has the MSR locked. */
     int err = 0;
@@ -315,10 +310,6 @@ static int tuxedo_ioctl(unsigned long req, void *arg)
 
 static int set_gpu_profile_tuxedo(int profile)
 {
-    if (dry_run) {
-        stream_printf(STREAM_DELAY_US, "Dry run: set EC profile code %s (%d)\n", gpu_profile_name(profile), profile);
-        return 0;
-    }
     return tuxedo_ioctl(W_CL_PERF_PROFILE, &profile);
 }
 
@@ -370,10 +361,6 @@ static int set_gpu_profile(int profile)
 
 static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
 {
-    if (dry_run) {
-        stream_printf(STREAM_DELAY_US, "Dry run: set fan duties to %u/%u (raw)\n", raw_fan1, raw_fan2);
-        return 0;
-    }
     /* Byte order in packed argument: fan1 | (fan2 << 8) */
     int32_t arg = (int32_t)raw_fan1 | ((int32_t)raw_fan2 << 8);
     int res = tuxedo_ioctl(W_CL_FANSPEED, &arg);
@@ -386,10 +373,6 @@ static int fan_set_speeds_tuxedo(uint8_t raw_fan1, uint8_t raw_fan2)
 
 static int fan_auto_tuxedo(int32_t mask)
 {
-    if (dry_run) {
-        stream_printf(STREAM_DELAY_US, "Dry run: restore automatic control for fan mask 0x%X\n", mask ? mask : 15);
-        return 0;
-    }
     /* Note: arg MUST be passed as a pointer (&arg) because tuxedo_io
      * uses copy_from_user. Bitmask 15 (0x0F) releases all fans (1, 2, 3, 4). */
     int32_t arg = mask ? mask : 15;
@@ -920,8 +903,6 @@ static void print_profile_table(void)
                           tdp,
                           show_rr ? profile_rr_label(p->rr, rr_buf, sizeof(rr_buf)) : NULL);
     }
-    cctl_stream_printf("\n      %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto unless a fan curve is active; bypass with --nosafe.%s\n",
-           C_DIM, C_RST);
     cctl_stream_printf("\n");
 }
 

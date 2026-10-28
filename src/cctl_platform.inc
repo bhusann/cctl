@@ -1577,7 +1577,7 @@ static int bat_set(int start, int end)
         return -1;
     }
 
-    cctl_stream_printf("  %s charge thresholds: start %d%% → stop %d%%%s\n",
-           dry_run ? "Would set" : "Set", start, end, snapshot_applied_tag());
+    cctl_stream_printf("  Set charge thresholds: start %d%% → stop %d%%%s\n",
+           start, end, snapshot_applied_tag());
     return 0;
 }

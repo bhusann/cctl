@@ -423,10 +423,10 @@ static int cctl_confirm_delete(const char *label, const char *name)
 
 static void print_done(void)
 {
-    stream_text(dry_run ? "Dry run complete." : "Done.", STREAM_DELAY_US);
+    stream_text("Done.", STREAM_DELAY_US);
 }
 
-#define require_root(argc, argv) do { if (!dry_run) self_elevate(argc, argv); } while (0)
+#define require_root(argc, argv) do { self_elevate(argc, argv); } while (0)
 
 /* Parse --nosafe flag and collect up to max_args positional arguments starting at argv[2].
  * Returns number of positional arguments collected, or -1 on unexpected extra argument. */
@@ -567,10 +567,6 @@ static int wait_ibf(void)
 
 static int send_ec_cmd(uint8_t cmd, const uint8_t *data, int len)
 {
-    if (dry_run) {
-        stream_printf(STREAM_DELAY_US, "Dry run: EC command 0x%02X with %d data byte(s)\n", cmd, len);
-        return 0;
-    }
     if (ec_acquire_ports() < 0)
         return -1;
 
@@ -590,10 +586,6 @@ static int send_ec_cmd(uint8_t cmd, const uint8_t *data, int len)
 
 static int write_sysfs(const char *path, const char *value)
 {
-    if (dry_run) {
-        stream_printf(STREAM_DELAY_US, "Dry run: write %s = %s\n", path, value);
-        return 0;
-    }
     int fd = open(path, O_WRONLY);
     if (fd < 0)
         return -1;

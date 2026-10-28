@@ -721,7 +721,7 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST,
     C_GRN, C_RST, C_RED, C_RST);
 
-    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]  |  %s%s%s --am%s  (Agent Skill for AI agents)\n\n",
+    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]  |  %s%s%s --am%s  (outputs usage guide skill for AI agents)\n\n",
                        C_BLD, C_RST, C_CYN_BLD, prog, C_RST,
                        C_BLD, C_CYN_BLD, prog, C_RST);
 
@@ -759,6 +759,9 @@ static void print_usage(const char *prog)
         }
         cctl_stream_printf("\n");
     }
+
+    cctl_stream_printf("  %sSetting EC codes 2/3 or enabling Turbo (while in EC code 2/3) will set fans to auto unless a fan curve is active; bypass with --nosafe.%s\n\n",
+           C_DIM, C_RST);
 
     if (!drivers_loaded()) {
         cctl_stream_printf("  %sDRIVERS NOT LOADED%s — some features need them:\n", C_YLW, C_RST);
@@ -905,11 +908,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (dry_run && strcmp(argv[1], "set") != 0 && strcmp(argv[1], "fan") != 0 &&
-        strcmp(argv[1], "turbo") != 0 &&
-        strcmp(argv[1], "gov") != 0 && strcmp(argv[1], "epp") != 0 &&
-        strcmp(argv[1], "rapl") != 0 && strcmp(argv[1], "bat") != 0)
-        return fail("--dry-run is supported for set, fan, turbo, gov, epp, rapl, and bat");
+    if (dry_run && strcmp(argv[1], "set") != 0)
+        return fail("--dry-run is supported only for 'cctl set' and 'cctl snap restore'");
 
     if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "help") == 0) {
         print_usage(argv[0]);
@@ -958,7 +958,7 @@ int main(int argc, char **argv)
                                     strcmp(argv[1], "fanc") == 0 ? "fancurve" : argv[1];
         if (strcmp(commands[i].name, dispatch_name) == 0) {
             cmd_found = 1;
-            if (commands[i].needs_root && !dry_run)
+            if (commands[i].needs_root)
                 require_root(argc, argv);
             rc = commands[i].handler(argc, argv);
             break;

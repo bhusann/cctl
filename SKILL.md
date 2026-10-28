@@ -11,7 +11,7 @@ Use this skill when a user asks an agent to inspect or operate the installed `cc
 
 Use the installed `cctl` executable. Check `cctl --version`, `cctl --help`, and `cctl status` when useful; `cctl --am` prints this guide. Run `cctl` as the user without `sudo`; it requests elevation when needed. This guide matches 5.0+; defer to the installed help for exact syntax on other builds.
 
-When inspecting, prefer read-only commands such as `status`, `options`, `gov`, `epp`, `fancurve`, `snap view`, and monitor one-shots. After a requested change, verify the result with a read-only command; don't claim success without confirming output.
+When inspecting, prefer read-only commands such as `status`, `options`, `gov`, `epp`, `fancurve`, `snap`, and monitor one-shots. After a requested change, verify the result with a read-only command; don't claim success without confirming output.
 
 If the user asks to create a fan curve or custom profile but the request is vague, and you have a question tool available, use it to ask for the values you need before creating anything. Collect the required curve points, temperatures, fan speeds, or profile settings; do not guess values that affect thermals or power.
 
@@ -64,7 +64,7 @@ For temperature-based fan control, use a saved curve:
 ```sh
 cctl fancurve                    # Show saved curves and active curve
 cctl fancurve create <name>      # Create and edit a curve
-cctl fancurve view [name]        # List profiles, or validate and display one
+cctl fancurve view <name>        # Validate and display a saved curve
 cctl fancurve edit|e <name>      # Edit a saved curve
 cctl fancurve start|s <name>     # Run it for this boot
 cctl fancurve log                # Follow diagnostics, waiting across curve restarts; Ctrl-C exits
@@ -155,7 +155,7 @@ Snapshots save and restore supported settings. They include the active fan-curve
 configuration but not manual fan duty:
 
 ```sh
-cctl snap view
+cctl snap
 cctl snap save <name>
 cctl snap view <name>
 cctl snap restore <name> --dry-run   # Preview before applying
@@ -165,23 +165,25 @@ cctl snap delete <name>
 
 Restore applies the saved curve state last: a snapshot with no saved curve stops
 an active curve, while a snapshot with a saved curve replaces it. Restore first
-sets both fans to AUTO even when a curve is active; `--mask nosafe` skips that
-step. `--mask fancurve` preserves the current curve state, and `--mask bat` masks both
-battery charge mode and thresholds. Use `--dry-run` when the user asks to review
-what a restore would change. Deletion normally asks for confirmation; add
-`--noconfirm` to skip it when the user explicitly requests that.
+sets both fans to AUTO even when a curve is active; `--nosafe` skips that
+step. `--mask fancurve` omits the saved curve state on save and leaves the
+current curve unchanged on restore; `--mask bat` masks both battery charge mode
+and thresholds. Use `--dry-run` when the user asks to review what a restore
+would change. Deletion normally asks for confirmation; add `--noconfirm` to
+skip it when the user explicitly requests that.
 
 Available mask fields are:
 
 ```text
 nvidia_clock nvidia_memclock ec_code turbo gov epp pl1 pl2
-webcam mic rr scale bat kbe kbc kbb fn_lock fancurve nosafe
+webcam mic rr scale bat kbe kbc kbb fn_lock fancurve
 ```
 
 For `save`, a masked field is recorded as skipped. For `restore`, it leaves
-that current setting unchanged. `nosafe` is restore-only and bypasses
-the initial fan-auto safety step. `--dry-run` is restore-only. Snapshot names
-use letters, numbers, `-`, and `_`, up to 64 characters.
+that current setting unchanged. `--dry-run` is restore-only within snapshots.
+`--nosafe` is restore-only and bypasses the initial fan-auto safety step;
+`--mask nosafe` still works but is deprecated. Snapshot names use letters,
+numbers, `-`, and `_`, up to 64 characters.
 
 ## Display, MUX, battery, and privacy
 
@@ -209,7 +211,7 @@ Persistent cctl data lives under `/var/lib/cctl`:
 - `profiles.conf`: custom profiles; manage with `cctl editconf`.
 - `settings`: saved `cctl options` values.
 - `fancurves/*.json`: saved curves; inspect with `cctl fancurve`.
-- `snapshots/<name>.conf`: named snapshots. The directory is root-only (0700); use `cctl snap view`.
+- `snapshots/<name>.conf`: named snapshots. The directory is root-only (0700); use `cctl snap view <name>`.
 - `drivers.tar.gz`: verified driver cache for `drivers-manage`.
 
 Runtime state under `/run` is cleared on reboot:

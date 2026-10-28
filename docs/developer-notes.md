@@ -99,9 +99,10 @@ limits and do not prove that a limit caused throttling.
   `cctl set`; Turbo ON requires it when the current EC code is 2 or 3.
   `--nosafe` bypasses this. If a fan curve is active, profile and Turbo safety
   steps are skipped so the curve retains fan control.
-- Snapshot restore follows the same fan-safety policy. It skips the AUTO step
-  while a curve is active; `--dry-run` reports this. Code is in
-  `cctl_snapshot_apply_fan_safety()`.
+- Snapshot restore sets fans to EC AUTO at the start before applying settings,
+  even when a curve is active; `--nosafe` bypasses this initial AUTO step.
+  The snapshot's saved curve configuration is applied last. Code is in
+  `cctl_snapshot_restore()` and `cctl_snapshot_apply_fan_safety()`.
 
 ### RAPL limits
 
@@ -223,8 +224,9 @@ under `/var/lib/cctl/fancurves/`.
   state. Earlier formats have no saved battery mode. `--mask fancurve` skips
   saved curve state. At restore start, cctl always sets both fans to EC AUTO,
   even when a curve is active. The target curve state is applied last.
-  `--mask nosafe` bypasses the initial AUTO step. The `bat` mask skips charge
-  mode and thresholds.
+  `--nosafe` bypasses the initial AUTO step; the older `--mask nosafe` form
+  remains accepted but is deprecated. The `bat` mask skips charge mode and
+  thresholds.
   Manual fan duties are not captured, and snapshots do not start automatically
   at boot.
 - The worker listens for login1 `PrepareForSleep` signals over the system D-Bus
