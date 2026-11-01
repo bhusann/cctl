@@ -647,50 +647,61 @@ static void print_help_desc(const char *desc)
     }
 }
 
-static void print_help_command_indent(const struct command *cmd, int indent)
-{
-    int target_col = (strcmp(cmd->name, "nvidia") == 0) ? 39 : 29;
-    if (strcmp(cmd->name, "set") == 0 || strcmp(cmd->name, "turbo") == 0)
-        target_col = 31;
-    else if (strcmp(cmd->name, "fan") == 0)
-        target_col = 36;
-    else if (strcmp(cmd->name, "fancurve") == 0)
-        target_col = 36;
+struct help_layout {
+    int name_col;
+    int desc_col;
+};
 
+/* Align usage text and descriptions within a section using its widest entry. */
+static struct help_layout help_layout_for(enum cmd_section section, int indent)
+{
+    int max_name = 0, max_usage = 0;
+
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        const struct command *cmd = &commands[i];
+        if (cmd->section != section) continue;
+        if (cmd->visible && !cmd->visible()) continue;
+
+        int name_len = (int)strlen(cmd->name);
+        int usage_len = cmd->usage ? (int)strlen(cmd->usage) : 0;
+        if (name_len > max_name) max_name = name_len;
+        if (usage_len > max_usage) max_usage = usage_len;
+    }
+
+    struct help_layout layout;
+    layout.name_col = indent + max_name + 1;
+    layout.desc_col = layout.name_col + max_usage + 2;
+    return layout;
+}
+
+static void print_help_command_indent(const struct command *cmd,
+                                      const struct help_layout *layout,
+                                      int indent)
+{
     int col = indent;
     cctl_stream_printf("%*s%s%s%s", indent, "", C_BLD, cmd->name, C_RST);
     col += (int)strlen(cmd->name);
 
     if (cmd->usage && cmd->usage[0]) {
-        int name_col = 6;
-        if (strcmp(cmd->name, "mic") == 0 || strcmp(cmd->name, "gov") == 0 ||
-            strcmp(cmd->name, "epp") == 0 || strcmp(cmd->name, "turbo") == 0 ||
-            strcmp(cmd->name, "nvidia") == 0 || strcmp(cmd->name, "mux") == 0 ||
-            strcmp(cmd->name, "rapl") == 0 ||
-            (strcmp(cmd->name, "bat") == 0 && strcmp(cmd->usage, "max") != 0))
-            name_col = 7;
-        else if (strcmp(cmd->name, "bat") == 0 && strcmp(cmd->usage, "max") == 0)
-            name_col = 4;
-
-        int name_len = (int)strlen(cmd->name);
-        int gap = name_col > name_len ? name_col - name_len : 1;
-        for (int i = 0; i < gap; i++) { cctl_stream_putchar(' '); col++; }
+        int gap = layout->name_col > col ? layout->name_col - col : 1;
+        for (int i = 0; i < gap; i++) {
+            cctl_stream_putchar(' ');
+            col++;
+        }
         cctl_stream_printf("%s", cmd->usage);
         col += (int)strlen(cmd->usage);
     }
 
-    if (col < target_col) {
-        for (int i = col; i < target_col; i++) cctl_stream_putchar(' ');
-    } else {
-        cctl_stream_putchar(' ');
-    }
+    int pad = layout->desc_col > col ? layout->desc_col - col : 1;
+    for (int i = 0; i < pad; i++) cctl_stream_putchar(' ');
 
     print_help_desc(cmd->desc);
 }
 
-static void print_help_command(const struct command *cmd)
+static void print_help_command(const struct command *cmd,
+                               const struct help_layout *layout)
 {
-    print_help_command_indent(cmd, 4);
+    print_help_command_indent(cmd, layout, 4);
 }
 
 static void print_agent_skill(void)
@@ -740,11 +751,13 @@ static void print_usage(const char *prog)
         else
             cctl_stream_printf("  %s%s%s\n", prof_color_str(sec->header_color), sec->title, C_RST);
 
+        struct help_layout layout = help_layout_for(sec->section, 4);
+
         if (sec->section == SEC_PROFILES) {
             for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
                 const struct command *cmd = &commands[i];
                 if (cmd->section != sec->section) continue;
-                print_help_command(cmd);
+                print_help_command(cmd, &layout);
             }
             cctl_stream_printf("\n");
             print_profile_table();
@@ -755,7 +768,7 @@ static void print_usage(const char *prog)
             const struct command *cmd = &commands[i];
             if (cmd->section != sec->section) continue;
             if (cmd->visible && !cmd->visible()) continue;
-            print_help_command(cmd);
+            print_help_command(cmd, &layout);
         }
         cctl_stream_printf("\n");
     }

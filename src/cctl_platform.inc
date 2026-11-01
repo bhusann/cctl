@@ -810,48 +810,50 @@ static int rr_list(void)
     return 0;
 }
 
-/* Helper to check if a CPU core is an E-core based on its max frequency relative to global max.
- * Caches core classification in a static lookup table on first pass. */
+/* Does a Linux CPU list ("0-3,8,10-11") contain cpu? */
+static int cpu_list_contains(const char *list, int cpu)
+{
+    const char *p = list;
+    while (p && *p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+
+        char *end = NULL;
+        long first = strtol(p, &end, 10);
+        if (end == p) break;
+        long last = first;
+        p = end;
+
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '-') {
+            p++;
+            last = strtol(p, &end, 10);
+            if (end == p) break;
+            p = end;
+        }
+        if (cpu >= first && cpu <= last) return 1;
+        while (*p && *p != ',') p++;
+    }
+    return 0;
+}
+
+/* Detect E-cores from the kernel's hybrid CPU lists. The frequency heuristic
+ * used previously misclassified low-clocked P-cores and non-hybrid systems. */
 static int is_cpu_e_core(int cpu_num)
 {
     static int8_t e_core_cache[256];
     static int cache_initialized = 0;
 
     if (!cache_initialized) {
-        memset(e_core_cache, -1, sizeof(e_core_cache));
-        int global_max_khz = 0;
-        int core_khz[256];
-        memset(core_khz, 0, sizeof(core_khz));
+        char list[1024];
+        int have_list = read_sysfs_str("/sys/devices/cpu_atom/cpus",
+                                       list, sizeof(list)) >= 0;
+        if (!have_list)
+            have_list = read_sysfs_str("/sys/devices/cpu_lowpower/cpus",
+                                       list, sizeof(list)) >= 0;
 
-        DIR *d = opendir("/sys/devices/system/cpu");
-        if (d) {
-            struct dirent *ent;
-            while ((ent = readdir(d)) != NULL) {
-                int cnum;
-                if (cpu_index_from_name(ent->d_name, &cnum) < 0) continue;
-                if (cnum >= 256) continue;
-
-                char path[512];
-                if (cpu_sysfs_path(path, sizeof(path), cnum,
-                                   "cpufreq/cpuinfo_max_freq") < 0) continue;
-                long khz = read_sysfs_long(path, -1);
-                if (khz > 0) {
-                    core_khz[cnum] = (int)khz;
-                    if ((int)khz > global_max_khz)
-                        global_max_khz = (int)khz;
-                }
-            }
-            closedir(d);
-        }
-        if (global_max_khz <= 0)
-            global_max_khz = 4000000;
-
-        for (int i = 0; i < 256; i++) {
-            if (core_khz[i] > 0)
-                e_core_cache[i] = (core_khz[i] < (long)(global_max_khz * 0.85)) ? 1 : 0;
-            else
-                e_core_cache[i] = 0;
-        }
+        for (int i = 0; i < 256; i++)
+            e_core_cache[i] = (have_list && cpu_list_contains(list, i)) ? 1 : 0;
         cache_initialized = 1;
     }
 

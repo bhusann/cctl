@@ -6,40 +6,13 @@
 static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm,
                                  int *gpu_rpm, int cached_fd)
 {
-    *cpu_pct = *gpu_pct = *cpu_rpm = *gpu_rpm = 0;
-    int got_duty = 0;
-    int fd = cached_fd >= 0 ? cached_fd : tuxedo_open_clevo();
-    if (fd >= 0) {
-        int f1 = 0, f2 = 0;
-        if (ioctl(fd, R_CL_FANINFO1, &f1) >= 0) {
-            *cpu_pct = ((f1 & 0xFF) * 100) / 255;
-            got_duty = 1;
-        }
-        if (ioctl(fd, R_CL_FANINFO2, &f2) >= 0) {
-            *gpu_pct = ((f2 & 0xFF) * 100) / 255;
-            got_duty = 1;
-        }
-        if (cached_fd < 0) close(fd);
-    }
-
-    (void)cctl_ensure_ec_sys();
-    int ec_fd = open(CCTL_EC_RAM_PATH, O_RDONLY);
-    if (ec_fd < 0) return got_duty ? 0 : -1;
-    unsigned char ram[256] = {0};
-    ssize_t n = read(ec_fd, ram, sizeof ram);
-    close(ec_fd);
-    if (n < 0xD4) return got_duty ? 0 : -1;
-
-    if (!got_duty) {
-        int raw = n >= 0xF5 ? ram[0xF4] : 0;
-        if (raw == 0) raw = ram[0x89];
-        *cpu_pct = (raw * 100) / 255;
-    }
-    unsigned int cpu_raw = ((unsigned int)ram[0xD0] << 8) | ram[0xD1];
-    unsigned int gpu_raw = ((unsigned int)ram[0xD2] << 8) | ram[0xD3];
-    *cpu_rpm = cpu_raw ? (int)(CCTL_EC_FAN_RPM_DIVISOR / cpu_raw) : 0;
-    *gpu_rpm = gpu_raw ? (int)(CCTL_EC_FAN_RPM_DIVISOR / gpu_raw) : 0;
-    return 0;
+    struct cctl_fan_telemetry fan;
+    int rc = cctl_read_fan_telemetry(&fan, cached_fd);
+    *cpu_pct = (int)fan.cpu_duty_pct;
+    *gpu_pct = (int)fan.gpu_duty_pct;
+    *cpu_rpm = fan.cpu_rpm;
+    *gpu_rpm = fan.gpu_rpm;
+    return rc;
 }
 
 static void get_mem_usage(long *used_mb, long *total_mb)

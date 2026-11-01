@@ -82,6 +82,8 @@ static gid_t fc_invoking_gid(uid_t uid);
 
 /* ---------------------------------------------------------------- names */
 
+/* Accept names that can safely be used as a profile file name. This remains
+ * permissive so profiles created by older versions stay readable. */
 static int fancurve_name_valid(const char *name)
 {
     size_t len;
@@ -92,6 +94,16 @@ static int fancurve_name_valid(const char *name)
 
     for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
         if (*p == '/' || iscntrl(*p)) return 0;
+    }
+    return 1;
+}
+
+/* New profiles also reject characters that would need JSON escaping. */
+static int fancurve_name_new_valid(const char *name)
+{
+    if (!fancurve_name_valid(name)) return 0;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (*p == '"' || *p == '\\') return 0;
     }
     return 1;
 }
@@ -1331,32 +1343,10 @@ static int fc_cpu_temp_hwmon(void)
  * NVIDIA display device is already in D0; unknown states are treated as off. */
 static int fc_nvidia_gpus_in_d0(void)
 {
-    DIR *dir = opendir("/sys/bus/pci/devices");
-    if (!dir) return 0;
-
-    int found = 0, all_in_d0 = 1;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-
-        char path[PATH_MAX], value[32];
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", ent->d_name);
-        if (read_sysfs_str(path, value, sizeof(value)) < 0 || strcmp(value, "0x10de") != 0)
-            continue;
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", ent->d_name);
-        if (read_sysfs_str(path, value, sizeof(value)) < 0 ||
-            (strncmp(value, "0x0300", 6) != 0 && strncmp(value, "0x0302", 6) != 0))
-            continue;
-
-        found++;
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/power_state", ent->d_name);
-        if (read_sysfs_str(path, value, sizeof(value)) < 0 || strcmp(value, "D0") != 0) {
-            all_in_d0 = 0;
-            break;
-        }
-    }
-    closedir(dir);
-    return found > 0 && all_in_d0;
+    bool all_d0 = false;
+    if (cctl_find_nvidia_gpu(NULL, 0, "/sys/bus/pci/devices", &all_d0) != 0)
+        return 0;
+    return all_d0;
 }
 
 static int fc_gpu_temp_nvidia(void)
@@ -2259,18 +2249,8 @@ static int fc_start_profile(const struct fancurve_profile *prof)
 
 static char *fc_make_template(const char *name, int npoints)
 {
-    char escaped[FANCURVE_NAME_MAX * 2 + 1];
-    size_t e = 0;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
-        if (*p == '"' || *p == '\\') {
-            escaped[e++] = '\\';
-            escaped[e++] = (char)*p;
-        } else {
-            escaped[e++] = (char)*p;
-        }
-    }
-    escaped[e] = '\0';
-
+    if (!fancurve_name_new_valid(name)) return NULL;
+    /* fancurve_name_new_valid() guarantees the name needs no JSON escaping. */
     size_t cap = 1536 + (size_t)npoints * 80;
     char *buf = malloc(cap);
     if (!buf) return NULL;
@@ -2283,7 +2263,7 @@ static char *fc_make_template(const char *name, int npoints)
                      "  \"hysteresis\": %d,\n"
                      "  \"interval_ms\": %d,\n"
                      "  \"points\": [\n",
-                     escaped, FANCURVE_DEFAULT_HYSTERESIS, FANCURVE_DEFAULT_INTERVAL);
+                     name, FANCURVE_DEFAULT_HYSTERESIS, FANCURVE_DEFAULT_INTERVAL);
     if (n < 0 || (size_t)n >= cap) { free(buf); return NULL; }
     off = (size_t)n;
 
@@ -2528,7 +2508,7 @@ static int fc_cmd_create_agent(int argc, char **argv)
     }
 
     const char *name = pos[0];
-    if (!fancurve_name_valid(name))
+    if (!fancurve_name_new_valid(name))
         return fc_agent_error("invalid profile name '%.64s'", name);
 
     int npoints = 0;
@@ -2570,14 +2550,6 @@ static int fc_cmd_create_agent(int argc, char **argv)
     if (fancurve_profile_exists(name))
         return fail("fan curve '%s' already exists; view and delete it before creating it again", name);
 
-    char escaped[FANCURVE_NAME_MAX * 2 + 1];
-    size_t e = 0;
-    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
-        if (*p == '"' || *p == '\\') escaped[e++] = '\\';
-        escaped[e++] = (char)*p;
-    }
-    escaped[e] = '\0';
-
     size_t cap = 512 + (size_t)npoints * 80;
     char *text = malloc(cap);
     if (!text) return fail("out of memory");
@@ -2585,7 +2557,7 @@ static int fc_cmd_create_agent(int argc, char **argv)
     int n = snprintf(text, cap,
                      "{\n  \"name\": \"%s\",\n  \"hysteresis\": %d,\n"
                      "  \"interval_ms\": %d,\n  \"points\": [\n",
-                     escaped, prof.hysteresis, prof.interval_ms);
+                     name, prof.hysteresis, prof.interval_ms);
     if (n < 0 || (size_t)n >= cap) { free(text); return fail("out of memory"); }
     off = (size_t)n;
 
@@ -2629,7 +2601,7 @@ static int fc_cmd_create(int argc, char **argv)
         return fail("Usage: cctl fancurve create <name>");
 
     const char *name = argv[3];
-    if (!fancurve_name_valid(name))
+    if (!fancurve_name_new_valid(name))
         return fail("invalid profile name '%s'", name);
 
     if (fancurve_profile_exists(name)) {

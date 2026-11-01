@@ -48,11 +48,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PI 3.14159265358979323846
-
 /* ------------------------------------------------------------------ layout */
-#define W 100                     /* canvas size in cells */
-#define H 26
+#define CCTL_MON_W 100            /* canvas size in cells */
+#define CCTL_MON_H 26
+#define W CCTL_MON_W
+#define H CCTL_MON_H
 #define HIST 19                   /* sparkline samples (= module inner width) */
 #define FAN_MAX_RPM 3200.0        /* scales fan spin speed */
 #define FRAME_SEC 0.05            /* 20 fps */
@@ -78,9 +78,6 @@
 #define H_BAR   16
 
 /* ------------------------------------------------------------------- types */
-typedef struct { uint8_t r, g, b; } RGB;
-#define RGBc(r, g, b) ((RGB){(r), (g), (b)})
-
 typedef enum { PM_UNKNOWN, PM_D0, PM_D1, PM_D2, PM_D3HOT, PM_D3COLD } PciPm;
 
 typedef struct {
@@ -113,183 +110,20 @@ static Config g_cfg = { "", 1.0, false, false };
 
 /* ----------------------------------------------------------------- globals */
 static GpuSnapshot       g_snap;
-static pthread_mutex_t   g_lock = PTHREAD_MUTEX_INITIALIZER;
-static volatile sig_atomic_t g_quit = 0;
 static atomic_int        g_wait_d3cold = 0;     /* pause NVIDIA queries until D3cold */
-static double            g_t0 = 0;
-static float             g_amt = 1.0f;          /* 0 = dull/grey, 1 = full colour */
 
-/* ------------------------------------------------------------------ colour */
-static const RGB C_NV    = {118, 185, 0};
-static const RGB C_DIM   = {88, 96, 112};
-static const RGB C_LABEL = {128, 138, 156};
-static const RGB C_TEXT  = {226, 232, 240};
-static const RGB C_CYAN  = {64, 200, 230};
-static const RGB C_MAG   = {236, 92, 200};
-static const RGB C_AMBER = {255, 184, 48};
-static const RGB C_RED   = {255, 84, 72};
-static const RGB C_GOLD  = {226, 184, 64};
-static const RGB C_FRAME = {70, 100, 125};
-static const RGB BG_PANEL = {13, 16, 22};
-static const RGB BG_BAR   = {8, 10, 14};
-static const RGB BG_CARD  = {17, 21, 28};
+/* -------------------------------------------------------- GPU-only colours */
+static const RGB C_NV = {118, 185, 0};
 
-static const RGB G_TEMP[] = {{50,120,255},{0,215,215},{90,225,90},{250,215,50},{255,125,30},{255,55,55}};
 static const RGB G_CLK[]  = {{90,70,255},{170,70,255},{255,70,190},{255,170,90},{255,235,170}};
 static const RGB G_MEM[]  = {{40,200,255},{70,130,255},{150,90,255}};
 static const RGB G_LOAD[] = {{80,225,110},{230,220,60},{255,130,40},{255,60,60}};
 static const RGB G_NVRULE[] = {{118,185,0},{0,200,190},{40,50,70}};
-#define NSTOP(a) ((int)(sizeof(a) / sizeof((a)[0])))
-
-static RGB mix(RGB a, RGB b, double t)
-{
-    t = clamp01(t);
-    return RGBc(u8(a.r + (b.r - a.r) * t), u8(a.g + (b.g - a.g) * t), u8(a.b + (b.b - a.b) * t));
-}
-
-static RGB grad(const RGB *st, int n, double t)
-{
-    t = clamp01(t);
-    if (n == 1) return st[0];
-    double p = t * (n - 1);
-    int i = (int)p;
-    if (i >= n - 1) return st[n - 1];
-    return mix(st[i], st[i + 1], p - i);
-}
-
-static RGB hsv(double h, double s, double v)
-{
-    h = fmod(h, 360.0); if (h < 0) h += 360.0;
-    double c = v * s, x = c * (1 - fabs(fmod(h / 60.0, 2) - 1)), m = v - c, r = 0, g = 0, b = 0;
-    if      (h < 60)  { r = c; g = x; }
-    else if (h < 120) { r = x; g = c; }
-    else if (h < 180) { g = c; b = x; }
-    else if (h < 240) { g = x; b = c; }
-    else if (h < 300) { r = x; b = c; }
-    else              { r = c; b = x; }
-    return RGBc(u8((r + m) * 255), u8((g + m) * 255), u8((b + m) * 255));
-}
-
-/* Every colour goes through here: g_amt blends between "dull grey" (GPU asleep)
- * and the real colour (GPU awake), which gives the fade-in on wake. */
-static RGB tint(RGB c)
-{
-    double lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-    double d = lum * 0.5 + 22.0;
-    RGB dull = RGBc(u8(d), u8(d), u8(d * 1.08));
-    return mix(dull, c, g_amt);
-}
-
-/* ------------------------------------------------------------- framebuffer */
-typedef struct { uint32_t cp; RGB fg, bg; uint8_t bold, hasbg; } Cell;
-static Cell g_fb[H][W];
-
-static void fb_clear(void)
-{
-    Cell c = { ' ', {0,0,0}, {0,0,0}, 0, 0 };
-    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) g_fb[y][x] = c;
-}
-
-static void put(int x, int y, uint32_t cp, RGB fg, int bold)
-{
-    if (x < 0 || x >= W || y < 0 || y >= H) return;
-    Cell *c = &g_fb[y][x];
-    c->cp = cp; c->fg = tint(fg); c->bold = (uint8_t)bold;
-}
-
-static void put_bg(int x, int y, RGB bg)
-{
-    if (x < 0 || x >= W || y < 0 || y >= H) return;
-    g_fb[y][x].bg = tint(bg); g_fb[y][x].hasbg = 1;
-}
-
-static void fill_bg(int x, int y, int w, int h, RGB bg)
-{
-    for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) put_bg(x + i, y + j, bg);
-}
-
-static uint32_t utf8_next(const char **ps)
-{
-    const unsigned char *s = (const unsigned char *)*ps;
-    uint32_t cp; int n;
-    if (s[0] < 0x80)              { cp = s[0];        n = 1; }
-    else if ((s[0] & 0xE0) == 0xC0) { cp = s[0] & 0x1F; n = 2; }
-    else if ((s[0] & 0xF0) == 0xE0) { cp = s[0] & 0x0F; n = 3; }
-    else                          { cp = s[0] & 0x07; n = 4; }
-    for (int i = 1; i < n; i++) {
-        if ((s[i] & 0xC0) != 0x80) { n = i; break; }
-        cp = (cp << 6) | (s[i] & 0x3F);
-    }
-    *ps += n;
-    return cp;
-}
-
-static int utf8_len(const char *s)
-{
-    int n = 0;
-    while (*s) { utf8_next(&s); n++; }
-    return n;
-}
-
-#if defined(__GNUC__)
-#define PRINTF_LIKE(a, b) __attribute__((format(printf, a, b)))
-#else
-#define PRINTF_LIKE(a, b)
-#endif
-
-static int textv(int x, int y, int align, RGB c, int bold, const char *fmt, va_list ap)
-{
-    char b[256];
-    vsnprintf(b, sizeof b, fmt, ap);
-    int len = utf8_len(b);
-    int sx = align == 1 ? x - len / 2 : (align == 2 ? x - len + 1 : x);
-    const char *p = b;
-    for (int i = 0; i < len; i++) put(sx + i, y, utf8_next(&p), c, bold);
-    return len;
-}
-
-#define DEFINE_TEXT(NAME, ALIGN)                                                        \
-    static int NAME(int x, int y, RGB c, int bold, const char *fmt, ...) PRINTF_LIKE(5, 6); \
-    static int NAME(int x, int y, RGB c, int bold, const char *fmt, ...)                \
-    { va_list ap; va_start(ap, fmt); int n = textv(x, y, ALIGN, c, bold, fmt, ap); va_end(ap); return n; }
-DEFINE_TEXT(text_l, 0)   /* x = first column   */
-DEFINE_TEXT(text_c, 1)   /* x = centre column  */
-DEFINE_TEXT(text_r, 2)   /* x = last column    */
-
-static void box(int x, int y, int w, int h, RGB c, int heavy)
-{
-    uint32_t tl = heavy ? 0x250F : 0x256D, tr = heavy ? 0x2513 : 0x256E;
-    uint32_t bl = heavy ? 0x2517 : 0x2570, br = heavy ? 0x251B : 0x256F;
-    uint32_t hz = heavy ? 0x2501 : 0x2500, vt = heavy ? 0x2503 : 0x2502;
-    for (int i = 1; i < w - 1; i++) { put(x + i, y, hz, c, 0); put(x + i, y + h - 1, hz, c, 0); }
-    for (int j = 1; j < h - 1; j++) { put(x, y + j, vt, c, 0); put(x + w - 1, y + j, vt, c, 0); }
-    put(x, y, tl, c, 0); put(x + w - 1, y, tr, c, 0);
-    put(x, y + h - 1, bl, c, 0); put(x + w - 1, y + h - 1, br, c, 0);
-}
-
-static void module(int x, int y, int w, int h, const char *title, RGB c)
-{
-    fill_bg(x + 1, y + 1, w - 2, h - 2, BG_PANEL);
-    box(x, y, w, h, c, 0);
-    text_l(x + 2, y, C_TEXT, 1, " %s ", title);
-}
 
 static void kv(int x, int y, const char *k, RGB kc, const char *v, RGB vc)
 {
     text_l(x + 1, y, kc, 0, "%s", k);
     text_r(x + W_MOD - 2, y, vc, 1, "%s", v);
-}
-
-/* horizontal gauge, 1/8-cell resolution, gradient follows position */
-static void hbar(int x, int y, int w, double frac, const RGB *st, int ns)
-{
-    double lvl = clamp01(frac) * w;
-    for (int i = 0; i < w; i++) {
-        put_bg(x + i, y, BG_BAR);
-        int e = (int)lround(clampd(lvl - i, 0, 1) * 8);
-        if (e <= 0) continue;
-        put(x + i, y, (uint32_t)(0x2590 - e), grad(st, ns, (i + 0.5) / w), 0);
-    }
 }
 
 /* vertical bar: label row, body, value row, unit row (5 cells wide) */
@@ -323,13 +157,22 @@ typedef struct {
     double rx[HIST], tx[HIST], hist_acc;
 } Ui;
 
-static void hist_push(double *h, double v)
+static bool snap_active(const GpuSnapshot *s) { return s->pm == PM_D0 && s->valid; }
+
+/* The bar is scaled to the active enforced limit (70, 80, 100 W, ...).
+ * Readings a fraction above the limit must clamp at full, not jump to the
+ * card's maximum limit and make the bar collapse. */
+static double gpu_power_limit(const GpuSnapshot *s)
 {
-    memmove(h, h + 1, (HIST - 1) * sizeof *h);
-    h[HIST - 1] = v;
+    return s->power_limit_w > 0 ? s->power_limit_w : s->power_max_w;
 }
 
-static bool snap_active(const GpuSnapshot *s) { return s->pm == PM_D0 && s->valid; }
+static double gpu_power_fraction(const GpuSnapshot *s)
+{
+    if (!snap_active(s)) return 0.0;
+    double lim = gpu_power_limit(s);
+    return lim > 0 ? clamp01(s->power_w / lim) : 0.0;
+}
 
 static void ui_update(Ui *u, const GpuSnapshot *s, double dt)
 {
@@ -341,9 +184,7 @@ static void ui_update(Ui *u, const GpuSnapshot *s, double dt)
     double t_temp = act ? clamp01((s->temp_c - 20.0) / 80.0) : 0;
     double t_clk  = act ? clamp01(s->gpu_clock_mhz / clkmax) : 0;
     double t_mclk = act ? clamp01(s->mem_clock_mhz / memmax) : 0;
-    double lim = s->power_limit_w > 0 ? s->power_limit_w : s->power_max_w;
-    if (s->power_w > lim && s->power_max_w > lim) lim = s->power_max_w;
-    double t_pow  = act && lim > 0 ? clamp01(s->power_w / lim) : 0;
+    double t_pow  = gpu_power_fraction(s);
     double t_duty = s->fan_valid ? clamp01(s->fan_duty_pct / 100.0) : 0;
     double t_util = act ? clamp01(s->gpu_util_pct / 100.0) : 0;
     double t_vram = act && s->vram_total_mib > 0 ? clamp01(s->vram_used_mib / s->vram_total_mib) : 0;
@@ -363,8 +204,8 @@ static void ui_update(Ui *u, const GpuSnapshot *s, double dt)
     u->hist_acc += dt;
     while (u->hist_acc >= 0.4) {
         u->hist_acc -= 0.4;
-        hist_push(u->rx, act ? s->pcie_rx_mbs : 0);
-        hist_push(u->tx, act ? s->pcie_tx_mbs : 0);
+        hist_push(u->rx, HIST, act ? s->pcie_rx_mbs : 0);
+        hist_push(u->tx, HIST, act ? s->pcie_tx_mbs : 0);
     }
 }
 
@@ -468,7 +309,7 @@ static void draw_cable(const GpuSnapshot *s, const Ui *u)
     put(cx, 7, 0x2570, C_NV, 1); put(cx + cw - 1, 7, 0x256F, C_NV, 1);
     for (int x = cx + 1; x < cx + cw - 1; x++) put(x, 7, ' ', C_NV, 0);
     if (act) {
-        double lim = s->power_limit_w > 0 ? s->power_limit_w : s->power_max_w;
+        double lim = gpu_power_limit(s);
         if (lim > 0) {
             if (s->power_w >= 100.0)
                 text_c(cx + cw / 2, 4, C_TEXT, 1, "%.0f / %.0f W", s->power_w, lim);
@@ -653,59 +494,6 @@ static void render(const GpuSnapshot *s, const Ui *u, double t, const char *bdf)
     text_l(1, H - 1, C_DIM, 0, "q quit \xC2\xB7 p pause nvidia-smi polling to allow D3cold \xC2\xB7 poll %.1fs", g_cfg.interval);
 }
 
-/* ----------------------------------------------------------- frame emission */
-typedef struct { char *p; size_t n, cap; } Buf;
-
-static void bput(Buf *b, const char *s, size_t n)
-{
-    if (b->n + n > b->cap) return;
-    memcpy(b->p + b->n, s, n); b->n += n;
-}
-
-PRINTF_LIKE(2, 3)
-static void bprintf(Buf *b, const char *fmt, ...)
-{
-    char t[96]; va_list ap; va_start(ap, fmt);
-    int n = vsnprintf(t, sizeof t, fmt, ap);
-    va_end(ap);
-    if (n > 0) bput(b, t, (size_t)(n < (int)sizeof t ? n : (int)sizeof t - 1));
-}
-
-static void bcp(Buf *b, uint32_t cp)
-{
-    char t[4]; int n;
-    if (cp < 0x80)         { t[0] = (char)cp; n = 1; }
-    else if (cp < 0x800)   { t[0] = (char)(0xC0 | (cp >> 6)); t[1] = (char)(0x80 | (cp & 0x3F)); n = 2; }
-    else if (cp < 0x10000) { t[0] = (char)(0xE0 | (cp >> 12)); t[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); t[2] = (char)(0x80 | (cp & 0x3F)); n = 3; }
-    else { t[0] = (char)(0xF0 | (cp >> 18)); t[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); t[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); t[3] = (char)(0x80 | (cp & 0x3F)); n = 4; }
-    bput(b, t, (size_t)n);
-}
-
-static bool same(RGB a, RGB b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
-
-static void emit_frame(Buf *b, int ox, int oy, bool absolute)
-{
-    for (int y = 0; y < H; y++) {
-        if (absolute) bprintf(b, "\x1b[%d;%dH", oy + y + 1, ox + 1);
-        bput(b, "\x1b[0m", 4);
-        int bold = 0, hasbg = 0, fgset = 0; RGB fg = {0,0,0}, bg = {0,0,0};
-        for (int x = 0; x < W; x++) {
-            const Cell *c = &g_fb[y][x];
-            if (c->cp == 0) continue;           /* wide-char continuation cell */
-            if (c->bold != bold) { bput(b, c->bold ? "\x1b[1m" : "\x1b[22m", c->bold ? 4 : 5); bold = c->bold; }
-            if (c->hasbg) {
-                if (!hasbg || !same(bg, c->bg)) { bprintf(b, "\x1b[48;2;%d;%d;%dm", c->bg.r, c->bg.g, c->bg.b); bg = c->bg; hasbg = 1; }
-            } else if (hasbg) { bput(b, "\x1b[49m", 5); hasbg = 0; }
-            if (c->cp != ' ' || c->hasbg) {
-                if (!fgset || !same(fg, c->fg)) { bprintf(b, "\x1b[38;2;%d;%d;%dm", c->fg.r, c->fg.g, c->fg.b); fg = c->fg; fgset = 1; }
-            }
-            bcp(b, c->cp);
-        }
-        bput(b, "\x1b[0m", 4);
-        if (!absolute) bput(b, "\n", 1);
-    }
-}
-
 /* ===================================================================== DATA */
 
 /* ---- PCI power state (sysfs; reading these never wakes the GPU) ---- */
@@ -738,23 +526,9 @@ static bool valid_bdf(const char *s)
 
 static bool autodetect_bdf(char *out, size_t n)
 {
-    DIR *d = opendir(pci_root());
-    if (!d) return false;
-    struct dirent *e; bool found = false;
-    while (!found && (e = readdir(d))) {
-        if (e->d_name[0] == '.') continue;
-        char p[512], v[32], c[32];
-        snprintf(p, sizeof p, "%s/%s/vendor", pci_root(), e->d_name);
-        if (!read_first_line(p, v, sizeof v) || strtoul(v, NULL, 16) != 0x10de) continue;
-        snprintf(p, sizeof p, "%s/%s/class", pci_root(), e->d_name);
-        if (!read_first_line(p, c, sizeof c) || strncmp(c, "0x0300", 6) != 0) continue;
-        size_t name_len = strlen(e->d_name);
-        if (name_len == 0 || name_len > 20 || name_len >= n) continue;
-        memcpy(out, e->d_name, name_len + 1);
-        found = true;
-    }
-    closedir(d);
-    return found;
+    if (n == 0) return false;
+    out[0] = '\0';
+    return cctl_find_nvidia_gpu(out, n, pci_root(), NULL) == 0;
 }
 
 /* ---- nvidia-smi (ONLY called when PCI state is D0) ---- */
@@ -820,34 +594,11 @@ static bool parse_smi_csv(char *line, GpuSnapshot *s)
  * This monitor's single fan readout uses the GPU fan values. */
 static bool read_cctl_fans(double *gpu_duty_pct, double *gpu_rpm)
 {
-    int gpu_duty = 0, got_duty = 0;
-    *gpu_duty_pct = 0;
-    *gpu_rpm = 0;
-    int fd = tuxedo_open_clevo();
-    if (fd >= 0) {
-        int raw = 0;
-        if (ioctl(fd, R_CL_FANINFO2, &raw) >= 0) {
-            gpu_duty = ((raw & 0xFF) * 100) / 255;
-            got_duty = 1;
-            *gpu_duty_pct = (double)gpu_duty;
-        }
-        close(fd);
-    }
-
-    (void)cctl_ensure_ec_sys();
-    int ec_fd = open(CCTL_EC_RAM_PATH, O_RDONLY);
-    if (ec_fd < 0)
-        return got_duty != 0;
-    unsigned char ram[256] = {0};
-    ssize_t count = read(ec_fd, ram, sizeof ram);
-    close(ec_fd);
-    if (count < 0xD4)
-        return got_duty != 0;
-
-    unsigned int raw16 = ((unsigned int)ram[0xD2] << 8) | ram[0xD3];
-    *gpu_duty_pct = (double)gpu_duty;
-    *gpu_rpm = raw16 ? (double)(CCTL_EC_FAN_RPM_DIVISOR / raw16) : 0.0;
-    return true;
+    struct cctl_fan_telemetry fan;
+    (void)cctl_read_fan_telemetry(&fan, -1);
+    *gpu_duty_pct = fan.gpu_duty_pct;
+    *gpu_rpm = fan.gpu_rpm;
+    return fan.gpu_duty_valid || fan.rpm_valid;
 }
 
 static void smi_bus_id(const char *bdf, char *out, size_t n)   /* 0000:01:00.0 -> 00000000:01:00.0 */
@@ -977,29 +728,6 @@ static void *poller(void *arg)
 }
 
 /* ================================================================== TERMINAL */
-static struct termios g_old;
-static bool g_raw = false;
-
-static void term_enter(void)
-{
-    if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &g_old) == 0) {
-        struct termios r = g_old;
-        r.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
-        r.c_cc[VMIN] = 0; r.c_cc[VTIME] = 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &r);
-        g_raw = true;
-    }
-    write_all("\x1b[?1049h\x1b[?25l\x1b[2J", 19);
-}
-
-static void term_leave(void)
-{
-    write_all("\x1b[0m\x1b[?25h\x1b[?1049l", 19);
-    if (g_raw) { tcsetattr(STDIN_FILENO, TCSANOW, &g_old); g_raw = false; }
-}
-
-static void on_signal(int sig) { (void)sig; g_quit = 1; }
-
 static void handle_keys(void)
 {
     if (!g_raw) return;

@@ -684,38 +684,11 @@ static int nvidia_unload(void)
 /* Find the NVIDIA GPU PCI sysfs path for the private load/unload commands. */
 static int nvidia_find_pci_address(char *buf, size_t bufsz)
 {
-    DIR *d = opendir("/sys/bus/pci/devices");
-    if (!d) return -1;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        char path[512];
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", ent->d_name);
-        FILE *fp = fopen(path, "r");
-        if (!fp) continue;
-        char vendor[16] = {0};
-        if (fgets(vendor, sizeof(vendor), fp)) {
-            vendor[strcspn(vendor, "\n")] = 0;
-        }
-        fclose(fp);
-        if (strcmp(vendor, "0x10de") != 0) continue;
-        snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/class", ent->d_name);
-        fp = fopen(path, "r");
-        if (!fp) continue;
-        char class[16] = {0};
-        if (fgets(class, sizeof(class), fp)) {
-            class[strcspn(class, "\n")] = 0;
-        }
-        fclose(fp);
-        /* VGA compatible controller: class 0x030000 or 0x0300xx */
-        if (strncmp(class, "0x0300", 6) == 0) {
-            snprintf(buf, bufsz, "/sys/bus/pci/devices/%s", ent->d_name);
-            closedir(d);
-            return 0;
-        }
-    }
-    closedir(d);
-    return -1;
+    char name[32];
+    if (cctl_find_nvidia_gpu(name, sizeof(name), "/sys/bus/pci/devices", NULL) != 0)
+        return -1;
+    int n = snprintf(buf, bufsz, "/sys/bus/pci/devices/%s", name);
+    return (n >= 0 && (size_t)n < bufsz) ? 0 : -1;
 }
 
 /* Run nvidia-smi -pm <1|0> (toggle persistence mode) */
