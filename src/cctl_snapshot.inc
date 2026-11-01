@@ -1640,7 +1640,6 @@ static void snapshot_usage(void)
     cctl_stream_printf("              webcam,mic,rr,scale,bat,kbe,kbc,kbb,fn_lock,fancurve\n");
     cctl_stream_printf("  Use '--nosafe' only with restore to bypass automatic fan safety.\n");
     cctl_stream_printf("  '--mask nosafe' is deprecated; use '--nosafe'.\n");
-    cctl_stream_printf("  'bat' masks battery mode and thresholds; 'fancurve' preserves curve config.\n");
     cctl_stream_printf("\n%sFan settings:%s manual fixed fan duty is not saved. The active fan curve\n"
            "  configuration is saved and restored last. On save, --mask fancurve omits it;\n"
            "  on restore, --mask fancurve leaves the current curve unchanged.\n"

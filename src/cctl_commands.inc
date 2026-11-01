@@ -1787,6 +1787,27 @@ static int cmd_uninstall(int argc, char **argv)
         return 0;
     }
 
+    /* Stop workers before removing the binary so they cannot keep running
+     * from a deleted executable and holding hardware state. */
+    if (fc_stop_worker(1, 0) != 0) {
+        cctl_stream_fprintf(stderr,
+                "Error: could not stop the active fan-curve worker; uninstall aborted.\n");
+        return 1;
+    }
+    kbe_stop(1);
+
+    static const char *const runtime_files[] = {
+        "/run/cctl_curve.state",
+        "/run/cctl_curve.lock",
+        "/run/cctl_curve.fifo",
+        "/run/cctl_kbe.state",
+        "/run/cctl_kbe.lock",
+        "/run/cctl/mode"
+    };
+    for (size_t i = 0; i < sizeof(runtime_files) / sizeof(runtime_files[0]); i++)
+        unlink(runtime_files[i]);
+    rmdir("/run/cctl");
+
     for (size_t i = 0; i < 3; i++) {
         if (cctl_uninstall_remove_file(files[i]) != 0) {
             cctl_stream_perror("Error removing cctl profiles or settings");
@@ -1958,7 +1979,7 @@ static int cmd_install(int argc, char **argv)
     else if (access("/sbin/visudo", X_OK) == 0)    visudo_path = "/sbin/visudo";
 
     if (visudo_path) {
-        char *const v_args[] = { "visudo", "-c", "-f",
+        char *const v_args[] = { (char *)visudo_path, "-c", "-f",
                                  (char *)sudoers_tmp, NULL };
         if (run(v_args, 0, NULL, 0) != 0) {
             cctl_stream_fprintf(stderr,

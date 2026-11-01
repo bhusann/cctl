@@ -1697,22 +1697,22 @@ int cctl_cpumon(int argc, char **argv)
     sa.sa_handler = on_signal;
     sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL);
 
-    init_snapshot(&g_snap);
-    pthread_t th;
-    if (pthread_create(&th, NULL, poller, NULL) != 0) { fprintf(stderr, "thread failed\n"); return 1; }
-
     if (g_cfg.json) {
+        CpuSnapshot s;
+        init_snapshot(&s);
+        live_poll(&s); /* prime CPU/RAPL deltas before the first sample */
         while (!g_quit) {
             sleep_s(g_cfg.interval);
-            CpuSnapshot s;
-            pthread_mutex_lock(&g_lock); s = g_snap; pthread_mutex_unlock(&g_lock);
+            live_poll(&s);
             print_json_snapshot(&s);
             fflush(stdout);
         }
-        g_quit = 1;
-        pthread_join(th, NULL);
         return 0;
     }
+
+    init_snapshot(&g_snap);
+    pthread_t th;
+    if (pthread_create(&th, NULL, poller, NULL) != 0) { fprintf(stderr, "thread failed\n"); return 1; }
 
     static char out[1 << 19];
     Buf b = { out, 0, sizeof out };

@@ -479,7 +479,7 @@ static int cmd_drivers_install(int argc, char **argv)
     stream_printf(STREAM_DELAY_US, "Launching driver installer (verified sources)...\n");
     {
         char *const sh_args[] = { "bash", script, NULL };
-        int installer_status = run(sh_args, 0, NULL, 0);
+        int installer_status = run(sh_args, RUN_RAW, NULL, 0);
         if (installer_status != 0) {
             cctl_stream_fprintf(stderr, "Driver installer exited with status %d. "
                             "Review the installer output above.\n", installer_status);

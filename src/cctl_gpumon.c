@@ -763,8 +763,9 @@ static bool autodetect_bdf(char *out, size_t n)
 #define SMI_FIELDS \
     "power.draw,clocks.gr,clocks.mem,temperature.gpu,memory.used,memory.total," \
     "pstate,clocks_event_reasons.active,pcie.link.gen.current,pcie.link.gen.max," \
-    "pcie.link.width.current,enforced.power.limit,power.max_limit,power.limit,utilization.gpu,name"
-#define SMI_NFIELDS 16
+    "pcie.link.width.current,enforced.power.limit,power.max_limit,power.limit,utilization.gpu,name," \
+    "clocks.max.gr,clocks.max.mem"
+#define SMI_NFIELDS 18
 
 static double num(const char *s, double def)       /* "[N/A]" and friends -> def */
 {
@@ -810,6 +811,8 @@ static bool parse_smi_csv(char *line, GpuSnapshot *s)
 
     s->gpu_util_pct      = num(f[14], 0);
     snprintf(s->name, sizeof s->name, "%s", f[15]);
+    s->gpu_clock_max_mhz = num(f[16], 0);
+    s->mem_clock_max_mhz = num(f[17], 0);
     return true;
 }
 
@@ -818,12 +821,15 @@ static bool parse_smi_csv(char *line, GpuSnapshot *s)
 static bool read_cctl_fans(double *gpu_duty_pct, double *gpu_rpm)
 {
     int gpu_duty = 0, got_duty = 0;
+    *gpu_duty_pct = 0;
+    *gpu_rpm = 0;
     int fd = tuxedo_open_clevo();
     if (fd >= 0) {
         int raw = 0;
         if (ioctl(fd, R_CL_FANINFO2, &raw) >= 0) {
             gpu_duty = ((raw & 0xFF) * 100) / 255;
             got_duty = 1;
+            *gpu_duty_pct = (double)gpu_duty;
         }
         close(fd);
     }
@@ -1082,30 +1088,27 @@ int cctl_gpumon(int argc, char **argv)
     sa.sa_handler = on_signal;
     sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL);
 
-    init_snapshot(&g_snap);
-    if (g_cfg.json && !g_cfg.live) {
+    if (g_cfg.json) {
         GpuSnapshot s;
         init_snapshot(&s);
-        live_poll(&s);
-        print_json_snapshot(&s);
-        return 0;
-    }
-
-    pthread_t th;
-    if (pthread_create(&th, NULL, poller, NULL) != 0) { fprintf(stderr, "thread failed\n"); return 1; }
-
-    if (g_cfg.json && g_cfg.live) {
+        if (!g_cfg.live) {
+            live_poll(&s);
+            print_json_snapshot(&s);
+            return 0;
+        }
+        live_poll(&s); /* prime before the first emitted sample */
         while (!g_quit) {
             sleep_s(g_cfg.interval);
-            GpuSnapshot s;
-            pthread_mutex_lock(&g_lock); s = g_snap; pthread_mutex_unlock(&g_lock);
+            live_poll(&s);
             print_json_snapshot(&s);
             fflush(stdout);
         }
-        g_quit = 1;
-        pthread_join(th, NULL);
         return 0;
     }
+
+    init_snapshot(&g_snap);
+    pthread_t th;
+    if (pthread_create(&th, NULL, poller, NULL) != 0) { fprintf(stderr, "thread failed\n"); return 1; }
 
     static char out[1 << 18];
     Buf b = { out, 0, sizeof out };

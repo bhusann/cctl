@@ -187,43 +187,34 @@ static int set_rapl_limits(int pl1_w, int pl2_w, int pl1_cap)
     if (pl1_w > 0) snprintf(pl1_str, sizeof(pl1_str), "%d000000", pl1_w);
     if (pl2_w > 0) snprintf(pl2_str, sizeof(pl2_str), "%d000000", pl2_w);
 
-    DIR *d = opendir("/sys/class/powercap");
-    if (!d) {
-        cctl_stream_fprintf(stderr, "Warning: RAPL not available (no /sys/class/powercap)\n");
+    const char *zone = "/sys/class/powercap/intel-rapl:0";
+    char path[576];
+    char constraint[64] = {0};
+
+    snprintf(path, sizeof(path), "%s/constraint_0_name", zone);
+    if (read_sysfs_str(path, constraint, sizeof(constraint)) < 0) {
+        cctl_stream_fprintf(stderr,
+                "Warning: RAPL not available (no intel-rapl:0 package)\n");
+        return 0;
+    }
+    /* Writing to psys or sub-zones causes EC conflict → 0.4GHz throttle. */
+    if (strcmp(constraint, "long_term") != 0) {
+        cctl_stream_fprintf(stderr,
+                "Warning: RAPL package-0 constraint is not long_term\n");
         return 0;
     }
 
-    struct dirent *ent;
-    char path[576];
-
-    while ((ent = readdir(d)) != NULL) {
-        if (strncmp(ent->d_name, "intel-rapl:", 11) != 0) continue;
-
-        /* Skip sub-zones (intel-rapl:0:0, intel-rapl:0:1, etc.)
-           and psys (intel-rapl:1). Only write to package-0.
-           Writing to psys or sub-zones causes EC conflict → 0.4GHz throttle. */
-        if (strcmp(ent->d_name, "intel-rapl:0") != 0) continue;
-
-        /* Only adjust zones whose constraint_0 is "long_term" */
-        char buf[64] = {0};
-        snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_0_name", ent->d_name);
-        if (read_sysfs_str(path, buf, sizeof(buf)) < 0) continue;
-        if (strcmp(buf, "long_term") != 0) continue;
-
-        /* Write PL1 if requested */
-        if (pl1_w > 0) {
-            snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_0_power_limit_uw",
-                     ent->d_name);
-            write_sysfs(path, pl1_str);
-        }
-
-        /* Write PL2 (only when requested — never write a skipped/negative limit) */
-        snprintf(path, sizeof(path), "/sys/class/powercap/%s/constraint_1_power_limit_uw",
-                 ent->d_name);
-        if (pl2_w > 0 && access(path, W_OK) == 0)
-            write_sysfs(path, pl2_str);
+    if (pl1_w > 0) {
+        snprintf(path, sizeof(path), "%s/constraint_0_power_limit_uw", zone);
+        if (write_sysfs(path, pl1_str) != 0)
+            cctl_stream_fprintf(stderr, "  Warning: failed to write RAPL PL1 limit\n");
     }
-    closedir(d);
+
+    snprintf(path, sizeof(path), "%s/constraint_1_power_limit_uw", zone);
+    if (pl2_w > 0 && access(path, W_OK) == 0) {
+        if (write_sysfs(path, pl2_str) != 0)
+            cctl_stream_fprintf(stderr, "  Warning: failed to write RAPL PL2 limit\n");
+    }
 
     /* Readback verification: detect locked RAPL limits that silently
      * reject writes.  A mismatch means firmware has the MSR locked. */

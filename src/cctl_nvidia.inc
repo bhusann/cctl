@@ -22,15 +22,19 @@
  *                               when no graphics or memory clock lock remains.
  * ======================================================================== */
 
-static int nvidia_is_blacklisted(void)
+static void nvidia_repair_blacklist(void)
 {
-    /* If a previous run was interrupted during nvidia_load, repair the blacklist */
+    /* If a previous load was interrupted, restore the blacklist. This is a
+     * write operation and must only be called from load paths. */
     if (access("/etc/modprobe.d/blacklist-nvidia.conf", F_OK) != 0 &&
         access("/etc/modprobe.d/blacklist-nvidia.conf.bak", F_OK) == 0) {
         rename("/etc/modprobe.d/blacklist-nvidia.conf.bak",
                "/etc/modprobe.d/blacklist-nvidia.conf");
     }
+}
 
+static int nvidia_is_blacklisted(void)
+{
     if (access("/etc/modprobe.d/blacklist-nvidia.conf", F_OK) != 0)
         return 0;
     FILE *fp = fopen("/etc/modprobe.d/blacklist-nvidia.conf", "r");
@@ -47,15 +51,54 @@ static int nvidia_is_blacklisted(void)
     return found;
 }
 
+static int nvidia_has_open_device(void)
+{
+    DIR *proc = opendir("/proc");
+    if (!proc) return 0;
+
+    pid_t self = getpid();
+    int found = 0;
+    struct dirent *ent;
+    while (!found && (ent = readdir(proc)) != NULL) {
+        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
+        char *end = NULL;
+        long pid = strtol(ent->d_name, &end, 10);
+        if (!end || *end || pid <= 0 || pid == (long)self) continue;
+
+        char fd_dir[64];
+        snprintf(fd_dir, sizeof(fd_dir), "/proc/%ld/fd", pid);
+        DIR *fds = opendir(fd_dir);
+        if (!fds) continue;
+
+        struct dirent *fd;
+        while ((fd = readdir(fds)) != NULL) {
+            if (fd->d_name[0] == '.') continue;
+            char link[PATH_MAX], target[PATH_MAX];
+            int n = snprintf(link, sizeof(link), "%s/%s", fd_dir, fd->d_name);
+            if (n < 0 || (size_t)n >= sizeof(link)) continue;
+            ssize_t len = readlink(link, target, sizeof(target) - 1);
+            if (len <= 0) continue;
+            target[len] = '\0';
+            if (strncmp(target, "/dev/nvidia", 11) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        closedir(fds);
+    }
+    closedir(proc);
+    return found;
+}
+
 static int nvidia_gpu_in_use(void)
 {
     if (!nvidia_is_loaded()) return 0;
     char line[128] = {0};
     char *const args[] = { "nvidia-smi", "--query-compute-apps=pid",
                            "--format=csv,noheader", NULL };
-    if (run(args, RUN_CAPTURE, line, sizeof(line)) != 0)
-        return 0;
-    return (line[0] != '\0');
+    if (run(args, RUN_CAPTURE, line, sizeof(line)) == 0 && line[0])
+        return 1;
+    return nvidia_has_open_device();
 }
 
 /* Detect whether the NVIDIA GPU is driving a connected display (DRM active).
@@ -271,12 +314,24 @@ static int try_unload_nvidia(void)
     cctl_stream_printf("  Attempting to unload NVIDIA modules...\n");
     if (nvidia_gpu_in_use()) {
         cctl_stream_fprintf(stderr, "Error: GPU is actively in use by running processes:\n");
+        char procs[2048] = {0};
         char *const query_args[] = {
-            "sh", "-c",
-            "nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | awk -F', ' '{print \"    PID \" $1 \": \" $2}'",
-            NULL
+            "nvidia-smi", "--query-compute-apps=pid,name",
+            "--format=csv,noheader", NULL
         };
-        run_quiet(query_args);
+        if (run(query_args, RUN_CAPTURE, procs, sizeof(procs)) == 0 && procs[0]) {
+            char *line = procs;
+            while (*line) {
+                char *next = strchr(line, '\n');
+                if (next) *next = '\0';
+                if (*line)
+                    cctl_stream_fprintf(stderr, "    %s\n", line);
+                if (!next) break;
+                line = next + 1;
+            }
+        } else {
+            cctl_stream_fprintf(stderr, "    (graphics or display client detected)\n");
+        }
         cctl_stream_fprintf(stderr, "Cannot unload modules while GPU is in use.\n");
         return -1;
     }
@@ -460,13 +515,15 @@ static void nvidia_show_status(void)
     if (loaded) {
         if (access("/usr/bin/nvidia-smi", X_OK) == 0) {
             cctl_stream_printf("\n%s--- NVIDIA GPU Telemetry ---%s\n", C_YLW, C_RST);
+            char telemetry[2048] = {0};
             char *const telemetry_args[] = {
                 "sh", "-c",
                 "nvidia-smi --query-gpu=name,driver_version,memory.used,memory.total,power.draw,temperature.gpu,persistence_mode --format=csv,noheader,nounits 2>/dev/null | "
                 "awk -F', ' '{print \"  GPU:           \" $1 \"\\n  Driver:        \" $2 \"\\n  VRAM:          \" $3 \" / \" $4 \" MiB\\n  Power draw:    \" $5 \" W\\n  Temperature:   \" $6 \"°C\\n  Persistence:   \" $7}'",
                 NULL
             };
-            run_quiet(telemetry_args);
+            if (run(telemetry_args, RUN_CAPTURE, telemetry, sizeof(telemetry)) == 0)
+                cctl_stream_printf("%s", telemetry);
 
             char procs_buf[1024] = {0};
             char *const p_args[] = { "nvidia-smi", "--query-compute-apps=pid,name,used_memory",
@@ -513,6 +570,7 @@ static void nvidia_pci_set_control(const char *val, const char *msg)
 
 static int nvidia_load(int load_game)
 {
+    nvidia_repair_blacklist();
     if (!nvidia_is_blacklisted()) {
         cctl_stream_fprintf(stderr, "  Error: NVIDIA is not blacklisted. Use 'nvidia on' instead.\n");
         return 1;

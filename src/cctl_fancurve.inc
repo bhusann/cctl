@@ -77,6 +77,9 @@ struct fancurve_state {
     struct fancurve_profile profile;
 };
 
+static uid_t fc_invoking_uid(void);
+static gid_t fc_invoking_gid(uid_t uid);
+
 /* ---------------------------------------------------------------- names */
 
 static int fancurve_name_valid(const char *name)
@@ -572,6 +575,19 @@ static int fc_write_temp_text(const char *text, char *out_path, size_t out_sz,
         snprintf(err, err_sz, "could not create a temporary file: %s", strerror(errno));
         return -1;
     }
+
+    /* If cctl was elevated, the editor still runs as the invoking user. */
+    uid_t editor_uid = fc_invoking_uid();
+    if (geteuid() == 0 && editor_uid != 0) {
+        gid_t editor_gid = fc_invoking_gid(editor_uid);
+        if (fchown(fd, editor_uid, editor_gid) != 0) {
+            snprintf(err, err_sz, "could not assign temporary file to user: %s",
+                     strerror(errno));
+            close(fd);
+            unlink(tmpl);
+            return -1;
+        }
+    }
     if (fchmod(fd, 0600) != 0) {
         snprintf(err, err_sz, "could not secure temporary file: %s", strerror(errno));
         close(fd);
@@ -759,10 +775,32 @@ static uid_t fc_invoking_uid(void)
     return 0;
 }
 
+static gid_t fc_invoking_gid(uid_t uid)
+{
+    if (uid == 0)
+        return 0;
+    if (geteuid() != 0)
+        return getgid();
+
+    const char *sudo_gid = getenv("SUDO_GID");
+    if (sudo_gid && *sudo_gid) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long v = strtoul(sudo_gid, &end, 10);
+        if (errno == 0 && end != sudo_gid && *end == '\0' && v <= UINT_MAX)
+            return (gid_t)v;
+    }
+
+    struct passwd *pw = getpwuid(uid);
+    if (pw)
+        return pw->pw_gid;
+    return getgid();
+}
+
 static int fc_install_profile(const char *name, const char *src,
                               char *err, size_t err_sz)
 {
-    uid_t owner = geteuid();
+    uid_t owner = fc_invoking_uid();
     if (geteuid() == 0 || access(FANCURVE_DIR, W_OK) == 0) {
         char *text = fc_read_owned_text(src, owner, err, err_sz);
         if (!text) return -1;
@@ -870,16 +908,63 @@ static int fc_run_editor(const char *path, char *err, size_t err_sz)
         return -1;
     }
 
-    char cmd[PATH_MAX + 512];
-    if (snprintf(cmd, sizeof(cmd), "%s '%s'", editor, path) >= (int)sizeof(cmd)) {
-        snprintf(err, err_sz, "editor command is too long");
+    wordexp_t we = {0};
+    int wr = wordexp(editor, &we, WRDE_NOCMD);
+    if (wr != 0 || we.we_wordc == 0) {
+        if (wr == WRDE_NOSPACE) wordfree(&we);
+        snprintf(err, err_sz, "invalid editor command");
         return -1;
     }
 
-    char *const args[] = { "sh", "-c", cmd, NULL };
-    int rc = run(args, RUN_RAW, NULL, 0);
-    if (rc != 0) {
-        snprintf(err, err_sz, "editor exited with status %d", rc);
+    char **args = calloc(we.we_wordc + 2, sizeof(*args));
+    if (!args) {
+        wordfree(&we);
+        snprintf(err, err_sz, "out of memory");
+        return -1;
+    }
+    for (size_t i = 0; i < we.we_wordc; i++)
+        args[i] = we.we_wordv[i];
+    args[we.we_wordc] = (char *)path;
+    args[we.we_wordc + 1] = NULL;
+
+    fflush(stdout);
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid < 0) {
+        snprintf(err, err_sz, "could not start editor: %s", strerror(errno));
+        free(args);
+        wordfree(&we);
+        return -1;
+    }
+    if (pid == 0) {
+        uid_t uid = fc_invoking_uid();
+        if (geteuid() == 0 && uid != 0) {
+            gid_t gid = fc_invoking_gid(uid);
+            if (setgroups(0, NULL) != 0 ||
+                setresgid(gid, gid, gid) != 0 ||
+                setresuid(uid, uid, uid) != 0)
+                _exit(126);
+        }
+        execvp(args[0], args);
+        _exit(127);
+    }
+
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+
+    free(args);
+    wordfree(&we);
+
+    if (waited < 0) {
+        snprintf(err, err_sz, "could not wait for editor: %s", strerror(errno));
+        return -1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        snprintf(err, err_sz, "editor exited with status %d",
+                 WIFEXITED(status) ? WEXITSTATUS(status) : 1);
         return -1;
     }
     return 0;
@@ -1100,8 +1185,8 @@ static int fc_is_running(struct fancurve_state *st)
     return alive;
 }
 
-/* Non-root callers cannot read /run/cctl_curve.state (0600). Treat an
- * existing state file as active for previews; root commands can verify it. */
+/* If the state file exists but cannot be read, treat it as active for
+ * previews; root commands can verify it. */
 static int fc_any_active(struct fancurve_state *st)
 {
     if (fc_is_running(st)) return 1;
@@ -1652,9 +1737,9 @@ static int fc_worker_begin(struct fancurve_worker_ctx *ctx,
     }
 
     state_fd = open(FANCURVE_STATE_PATH,
-                    O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
+                    O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
     if (state_fd < 0) goto fail;
-    fchmod(state_fd, 0600);
+    fchmod(state_fd, 0644);
 
     fp = fdopen(state_fd, "w");
     if (!fp) goto fail;
@@ -2599,9 +2684,6 @@ static int fc_cmd_edit(int argc, char **argv)
     char path[PATH_MAX];
     if (fancurve_profile_path(name, path, sizeof(path)) < 0)
         return fail("invalid profile name '%s'", name);
-
-    if (geteuid() != 0 && access(FANCURVE_STATE_PATH, F_OK) == 0)
-        require_root(argc, argv);
 
     struct fancurve_state st;
     if (fc_is_running(&st) && strcmp(st.name, name) == 0)

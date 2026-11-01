@@ -312,8 +312,13 @@ static int kbe_read_state(struct kbe_state *st)
     st->orig_b = 255;
     st->orig_bri = 255;
 
-    FILE *fp = fopen(KBE_STATE_PATH, "r");
-    if (!fp) return -1;
+    int state_fd = open(KBE_STATE_PATH, O_RDONLY | O_NOFOLLOW);
+    if (state_fd < 0) return -1;
+    FILE *fp = fdopen(state_fd, "r");
+    if (!fp) {
+        close(state_fd);
+        return -1;
+    }
     char line[128];
     long p = -1, start = -1;
     if (!fgets(line, sizeof(line), fp)) { fclose(fp); return -1; }
@@ -409,7 +414,6 @@ static int kbe_stop(int quiet)
 
     kbd_restore_state(ks.orig_r, ks.orig_g, ks.orig_b, ks.orig_bri);
     unlink(KBE_STATE_PATH);
-    unlink(KBE_LOCK_PATH);
 
     if (!quiet)
         cctl_stream_printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", ks.effect, (int)ks.pid);
@@ -451,7 +455,7 @@ static int kbe_acquire_worker_lock(void)
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
-    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT, 0600);
+    int lock_fd = open(KBE_LOCK_PATH, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
     if (lock_fd < 0) return -1;
 
     for (int i = 0; i < 75; i++) {
@@ -481,14 +485,23 @@ static int kbe_worker_begin(struct kbe_worker_ctx *ctx, const char *effect,
     ctx->lock_fd = kbe_acquire_worker_lock();
     if (ctx->lock_fd < 0) return -1;
 
-    FILE *fp = fopen(KBE_STATE_PATH, "w");
-    if (!fp) {
+    int state_fd = open(KBE_STATE_PATH,
+                        O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
+    if (state_fd < 0) {
         flock(ctx->lock_fd, LOCK_UN);
         close(ctx->lock_fd);
         ctx->lock_fd = -1;
         return -1;
     }
-    chmod(KBE_STATE_PATH, 0600);
+    fchmod(state_fd, 0600);
+    FILE *fp = fdopen(state_fd, "w");
+    if (!fp) {
+        close(state_fd);
+        flock(ctx->lock_fd, LOCK_UN);
+        close(ctx->lock_fd);
+        ctx->lock_fd = -1;
+        return -1;
+    }
     cctl_stream_fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n%s\n",
             (int)getpid(), proc_starttime(getpid()),
             effect, orig_r, orig_g, orig_b, orig_bri,
@@ -531,7 +544,6 @@ static void kbe_worker_end(struct kbe_worker_ctx *ctx, int restore)
         close(ctx->lock_fd);
         ctx->lock_fd = -1;
     }
-    unlink(KBE_LOCK_PATH);
 }
 
 static const uint8_t kbe_pulse_wave[] = {

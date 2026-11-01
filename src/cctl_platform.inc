@@ -1146,11 +1146,11 @@ static void status_system(void)
                 "cache");
 
         if (tcc_recognized && cache_available)
-            row("EC Code:", "%s%s%s (%d; TCC %d°C; %s)", C_CYN,
+            row("EC Code:", "%s%s%s (%d; TCC offset %d°C; %s)", C_CYN,
                 gpu_profile_name(live_ec_code), C_RST, live_ec_code,
                 live_tcc_offset, cache_detail);
         else if (tcc_recognized)
-            row("EC Code:", "%s%s%s (%d; TCC %d°C)", C_CYN,
+            row("EC Code:", "%s%s%s (%d; TCC offset %d°C)", C_CYN,
                 gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
         else
             row("EC Code:", "%s%s%s (%d; %s; TCC offset %s)", C_CYN,

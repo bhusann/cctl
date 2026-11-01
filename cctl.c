@@ -38,6 +38,8 @@
 #include <sys/file.h>
 #include <stdarg.h>
 #include <math.h>
+#include <wordexp.h>
+#include <grp.h>
 #include <dbus/dbus.h>
 
 #define CCTL_VERSION      "5.0.1"
@@ -47,7 +49,7 @@
  * if a local binary is newer than /usr/local/bin/cctl. Do NOT document this in
  * README or help menus. */
 #ifndef CCTL_MICROVERSION
-#define CCTL_MICROVERSION 100127
+#define CCTL_MICROVERSION 100131
 #endif
 
 

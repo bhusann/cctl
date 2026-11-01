@@ -2,6 +2,7 @@
 #define CCTL_MONITOR_COMMON_H
 
 #include <fcntl.h>
+#include <errno.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -65,7 +66,11 @@ static inline void write_all(const char *p, size_t n)
 {
     while (n) {
         ssize_t written = write(STDOUT_FILENO, p, n);
-        if (written <= 0) return;
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        if (written == 0) return;
         p += written;
         n -= (size_t)written;
     }
