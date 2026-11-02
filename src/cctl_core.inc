@@ -491,8 +491,6 @@ static int read_cpu_temp_ex(int cached_fd);
 int cctl_gpumon(int argc, char **argv);
 int cctl_cpumon(int argc, char **argv);
 #define read_cpu_temp() read_cpu_temp_ex(-1)
-static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm, int *gpu_rpm, int cached_fd);
-#define read_fan_telemetry(c, g, cr, gr) read_fan_telemetry_ex(c, g, cr, gr, -1)
 static int is_cpu_e_core(int cpu_num);
 #ifdef CCTL_NVIDIA
 static int nvidia_is_blacklisted(void);
@@ -518,8 +516,15 @@ struct kbe_state {
     char resume_effect[32];
 };
 static int kbe_is_running(struct kbe_state *st);
+static void kbe_effective_effect(const struct kbe_state *st, char *buf, size_t len);
 static int nvidia_find_pci_address(char *buf, size_t bufsz);
 static void json_field(const char *key, const char *value);
+static void json_field_null(const char *key);
+static void json_field_bool(const char *key, int value);
+static void json_field_int(const char *key, long value);
+static void json_field_num(const char *key, double value, int precision);
+static void json_field_rgb(const char *key, int r, int g, int b);
+static void json_field_str_or_null(const char *key, const char *value);
 
 /* ========================================================================
  * EC PORT I/O
@@ -1070,22 +1075,21 @@ static int mux_running_mode(void)
 static int mux_show_internal(const char *prefix)
 {
     int nvram = mux_read();
+    if (json_output) {
+        int running = nvram >= 0 ? mux_running_mode() : -1;
+        json_field_str_or_null("gpu_mux_mode",
+                               running >= 0 ? mux_mode_str(running) : NULL);
+        json_field_str_or_null("gpu_mux_nvram",
+                               nvram >= 0 ? mux_mode_str(nvram) : NULL);
+        json_field_bool("gpu_mux_pending_reboot",
+                        nvram >= 0 && running >= 0 && nvram != running);
+        return nvram < 0 ? 1 : 0;
+    }
     if (nvram < 0) {
-        if (json_output) {
-            json_field("GPU MUX", "N/A (NVRAM variable not found or unrecognized)");
-            return 1;
-        }
         cctl_stream_printf("%s%sN/A (NVRAM variable not found or unrecognized)%s\n", prefix, C_DIM, C_RST);
         return 1;
     }
     int running = mux_running_mode();
-    if (json_output) {
-        char value[128];
-        snprintf(value, sizeof(value), "%s%s", mux_mode_str(running),
-                 nvram != running ? " (pending reboot)" : "");
-        json_field("GPU MUX", value);
-        return 0;
-    }
     const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_RED;
     if (running >= 0 && nvram != running)
         cctl_stream_printf("%s%s%s%s  %s← %s pending (reboot to apply)%s\n",

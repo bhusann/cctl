@@ -438,8 +438,10 @@ static int cctl_snapshot_read_current(struct cctl_snapshot_data *st,
         st->kbd_g = ks.orig_g;
         st->kbd_b = ks.orig_b;
         st->kbd_brightness = ks.orig_bri;
-        if (kbe_find_effect(ks.effect))
-            snprintf(st->kbd_effect, sizeof(st->kbd_effect), "%s", ks.effect);
+        char effect[32];
+        kbe_effective_effect(&ks, effect, sizeof(effect));
+        if (kbe_find_effect(effect))
+            snprintf(st->kbd_effect, sizeof(st->kbd_effect), "%s", effect);
         else
             snprintf(st->kbd_effect, sizeof(st->kbd_effect), "none");
     } else {
@@ -1428,7 +1430,7 @@ static int cctl_snapshot_restore(const char *name, const struct cctl_snapshot_da
         int effect_was_running = kbe_is_running(&ks);
         char running_effect[sizeof(ks.effect)] = {0};
         if (effect_was_running)
-            snprintf(running_effect, sizeof(running_effect), "%s", ks.effect);
+            kbe_effective_effect(&ks, running_effect, sizeof(running_effect));
 
         int cur_r = -1, cur_g = -1, cur_b = -1, cur_bri = -1;
         if (effect_was_running) {

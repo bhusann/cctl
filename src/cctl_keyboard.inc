@@ -370,21 +370,27 @@ static int kbe_is_running(struct kbe_state *st)
     if (alive && st->starttime > 0 && proc_starttime(st->pid) != st->starttime)
         alive = 0;
 
-    if (alive) {
-        if (strcmp(st->effect, "pulse-profile") == 0) {
-            if (st->resume_effect[0] != '\0') {
-                snprintf(st->effect, sizeof(st->effect), "%.20s", st->resume_effect);
-            } else {
-                snprintf(st->effect, sizeof(st->effect), "profile pulse");
-            }
-        }
+    if (alive)
         return 1;
-    }
 
     if (geteuid() == 0) {
         unlink(KBE_STATE_PATH);
     }
     return 0;
+}
+
+/* Resolve the effect to show or resume. "pulse-profile" is a transient
+ * overlay; the raw state keeps that name so callers can compare it. */
+static void kbe_effective_effect(const struct kbe_state *st, char *buf, size_t len)
+{
+    if (strcmp(st->effect, "pulse-profile") == 0) {
+        if (st->resume_effect[0] != '\0')
+            snprintf(buf, len, "%.20s", st->resume_effect);
+        else
+            snprintf(buf, len, "profile pulse");
+        return;
+    }
+    snprintf(buf, len, "%s", st->effect);
 }
 
 static int kbe_stop(int quiet)
@@ -415,8 +421,11 @@ static int kbe_stop(int quiet)
     kbd_restore_state(ks.orig_r, ks.orig_g, ks.orig_b, ks.orig_bri);
     unlink(KBE_STATE_PATH);
 
-    if (!quiet)
-        cctl_stream_printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", ks.effect, (int)ks.pid);
+    if (!quiet) {
+        char shown[32];
+        kbe_effective_effect(&ks, shown, sizeof(shown));
+        cctl_stream_printf("Stopped keyboard effect '%s' [PID %d] and restored original state.\n", shown, (int)ks.pid);
+    }
 
     return 0;
 }
@@ -474,6 +483,56 @@ struct kbe_worker_ctx {
     int orig_r, orig_g, orig_b, orig_bri;
 };
 
+/* Publish worker state atomically so `kbe status`/`kbe stop` never parse a
+ * half-written file. Write a sibling temp file, fsync, then rename() over
+ * the published path. */
+static int kbe_publish_state(const char *effect, int orig_r, int orig_g,
+                             int orig_b, int orig_bri, const char *resume_effect)
+{
+    char tmp[PATH_MAX];
+    int n = snprintf(tmp, sizeof(tmp), "%s.tmp.XXXXXX", KBE_STATE_PATH);
+    if (n < 0 || (size_t)n >= sizeof(tmp))
+        return -1;
+
+    struct stat sb;
+    if (lstat(KBE_STATE_PATH, &sb) == 0 && S_ISLNK(sb.st_mode))
+        return -1;
+
+    int fd = mkstemp(tmp);
+    if (fd < 0) return -1;
+    if (fchmod(fd, 0600) != 0) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+
+    FILE *fp = fdopen(fd, "w");
+    if (!fp) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+
+    int failed = cctl_stream_fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n%s\n",
+            (int)getpid(), proc_starttime(getpid()),
+            effect, orig_r, orig_g, orig_b, orig_bri,
+            (resume_effect && *resume_effect) ? resume_effect : "none") < 0;
+    if (failed || fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
+        fclose(fp);
+        unlink(tmp);
+        return -1;
+    }
+    if (fclose(fp) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, KBE_STATE_PATH) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
 static int kbe_worker_begin(struct kbe_worker_ctx *ctx, const char *effect,
                             int orig_r, int orig_g, int orig_b, int orig_bri,
                             const char *resume_effect)
@@ -485,28 +544,13 @@ static int kbe_worker_begin(struct kbe_worker_ctx *ctx, const char *effect,
     ctx->lock_fd = kbe_acquire_worker_lock();
     if (ctx->lock_fd < 0) return -1;
 
-    int state_fd = open(KBE_STATE_PATH,
-                        O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
-    if (state_fd < 0) {
+    if (kbe_publish_state(effect, orig_r, orig_g, orig_b, orig_bri,
+                          resume_effect) < 0) {
         flock(ctx->lock_fd, LOCK_UN);
         close(ctx->lock_fd);
         ctx->lock_fd = -1;
         return -1;
     }
-    fchmod(state_fd, 0600);
-    FILE *fp = fdopen(state_fd, "w");
-    if (!fp) {
-        close(state_fd);
-        flock(ctx->lock_fd, LOCK_UN);
-        close(ctx->lock_fd);
-        ctx->lock_fd = -1;
-        return -1;
-    }
-    cctl_stream_fprintf(fp, "%d %ld\n%s\n%d %d %d %d\n%s\n",
-            (int)getpid(), proc_starttime(getpid()),
-            effect, orig_r, orig_g, orig_b, orig_bri,
-            (resume_effect && *resume_effect) ? resume_effect : "none");
-    fclose(fp);
 
     ctx->orig_r = orig_r;
     ctx->orig_g = orig_g;
@@ -1243,12 +1287,15 @@ static int kbn_notify(const char *effect, int r, int g, int b,
 
     struct kbe_state previous;
     int had_effect = kbe_is_running(&previous);
+    char previous_effect[32] = {0};
+    if (had_effect)
+        kbe_effective_effect(&previous, previous_effect, sizeof(previous_effect));
     char resume_effect[32] = {0};
     if (had_effect) {
-        if (strcmp(previous.effect, "kbn-notification") == 0)
+        if (strcmp(previous_effect, "kbn-notification") == 0)
             return fail("A keyboard notification is already running");
-        if (kbe_find_effect(previous.effect))
-            snprintf(resume_effect, sizeof(resume_effect), "%s", previous.effect);
+        if (kbe_find_effect(previous_effect))
+            snprintf(resume_effect, sizeof(resume_effect), "%s", previous_effect);
         if (kbe_stop(1) != 0)
             return fail("Could not pause the active keyboard effect");
     }

@@ -98,6 +98,7 @@ typedef struct {
     unsigned long long clk_reasons;
     int    pcie_gen, pcie_gen_max, pcie_width;
     double pcie_rx_mbs, pcie_tx_mbs;
+    bool   pcie_rates_valid;    /* dmon throughput present (not sampled in --live) */
 } GpuSnapshot;
 
 typedef struct {
@@ -627,8 +628,9 @@ static bool nvsmi_query(const char *bdf, GpuSnapshot *s)
 }
 
 /* PCIe throughput is not a --query-gpu field. `dmon -s t` reports rxpci/txpci in MB/s.
- * NOTE: dmon takes ~1 s per sample, which is fine because polling runs on its own thread.
- * Not verified against every driver's exact column layout - check yours. */
+ * dmon can block for ~1 s per sample on some drivers, which would dominate the
+ * live JSON cadence, so --live skips it and reports throughput as null. The TUI
+ * poller and one-shot --json still collect it on their own schedule. */
 static bool nvsmi_pcie_rates(const char *bdf, double *rx, double *tx)
 {
     char id[32], cmd[256], line[256];
@@ -691,7 +693,12 @@ static void live_poll(GpuSnapshot *s)
             return;
         }
         double rx = 0, tx = 0;
-        if (!atomic_load(&g_wait_d3cold) && nvsmi_pcie_rates(g_cfg.bdf, &rx, &tx)) { t.pcie_rx_mbs = rx; t.pcie_tx_mbs = tx; }
+        if (!g_cfg.live && !atomic_load(&g_wait_d3cold) &&
+            nvsmi_pcie_rates(g_cfg.bdf, &rx, &tx)) {
+            t.pcie_rx_mbs = rx;
+            t.pcie_tx_mbs = tx;
+            t.pcie_rates_valid = true;
+        }
         if (atomic_load(&g_wait_d3cold)) {
             t.valid = false;
             t.smi_error = false;
@@ -783,8 +790,8 @@ static void print_json_snapshot(const GpuSnapshot *s)
     fputs(",\"pcie_gen\":", stdout); if (s->valid && s->pcie_gen > 0) printf("%d", s->pcie_gen); else fputs("null", stdout);
     fputs(",\"pcie_gen_max\":", stdout); if (s->valid && s->pcie_gen_max > 0) printf("%d", s->pcie_gen_max); else fputs("null", stdout);
     fputs(",\"pcie_width\":", stdout); if (s->valid && s->pcie_width > 0) printf("%d", s->pcie_width); else fputs("null", stdout);
-    fputs(",\"pcie_rx_mbs\":", stdout); json_num(s->pcie_rx_mbs, s->valid, 1);
-    fputs(",\"pcie_tx_mbs\":", stdout); json_num(s->pcie_tx_mbs, s->valid, 1);
+    fputs(",\"pcie_rx_mbs\":", stdout); json_num(s->pcie_rx_mbs, s->pcie_rates_valid, 1);
+    fputs(",\"pcie_tx_mbs\":", stdout); json_num(s->pcie_tx_mbs, s->pcie_rates_valid, 1);
     fputs(",\"gpu_fan_duty_pct\":", stdout); json_num(s->fan_duty_pct, s->fan_valid, 1);
     fputs(",\"gpu_fan_rpm\":", stdout); json_num(s->fan_rpm, s->fan_valid, 0);
     puts("}");

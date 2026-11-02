@@ -154,6 +154,11 @@ cctl gpumon [--json] [--live]   # --json prints one sample; --live streams JSON 
 cctl --version                  # Print version and exit (also -V, -v)
 ```
 
+`gpumon --live` skips `nvidia-smi dmon` because it can block for about a
+second per sample and would halve the live cadence. Live samples therefore
+report `pcie_rx_mbs` and `pcie_tx_mbs` as `null`; one-shot `gpumon --json` and
+the interactive monitor still collect PCIe throughput.
+
 ### Snapshots
 ```bash
 cctl snap                        # List saved snapshot names

@@ -1061,6 +1061,62 @@ static void json_field(const char *key, const char *value)
     json_string(value);
 }
 
+static void json_key(const char *key)
+{
+    if (!json_output) return;
+    if (!json_first_field) cctl_stream_putchar(',');
+    json_first_field = 0;
+    json_string(key);
+    cctl_stream_putchar(':');
+}
+
+static void json_field_null(const char *key)
+{
+    if (!json_output) return;
+    json_key(key);
+    cctl_stream_puts("null");
+}
+
+static void json_field_bool(const char *key, int value)
+{
+    if (!json_output) return;
+    json_key(key);
+    cctl_stream_puts(value ? "true" : "false");
+}
+
+static void json_field_int(const char *key, long value)
+{
+    if (!json_output) return;
+    json_key(key);
+    cctl_stream_printf("%ld", value);
+}
+
+static void json_field_num(const char *key, double value, int precision)
+{
+    if (!json_output) return;
+    json_key(key);
+    if (precision <= 0)
+        cctl_stream_printf("%.0f", value);
+    else
+        cctl_stream_printf("%.*f", precision, value);
+}
+
+static void json_field_rgb(const char *key, int r, int g, int b)
+{
+    if (!json_output) return;
+    json_key(key);
+    cctl_stream_printf("[%d,%d,%d]", r, g, b);
+}
+
+static void json_field_str_or_null(const char *key, const char *value)
+{
+    if (!json_output) return;
+    if (value)
+        json_field(key, value);
+    else
+        json_field_null(key);
+}
+
 static void format_gpu_fan(char *buf, size_t sz, int pct, int rpm)
 {
     if (pct == 0 && rpm == 0) {
@@ -1141,27 +1197,46 @@ static void status_system(void)
         const char *mode = status_inferred_mode(status_ec_code, &cpu_profile);
         if (strstr(mode, "aggressive"))
             s_status_mode_has_aggressive = 1;
-        if (tcc_recognized)
-            row("Mode:", "%s%s%s", C_CYN, mode, C_RST);
-        else
-            row("Mode:", "%s%s%s (from tuxedo_io %s)", C_CYN, mode, C_RST,
-                "cache");
+        if (json_output) {
+            json_field("mode", mode);
+            json_field_int("ec_code", status_ec_code);
+            json_field("ec_profile", gpu_profile_name(status_ec_code));
+            if (tcc_recognized && live_tcc_offset >= 0)
+                json_field_int("tcc_offset_c", live_tcc_offset);
+            else
+                json_field_null("tcc_offset_c");
+            json_field("ec_code_source", tcc_recognized ? "tcc" : "tuxedo_io_cache");
+        } else {
+            if (tcc_recognized)
+                row("Mode:", "%s%s%s", C_CYN, mode, C_RST);
+            else
+                row("Mode:", "%s%s%s (from tuxedo_io %s)", C_CYN, mode, C_RST,
+                    "cache");
 
-        if (tcc_recognized && cache_available)
-            row("EC Code:", "%s%s%s (%d; TCC offset %d°C; %s)", C_CYN,
-                gpu_profile_name(live_ec_code), C_RST, live_ec_code,
-                live_tcc_offset, cache_detail);
-        else if (tcc_recognized)
-            row("EC Code:", "%s%s%s (%d; TCC offset %d°C)", C_CYN,
-                gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
-        else
-            row("EC Code:", "%s%s%s (%d; %s; TCC offset %s)", C_CYN,
-                gpu_profile_name(cache_code), C_RST, cache_code,
-                "tuxedo_io cache",
-                live_tcc_offset >= 0 ? "unrecognized" : "unavailable");
+            if (tcc_recognized && cache_available)
+                row("EC Code:", "%s%s%s (%d; TCC offset %d°C; %s)", C_CYN,
+                    gpu_profile_name(live_ec_code), C_RST, live_ec_code,
+                    live_tcc_offset, cache_detail);
+            else if (tcc_recognized)
+                row("EC Code:", "%s%s%s (%d; TCC offset %d°C)", C_CYN,
+                    gpu_profile_name(live_ec_code), C_RST, live_ec_code, live_tcc_offset);
+            else
+                row("EC Code:", "%s%s%s (%d; %s; TCC offset %s)", C_CYN,
+                    gpu_profile_name(cache_code), C_RST, cache_code,
+                    "tuxedo_io cache",
+                    live_tcc_offset >= 0 ? "unrecognized" : "unavailable");
+        }
     } else {
-        row("Mode:", "%sunknown (TCC offset unavailable or unrecognized)%s", C_DIM, C_RST);
-        row("EC Code:", "%sunknown (TCC offset unavailable or unrecognized)%s", C_DIM, C_RST);
+        if (json_output) {
+            json_field_null("mode");
+            json_field_null("ec_code");
+            json_field_null("ec_profile");
+            json_field_null("tcc_offset_c");
+            json_field_null("ec_code_source");
+        } else {
+            row("Mode:", "%sunknown (TCC offset unavailable or unrecognized)%s", C_DIM, C_RST);
+            row("EC Code:", "%sunknown (TCC offset unavailable or unrecognized)%s", C_DIM, C_RST);
+        }
     }
 
     char core_clock[64], mem_clock[64];
@@ -1188,18 +1263,32 @@ static void status_system(void)
     if (read_sysfs_str(TURBO_PATH, buf, sizeof(buf)) >= 0)
         turbo_val = atoi(buf);
 
-    row("CPU Profile:", "Turbo %s%s%s, gov: %s%s%s, epp: %s%s%s",
-        turbo_val == 0 ? C_GRN : (turbo_val == 1 ? C_RED : C_DIM),
-        turbo_val == 0 ? "ON" : (turbo_val == 1 ? "OFF" : "N/A"), C_RST,
-        cpu_profile.have_governor ? C_CYN : C_DIM,
-        cpu_profile.have_governor ? cpu_profile.governor : "N/A", C_RST,
-        cpu_profile.have_epp ? C_CYN : C_DIM,
-        cpu_profile.have_epp ? cpu_profile.epp : "N/A", C_RST);
+    if (json_output) {
+        if (turbo_val == 0 || turbo_val == 1)
+            json_field_bool("turbo_enabled", turbo_val == 0);
+        else
+            json_field_null("turbo_enabled");
+        json_field_str_or_null("governor", cpu_profile.have_governor ? cpu_profile.governor : NULL);
+        json_field_str_or_null("epp", cpu_profile.have_epp ? cpu_profile.epp : NULL);
+    } else {
+        row("CPU Profile:", "Turbo %s%s%s, gov: %s%s%s, epp: %s%s%s",
+            turbo_val == 0 ? C_GRN : (turbo_val == 1 ? C_RED : C_DIM),
+            turbo_val == 0 ? "ON" : (turbo_val == 1 ? "OFF" : "N/A"), C_RST,
+            cpu_profile.have_governor ? C_CYN : C_DIM,
+            cpu_profile.have_governor ? cpu_profile.governor : "N/A", C_RST,
+            cpu_profile.have_epp ? C_CYN : C_DIM,
+            cpu_profile.have_epp ? cpu_profile.epp : "N/A", C_RST);
+    }
 
     /* 3. RAPL PL1 and PL2 */
     long pl1_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", -1);
     long pl2_uw = read_sysfs_long("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw", -1);
-    if (pl1_uw >= 0 && pl2_uw >= 0)
+    if (json_output) {
+        if (pl1_uw >= 0) json_field_int("pl1_w", pl1_uw / 1000000);
+        else json_field_null("pl1_w");
+        if (pl2_uw >= 0) json_field_int("pl2_w", pl2_uw / 1000000);
+        else json_field_null("pl2_w");
+    } else if (pl1_uw >= 0 && pl2_uw >= 0)
         row("RAPL Limits:", "PL1 %s%ldW%s, PL2 %s%ldW%s", C_CYN, pl1_uw / 1000000, C_RST, C_CYN, pl2_uw / 1000000, C_RST);
     else if (pl1_uw >= 0)
         row("RAPL Limits:", "PL1 %s%ldW%s, PL2 %sN/A%s", C_CYN, pl1_uw / 1000000, C_RST, C_DIM, C_RST);
@@ -1211,7 +1300,12 @@ static void status_system(void)
     /* 4. Current max CPU frequency for P-Core and E-Core */
     int p_max = 0, e_max = 0;
     query_cpu_max_freqs(&p_max, &e_max);
-    if (p_max > 0 && e_max > 0)
+    if (json_output) {
+        if (p_max > 0) json_field_int("p_core_max_mhz", p_max);
+        else json_field_null("p_core_max_mhz");
+        if (e_max > 0) json_field_int("e_core_max_mhz", e_max);
+        else json_field_null("e_core_max_mhz");
+    } else if (p_max > 0 && e_max > 0)
         row("CPU Max Freq:", "P-Core %s%d MHz%s, E-Core %s%d MHz%s", C_CYN, p_max, C_RST, C_CYN, e_max, C_RST);
     else if (p_max > 0)
         row("CPU Max Freq:", "P-Core %s%d MHz%s", C_CYN, p_max, C_RST);
@@ -1220,8 +1314,31 @@ static void status_system(void)
     else
         row("CPU Max Freq:", "%sN/A%s", C_DIM, C_RST);
 
-    row("GPU Clocks:", "Core %s, memory %s %s(self-recorded)**%s",
-        core_clock, mem_clock, C_DIM, C_RST);
+    if (json_output) {
+        if (have_mode_state && mode_state.core_clock_known && mode_state.core_clock_set) {
+            json_field_int("gpu_core_clock_min_mhz", mode_state.core_clock_min);
+            json_field_int("gpu_core_clock_max_mhz", mode_state.core_clock_max);
+        } else {
+            json_field_null("gpu_core_clock_min_mhz");
+            json_field_null("gpu_core_clock_max_mhz");
+        }
+        json_field("gpu_core_clock_state",
+                   !have_mode_state || !mode_state.core_clock_known ? "unknown" :
+                   mode_state.core_clock_set ? "set" : "reset");
+        if (have_mode_state && mode_state.mem_clock_known && mode_state.mem_clock_set) {
+            json_field_int("gpu_memory_clock_min_mhz", mode_state.mem_clock_min);
+            json_field_int("gpu_memory_clock_max_mhz", mode_state.mem_clock_max);
+        } else {
+            json_field_null("gpu_memory_clock_min_mhz");
+            json_field_null("gpu_memory_clock_max_mhz");
+        }
+        json_field("gpu_memory_clock_state",
+                   !have_mode_state || !mode_state.mem_clock_known ? "unknown" :
+                   mode_state.mem_clock_set ? "set" : "reset");
+    } else {
+        row("GPU Clocks:", "Core %s, memory %s %s(self-recorded)**%s",
+            core_clock, mem_clock, C_DIM, C_RST);
+    }
 
     /* 5. dGPU Power State */
     char pci_path[512];
@@ -1230,18 +1347,29 @@ static void status_system(void)
         snprintf(state_path, sizeof(state_path), "%s/power_state", pci_path);
         char state[16] = "unknown";
         read_sysfs_str(state_path, state, sizeof(state));
-        row("dGPU Power:", "%s%s%s", (strcmp(state, "D0") == 0) ? C_GRN : C_DIM, state, C_RST);
+        if (json_output)
+            json_field("dgpu_power_state", state);
+        else
+            row("dGPU Power:", "%s%s%s", (strcmp(state, "D0") == 0) ? C_GRN : C_DIM, state, C_RST);
     } else {
-        row("dGPU Power:", "%sN/A (no dGPU found)%s", C_DIM, C_RST);
+        if (json_output)
+            json_field_null("dgpu_power_state");
+        else
+            row("dGPU Power:", "%sN/A (no dGPU found)%s", C_DIM, C_RST);
     }
 
 #ifdef CCTL_NVIDIA
     /* Nvidia GPU */
     int nv_blacklisted = nvidia_is_blacklisted();
     int nv_loaded = nvidia_is_loaded();
-    row("Nvidia GPU:", "%s%s%s (modules %s%s%s)",
-        nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
-        nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
+    if (json_output) {
+        json_field_bool("nvidia_blacklisted", nv_blacklisted);
+        json_field_bool("nvidia_driver_loaded", nv_loaded);
+    } else {
+        row("Nvidia GPU:", "%s%s%s (modules %s%s%s)",
+            nv_blacklisted ? C_RED : C_GRN, nv_blacklisted ? "BLACKLISTED" : "ENABLED", C_RST,
+            nv_loaded ? C_GRN : C_DIM, nv_loaded ? "LOADED" : "NOT LOADED", C_RST);
+    }
 #endif
 
     /* 6. GPU MUX */
@@ -1250,24 +1378,47 @@ static void status_system(void)
     /* 7. Refresh Rate & Display Scale (only shown if xrandr is present) */
     struct display_info disp_info = {0};
     int have_disp_info = is_x11_xrandr_available(&disp_info);
-    if (have_disp_info) {
-        if (json_output) {
-            row("Refresh Rate:", "%s%s Hz%s", C_CYN, disp_info.current_rate, C_RST);
+    if (json_output) {
+        if (have_disp_info) {
+            char *end = NULL;
+            double refresh = strtod(disp_info.current_rate, &end);
+            if (disp_info.current_rate[0] && end && *end == '\0' && isfinite(refresh))
+                json_field_num("display_refresh_hz", refresh, 2);
+            else
+                json_field_null("display_refresh_hz");
+            json_field_str_or_null("display_output",
+                                   disp_info.output[0] ? disp_info.output : NULL);
+            json_field_str_or_null("display_resolution",
+                                   disp_info.resolution[0] ? disp_info.resolution : NULL);
+            json_field_str_or_null("display_framebuffer_resolution",
+                                   disp_info.current_resolution[0] ? disp_info.current_resolution : NULL);
+            if (disp_info.current_resolution[0] && disp_info.resolution[0])
+                json_field_bool("display_scale_native",
+                                strcmp(disp_info.current_resolution,
+                                       disp_info.resolution) == 0);
+            else
+                json_field_null("display_scale_native");
         } else {
-            int idx[MAX_MONITORS];
-            int n = display_numbered(&disp_info, idx, MAX_MONITORS);
-            if (n <= 1) {
-                row("Refresh Rate:", "%s%s Hz%s (%s)", C_CYN,
-                    disp_info.current_rate, C_RST, disp_info.output);
-            } else {
-                /* One line per active display, internal panel first. */
-                for (int k = 0; k < n; k++) {
-                    struct display_monitor *m = &disp_info.monitors[idx[k]];
-                    cctl_stream_printf("  %-14s %s%s%s (%s) %s%s Hz%s\n",
-                           k == 0 ? "Displays:" : "",
-                           C_CYN, m->name, C_RST, m->resolution,
-                           C_CYN, m->current_rate, C_RST);
-                }
+            json_field_null("display_refresh_hz");
+            json_field_null("display_output");
+            json_field_null("display_resolution");
+            json_field_null("display_framebuffer_resolution");
+            json_field_null("display_scale_native");
+        }
+    } else if (have_disp_info) {
+        int idx[MAX_MONITORS];
+        int n = display_numbered(&disp_info, idx, MAX_MONITORS);
+        if (n <= 1) {
+            row("Refresh Rate:", "%s%s Hz%s (%s)", C_CYN,
+                disp_info.current_rate, C_RST, disp_info.output);
+        } else {
+            /* One line per active display, internal panel first. */
+            for (int k = 0; k < n; k++) {
+                struct display_monitor *m = &disp_info.monitors[idx[k]];
+                cctl_stream_printf("  %-14s %s%s%s (%s) %s%s Hz%s\n",
+                       k == 0 ? "Displays:" : "",
+                       C_CYN, m->name, C_RST, m->resolution,
+                       C_CYN, m->current_rate, C_RST);
             }
         }
 
@@ -1288,14 +1439,37 @@ static void fc_print_status_row(void);
 static void status_fans(void)
 {
     if (!json_output) cctl_stream_printf("\n%s--- Fan Telemetry ---%s\n", C_YLW, C_RST);
-    int cpu_pct = 0, gpu_pct = 0, cpu_rpm = 0, gpu_rpm = 0;
-    if (read_fan_telemetry(&cpu_pct, &gpu_pct, &cpu_rpm, &gpu_rpm) == 0) {
-        row("CPU Fan:", "%s%3d%%%s duty, %s%4d RPM%s", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
-        char gfan[128];
-        format_gpu_fan(gfan, sizeof(gfan), gpu_pct, gpu_rpm);
-        row("GPU Fan:", "%s", gfan);
+    struct cctl_fan_telemetry fan;
+    int have_fans = cctl_read_fan_telemetry(&fan, -1) == 0;
+    int cpu_pct = (int)fan.cpu_duty_pct, gpu_pct = (int)fan.gpu_duty_pct;
+    int cpu_rpm = fan.cpu_rpm, gpu_rpm = fan.gpu_rpm;
+    if (have_fans) {
+        if (json_output) {
+            json_field_bool("fan_telemetry_available", 1);
+            if (fan.cpu_duty_valid) json_field_int("cpu_fan_duty_pct", cpu_pct);
+            else json_field_null("cpu_fan_duty_pct");
+            if (fan.rpm_valid) json_field_int("cpu_fan_rpm", cpu_rpm);
+            else json_field_null("cpu_fan_rpm");
+            if (fan.gpu_duty_valid) json_field_int("gpu_fan_duty_pct", gpu_pct);
+            else json_field_null("gpu_fan_duty_pct");
+            if (fan.rpm_valid) json_field_int("gpu_fan_rpm", gpu_rpm);
+            else json_field_null("gpu_fan_rpm");
+        } else {
+            row("CPU Fan:", "%s%3d%%%s duty, %s%4d RPM%s", C_CYN, cpu_pct, C_RST, C_CYN, cpu_rpm, C_RST);
+            char gfan[128];
+            format_gpu_fan(gfan, sizeof(gfan), gpu_pct, gpu_rpm);
+            row("GPU Fan:", "%s", gfan);
+        }
     } else {
-        row("Fans:", "%sN/A (ec_sys or tuxedo_io not available)%s", C_DIM, C_RST);
+        if (json_output) {
+            json_field_bool("fan_telemetry_available", 0);
+            json_field_null("cpu_fan_duty_pct");
+            json_field_null("cpu_fan_rpm");
+            json_field_null("gpu_fan_duty_pct");
+            json_field_null("gpu_fan_rpm");
+        } else {
+            row("Fans:", "%sN/A (ec_sys or tuxedo_io not available)%s", C_DIM, C_RST);
+        }
     }
     fc_print_status_row();
 }
@@ -1318,7 +1492,24 @@ static void status_keyboard(void)
     int have_current_color = kbd_get_color(&cur_r, &cur_g, &cur_b) == 0;
     struct kbe_state ks;
     int effect_active = kbe_is_running(&ks);
-    if (effect_active) {
+
+    int base_r = effect_active ? ks.orig_r : cur_r;
+    int base_g = effect_active ? ks.orig_g : cur_g;
+    int base_b = effect_active ? ks.orig_b : cur_b;
+    int have_base = effect_active || have_current_color;
+
+    if (json_output) {
+        if (have_base)
+            json_field_rgb("keyboard_color_rgb", base_r, base_g, base_b);
+        else
+            json_field_null("keyboard_color_rgb");
+        json_field_str_or_null("keyboard_color_preset",
+                               have_base ? kbd_find_preset_name(base_r, base_g, base_b) : NULL);
+        if (effect_active && have_current_color)
+            json_field_rgb("keyboard_current_color_rgb", cur_r, cur_g, cur_b);
+        else
+            json_field_null("keyboard_current_color_rgb");
+    } else if (effect_active) {
         status_keyboard_color("Color (base):", ks.orig_r, ks.orig_g, ks.orig_b);
         if (have_current_color)
             status_keyboard_color("Current Color:", cur_r, cur_g, cur_b);
@@ -1331,22 +1522,45 @@ static void status_keyboard(void)
     }
 
     int bri = kbd_get_brightness();
-    if (bri >= 0)
+    if (json_output) {
+        if (bri >= 0) json_field_int("keyboard_brightness_pct", bri);
+        else json_field_null("keyboard_brightness_pct");
+    } else if (bri >= 0) {
         row("Brightness:", "%s%d%%%s", C_CYN, bri, C_RST);
-    else
+    } else {
         row("Brightness:", "%sN/A%s", C_DIM, C_RST);
+    }
 
-    if (effect_active)
-        row("Effect:", "%s%s%s %s(PID %d)%s", C_CYN, ks.effect, C_RST, C_DIM, (int)ks.pid, C_RST);
-    else
+    if (json_output) {
+        if (effect_active) {
+            char shown[32];
+            kbe_effective_effect(&ks, shown, sizeof(shown));
+            json_field("keyboard_effect", shown);
+            json_field_int("keyboard_effect_pid", ks.pid);
+        } else {
+            json_field_null("keyboard_effect");
+            json_field_null("keyboard_effect_pid");
+        }
+    } else if (effect_active) {
+        char shown[32];
+        kbe_effective_effect(&ks, shown, sizeof(shown));
+        row("Effect:", "%s%s%s %s(PID %d)%s", C_CYN, shown, C_RST, C_DIM, (int)ks.pid, C_RST);
+    } else {
         row("Effect:", "%snone%s", C_DIM, C_RST);
+    }
 
     char buf[128];
     if (read_sysfs_str(FNLOCK_PATH, buf, sizeof(buf)) >= 0) {
         int val = atoi(buf);
-        row("Fn Lock:", "%s%s%s", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
+        if (json_output)
+            json_field_bool("fn_lock", val != 0);
+        else
+            row("Fn Lock:", "%s%s%s", val ? C_GRN : C_RED, val ? "ON" : "OFF", C_RST);
     } else {
-        row("Fn Lock:", "%sN/A (tuxedo_keyboard not loaded)%s", C_DIM, C_RST);
+        if (json_output)
+            json_field_null("fn_lock");
+        else
+            row("Fn Lock:", "%sN/A (tuxedo_keyboard not loaded)%s", C_DIM, C_RST);
     }
 }
 
@@ -1354,16 +1568,24 @@ static void status_privacy(void)
 {
     if (!json_output) cctl_stream_printf("\n%s--- Privacy ---%s\n", C_YLW, C_RST);
     int cam = is_webcam_enabled();
-    if (cam < 0)
+    if (json_output) {
+        if (cam < 0) json_field_null("webcam_enabled");
+        else json_field_bool("webcam_enabled", cam != 0);
+    } else if (cam < 0) {
         row("Webcam:", "%sNot detected%s", C_DIM, C_RST);
-    else
+    } else {
         row("Webcam:", "%s%s%s", cam ? C_GRN : C_RED, cam ? "ON" : "OFF", C_RST);
+    }
 
     int mic = mic_is_enabled();
-    if (mic < 0)
+    if (json_output) {
+        if (mic < 0) json_field_null("microphone_enabled");
+        else json_field_bool("microphone_enabled", mic != 0);
+    } else if (mic < 0) {
         row("Microphone:", "%sN/A (amixer not available)%s", C_DIM, C_RST);
-    else
+    } else {
         row("Microphone:", "%s%s%s", mic ? C_GRN : C_RED, mic ? "ON" : "OFF", C_RST);
+    }
 }
 
 static void status_battery(void)
@@ -1383,6 +1605,35 @@ static void status_battery(void)
     char charge_type[32] = {0};
     int have_charge_type = (bat_read_charge_type(charge_type, sizeof(charge_type)) >= 0 && charge_type[0]);
     int is_standard = (have_charge_type && strcasecmp(charge_type, "Standard") == 0);
+
+    if (json_output) {
+        json_field_bool("battery_present", cap >= 0);
+        if (cap >= 0) json_field_int("battery_capacity_pct", cap);
+        else json_field_null("battery_capacity_pct");
+        json_field_str_or_null("battery_status", bat_status[0] ? bat_status : NULL);
+        json_field_str_or_null("battery_charge_type", have_charge_type ? charge_type : NULL);
+        if (bat_start >= 0) json_field_int("battery_charge_start_threshold_pct", bat_start);
+        else json_field_null("battery_charge_start_threshold_pct");
+        if (bat_end >= 0) json_field_int("battery_charge_end_threshold_pct", bat_end);
+        else json_field_null("battery_charge_end_threshold_pct");
+        if (full > 0 && full_dsn > 0)
+            json_field_int("battery_health_pct", (full * 100L) / full_dsn);
+        else
+            json_field_null("battery_health_pct");
+        if (full > 0) json_field_int("battery_charge_full_mah", full / 1000);
+        else json_field_null("battery_charge_full_mah");
+        if (full_dsn > 0) json_field_int("battery_charge_full_design_mah", full_dsn / 1000);
+        else json_field_null("battery_charge_full_design_mah");
+        if (cycles > 0) json_field_int("battery_cycle_count", cycles);
+        else json_field_null("battery_cycle_count");
+        if (now > 0) json_field_int("battery_charge_now_mah", now / 1000);
+        else json_field_null("battery_charge_now_mah");
+        if (current != LONG_MIN) json_field_int("battery_current_ma", current / 1000);
+        else json_field_null("battery_current_ma");
+        if (volt > 0) json_field_int("battery_voltage_mv", volt / 1000);
+        else json_field_null("battery_voltage_mv");
+        return;
+    }
 
     if (cap < 0) {
         row("Battery:", "%sN/A (no battery)%s", C_DIM, C_RST);

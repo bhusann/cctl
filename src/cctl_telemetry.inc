@@ -2,19 +2,6 @@
 
 #include "cctl_shared.h"
 
-/* Duty comes from tuxedo_io; RPM comes from EC RAM. */
-static int read_fan_telemetry_ex(int *cpu_pct, int *gpu_pct, int *cpu_rpm,
-                                 int *gpu_rpm, int cached_fd)
-{
-    struct cctl_fan_telemetry fan;
-    int rc = cctl_read_fan_telemetry(&fan, cached_fd);
-    *cpu_pct = (int)fan.cpu_duty_pct;
-    *gpu_pct = (int)fan.gpu_duty_pct;
-    *cpu_rpm = fan.cpu_rpm;
-    *gpu_rpm = fan.gpu_rpm;
-    return rc;
-}
-
 static void get_mem_usage(long *used_mb, long *total_mb)
 {
     *used_mb = *total_mb = 0;

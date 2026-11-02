@@ -1355,9 +1355,11 @@ static int cmd_kbe(int argc, char **argv)
         g_stream_line = 0;
         struct kbe_state ks;
         if (kbe_is_running(&ks)) {
+            char shown[32];
+            kbe_effective_effect(&ks, shown, sizeof(shown));
             cctl_stream_printf("%sKeyboard Backlight Effect:%s\n", C_YLW, C_RST);
-            cctl_stream_printf("  %sStatus:%s              %s%s%s (active, PID %d)\n", C_CYN, C_RST, C_GRN, ks.effect, C_RST, (int)ks.pid);
-            const struct kbe_effect_def *cur = kbe_find_effect(ks.effect);
+            cctl_stream_printf("  %sStatus:%s              %s%s%s (active, PID %d)\n", C_CYN, C_RST, C_GRN, shown, C_RST, (int)ks.pid);
+            const struct kbe_effect_def *cur = kbe_find_effect(shown);
             if (cur && strcmp(cur->name, "temp") == 0) {
                 int t = read_cpu_temp();
                 if (t > 0)

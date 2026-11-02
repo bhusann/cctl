@@ -36,6 +36,7 @@
 #define FANCURVE_IOCTL_RETRY_US    100000
 #define FANCURVE_START_TIMEOUT_MS  7000
 #define FANCURVE_START_POLL_MS     20
+#define FC_WAIT_EXITED             (-2)
 #define FANCURVE_SLEEP_CLOCK_THRESHOLD_NS 250000000LL
 #define FANCURVE_MIN_POINTS        2
 #define FANCURVE_MAX_POINTS        16
@@ -1701,12 +1702,61 @@ static int fc_worker_sleep_ms(int ms, struct fancurve_worker_ctx *ctx)
     return g_fancurve_running ? 0 : -1;
 }
 
+/* Publish worker state atomically. A reader must never observe a truncated
+ * or half-written file, so write a sibling temp file, fsync it, then rename()
+ * it over the published path. */
+static int fc_publish_state(const struct fancurve_profile *prof, int sleep_monitor)
+{
+    char tmp[PATH_MAX];
+    int n = snprintf(tmp, sizeof(tmp), "%s.tmp.XXXXXX", FANCURVE_STATE_PATH);
+    if (n < 0 || (size_t)n >= sizeof(tmp))
+        return -1;
+
+    struct stat sb;
+    if (lstat(FANCURVE_STATE_PATH, &sb) == 0 && S_ISLNK(sb.st_mode))
+        return -1;
+
+    int fd = mkstemp(tmp);
+    if (fd < 0) return -1;
+    if (fchmod(fd, 0644) != 0) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+
+    FILE *fp = fdopen(fd, "w");
+    if (!fp) {
+        close(fd);
+        unlink(tmp);
+        return -1;
+    }
+
+    int failed = cctl_stream_fprintf(fp, "%d %ld\n%s\n%ld\n%d\nconfig=%d %d %d\n",
+            (int)getpid(), proc_starttime(getpid()), prof->name, (long)time(NULL),
+            sleep_monitor, prof->hysteresis, prof->interval_ms,
+            prof->npoints) < 0;
+    for (int i = 0; !failed && i < prof->npoints; i++)
+        failed = cctl_stream_fprintf(fp, "point=%d %d\n", prof->points[i].temp,
+                                     prof->points[i].fan) < 0;
+    if (failed || fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
+        fclose(fp);
+        unlink(tmp);
+        return -1;
+    }
+    if (fclose(fp) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, FANCURVE_STATE_PATH) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
 static int fc_worker_begin(struct fancurve_worker_ctx *ctx,
                            const struct fancurve_profile *prof)
 {
-    int state_fd = -1;
-    FILE *fp = NULL;
-
     pin_to_e_cores();
 
     ctx->lock_fd = fc_acquire_lock();
@@ -1726,33 +1776,11 @@ static int fc_worker_begin(struct fancurve_worker_ctx *ctx,
         ctx->sleep_monitor_active = 1;
     }
 
-    state_fd = open(FANCURVE_STATE_PATH,
-                    O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
-    if (state_fd < 0) goto fail;
-    fchmod(state_fd, 0644);
-
-    fp = fdopen(state_fd, "w");
-    if (!fp) goto fail;
-    state_fd = -1; /* owned by fp */
-
-    int failed = cctl_stream_fprintf(fp, "%d %ld\n%s\n%ld\n%d\nconfig=%d %d %d\n",
-            (int)getpid(), proc_starttime(getpid()), prof->name, (long)time(NULL),
-            ctx->sleep_monitor_active, prof->hysteresis, prof->interval_ms,
-            prof->npoints) < 0;
-    for (int i = 0; !failed && i < prof->npoints; i++)
-        failed = cctl_stream_fprintf(fp, "point=%d %d\n", prof->points[i].temp,
-                                     prof->points[i].fan) < 0;
-    if (failed || fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
-        fclose(fp);
-        fp = NULL;
+    if (fc_publish_state(prof, ctx->sleep_monitor_active) < 0)
         goto fail;
-    }
-    fclose(fp);
     return 0;
 
 fail:
-    if (fp) fclose(fp);
-    if (state_fd >= 0) close(state_fd);
     unlink(FANCURVE_STATE_PATH);
     if (ctx->tuxedo_fd >= 0) close(ctx->tuxedo_fd);
     ctx->tuxedo_fd = -1;
@@ -2168,6 +2196,30 @@ static int fc_stop_worker(int quiet, int set_auto)
     return rc;
 }
 
+/* Wait for a freshly forked worker to publish its state file. The worker
+ * setup can wait up to 5 seconds for the login1 inhibitor reply, so leave
+ * margin for startup and state-file publication. */
+static int fc_wait_for_worker(pid_t pid, const struct fancurve_profile *prof,
+                              int *sleep_monitor_active)
+{
+    for (int waited = 0; waited < FANCURVE_START_TIMEOUT_MS;
+         waited += FANCURVE_START_POLL_MS) {
+        int status;
+        if (waitpid(pid, &status, WNOHANG) == pid)
+            return FC_WAIT_EXITED;
+
+        struct fancurve_state st;
+        if (fc_read_state(&st) == 0 && st.pid == pid &&
+            st.starttime > 0 && st.starttime == proc_starttime(pid) &&
+            st.profile_known && strcmp(st.name, prof->name) == 0) {
+            *sleep_monitor_active = st.sleep_monitor;
+            return 0;
+        }
+        usleep(FANCURVE_START_POLL_MS * 1000);
+    }
+    return -1;
+}
+
 static int fc_start(const struct fancurve_profile *prof)
 {
     if (!fc_drivers_ready())
@@ -2187,24 +2239,14 @@ static int fc_start(const struct fancurve_profile *prof)
         return fail("failed to spawn fan-curve daemon");
 
     if (pid > 0) {
-        int ready = 0;
         int sleep_monitor_active = -1;
-        /* Worker setup can wait up to 5 seconds for the login1 inhibitor
-         * reply; leave margin for startup and state-file publication. */
-        for (int waited = 0; waited < FANCURVE_START_TIMEOUT_MS;
-             waited += FANCURVE_START_POLL_MS) {
-            struct fancurve_state st;
-            if (fc_read_state(&st) == 0 && st.pid == pid &&
-                strcmp(st.name, prof->name) == 0) {
-                ready = 1;
-                sleep_monitor_active = st.sleep_monitor;
-                break;
-            }
-            usleep(FANCURVE_START_POLL_MS * 1000);
-        }
-        if (!ready) {
-            kill(pid, SIGTERM);
-            return fail("fan-curve daemon failed to start");
+        int wait_rc = fc_wait_for_worker(pid, prof, &sleep_monitor_active);
+        if (wait_rc < 0) {
+            if (wait_rc != FC_WAIT_EXITED)
+                kill(pid, SIGTERM);
+            return fail(wait_rc == FC_WAIT_EXITED
+                        ? "fan-curve daemon exited during startup"
+                        : "fan-curve daemon failed to start");
         }
         cctl_stream_printf("Started fan curve '%s' [PID %d]\n", prof->name, (int)pid);
         if (sleep_monitor_active == 0)
@@ -2339,14 +2381,21 @@ static void fc_print_status(const char *requested_name)
 static void fc_print_status_row(void)
 {
     struct fancurve_state st;
+    if (json_output) {
+        int active = fc_is_running(&st);
+        json_field_bool("fan_curve_active", active);
+        if (active) {
+            json_field("fan_curve_name", st.name);
+            json_field_int("fan_curve_pid", st.pid);
+        } else {
+            json_field_null("fan_curve_name");
+            json_field_null("fan_curve_pid");
+        }
+        return;
+    }
     if (fc_is_running(&st)) {
-        if (json_output)
-            row("Fan Curve:", "%s (active, PID %d)", st.name, (int)st.pid);
-        else
-            row("Fan Curve:", "%s%s%s (active, PID %d)",
-                C_GRN, st.name, C_RST, (int)st.pid);
-    } else if (json_output) {
-        row("Fan Curve:", "none (stopped)");
+        row("Fan Curve:", "%s%s%s (active, PID %d)",
+            C_GRN, st.name, C_RST, (int)st.pid);
     } else {
         row("Fan Curve:", "%snone (stopped)%s", C_DIM, C_RST);
     }
@@ -2675,12 +2724,6 @@ static int fc_cmd_edit(int argc, char **argv)
         return fail("%s", err);
 
     cctl_stream_printf("Updated fan curve '%s'.\n", name);
-
-    if (fc_is_running(&st) && strcmp(st.name, name) == 0) {
-        cctl_stream_printf("This curve is active; run: cctl fancurve start ");
-        fc_print_shell_quoted(name);
-        cctl_stream_printf(" to apply the new points.\n");
-    }
     return 0;
 }
 
