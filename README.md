@@ -154,17 +154,18 @@ how to choose profile settings and includes examples and safety limits.
 
 ## Commands
 
-Command names:
-- Profiles and setup: `set`, `editconf`, `install`, `uninstall`, `drivers-manage`
-- Keyboard and fans: `kbc`, `kbb`, `kbe`, `kbn`, `fn`, `fan`, `fancurve` (alias `fanc`)
-- GPU and privacy: `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic`
-- Battery and system info: `bat`, `status`, `--version`
-- Monitors: `cpumon`, `gpumon`
-- Display: `rr`, `scale`
-- CPU controls: `turbo`, `gov`, `epp`, `rapl`
-- Snapshots: `snap` (alias `snapshot`; bare `snap` lists saved snapshots), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del`
-- Application settings: `options`
-- Help & Agent Skill: `--help`, `--am`
+| Category | Commands |
+|---|---|
+| Profiles and setup | `set`, `editconf`, `install`, `uninstall`, `drivers-manage` |
+| Keyboard and fans | `kbc`, `kbb`, `kbe`, `kbn`, `fn`, `fan`, `fancurve` (alias `fanc`) |
+| GPU and privacy | `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic` |
+| Battery and system info | `bat`, `status`, `--version` |
+| Monitors | `cpumon`, `gpumon` |
+| Display | `rr`, `scale` |
+| CPU controls | `turbo`, `gov`, `epp`, `rapl` |
+| Snapshots | `snap` (alias `snapshot`; bare `snap` lists saved snapshots), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del` |
+| Application settings | `options` |
+| Help & Agent Skill | `--help`, `--am` |
 
 Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).
 
@@ -173,13 +174,14 @@ Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).
 ## Persistence and Services
 
 Most `cctl` commands apply a setting and exit; cctl has no tray app or general
-startup service. `cctl fancurve start <name>` is an exception: it starts a
-detached worker that runs the curve until stopped or the system shuts down.
-When a compatible login manager provides sleep notifications, the worker
-returns fan control to the laptop before sleep and resumes the curve after wake.
-If the wake notification is missed, it can resume curve control when a monitored
-temperature rises above 85 °C. See the [Fan Curves guide](docs/commands.md#fan-curves)
-for details.
+startup service. `cctl fancurve start <name>` and `cctl kbe <effect>` are
+exceptions: each starts a detached worker that runs until stopped or the system
+shuts down. When a compatible login manager provides sleep notifications, the
+fan-curve worker returns fan control to the laptop before sleep and resumes the
+curve after wake. If the wake notification is missed, it can resume curve
+control when a monitored temperature rises above 85 °C. See the
+[Fan Curves guide](docs/commands.md#fan-curves) for details. Stop the keyboard
+effect with `cctl kbe stop`.
 
 To restore saved settings at startup, save them with `cctl snap save <name>` and
 configure your service manager (for example, systemd or runit) to run
@@ -210,32 +212,27 @@ The Makefile respects `CC`, `CFLAGS`, and `LDFLAGS`. Hardening flags are always 
 
 The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is required for fan control, keyboard backlight, battery thresholds, and EC profile codes. The installer handles DKMS registration, build, and modprobe config.
 
-**Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball.
+**Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball. Manual DKMS registration and in-place compilation are documented in [MANUAL_INSTALL.md](https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/MANUAL_INSTALL.md).
 
-Install or uninstall directly with the script (it lives in the mirror repo):
-
-```bash
-git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
-sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --install
-sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --uninstall
-tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --status   # no root needed
-```
+> **Secure Boot caution:** These kernel modules are installed unsigned. If Secure Boot is enabled, they may fail to load and the laptop may not boot normally. Disable Secure Boot for normal booting, or refer to your OS distribution's wiki for signing the modules and enabling Secure Boot again, if you wish.
 
 ### Supported Distros
 
 Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
 
-| Package Manager | Distros | Tested |
+| Package Manager | Distros | Status |
 |---|---|---|
-| `pacman` | Arch, Manjaro, EndeavourOS, CachyOS, Garuda | ✅ Arch, CachyOS |
-| `apt` | Debian, Ubuntu, Mint, Pop!_OS, Zorin | — |
-| `dnf` | Fedora (standard Workstation/Spins), RHEL, Rocky, Alma | — |
-| `zypper` | openSUSE Tumbleweed/Leap | — |
-| `xbps` | Void Linux | — |
-| `emerge` | Gentoo | — |
-| `eopkg` | Solus | — |
+| `pacman` | Arch, Manjaro, EndeavourOS, CachyOS, Garuda | ✅ Tested (Arch, CachyOS) |
+| `apt` | Debian, Ubuntu, Mint, Pop!_OS, Zorin | ✅ Tested (Debian) |
+| `dnf` | Fedora (standard Workstation/Spins), RHEL, Rocky, Alma | Not tested |
+| `zypper` | openSUSE Tumbleweed/Leap | Not tested |
+| `xbps` | Void Linux | Not tested |
+| `emerge` | Gentoo | Not tested |
+| `eopkg` | Solus | Not tested |
 
-> **Immutable / Atomic OS note:** Atomic and immutable editions of Fedora (Silverblue, Kinoite, Atomic Desktops, Bazzite, etc. using `rpm-ostree`) are **not supported** because the root filesystem is read-only and DKMS modules cannot persist across image updates. Only standard, non-atomic Fedora (Workstation, KDE Spin, etc. using regular `dnf`) is supported. On unrecognized distros, the installer points to the driver source in the mirror repo for manual installation.
+> **Untested distros note:** Entries marked **Not tested** may or may not work on your system, because kernel versions, header layouts, and DKMS configurations differ between distributions and even between installs. If installation fails, consult an LLM by pointing it to the driver source at [TUXEDO drivers cctl mirror](https://github.com/bhusann/tuxedo-drivers-cctl-mirror) for step-by-step installation instructions specific to your distro and configuration. If you find a working fix, please open a PR.
+
+> **Immutable / Atomic OS note:** Atomic and immutable editions such as Fedora Silverblue/Kinoite/Atomic Desktops/Bazzite (`rpm-ostree`) and openSUSE MicroOS/Aeon (`transactional-update`) are **not supported** and are **not tested**, because the root filesystem is read-only and DKMS modules cannot persist across image updates. Only standard, non-atomic Fedora (Workstation, KDE Spin, etc. using regular `dnf`) and standard openSUSE Tumbleweed/Leap are supported. On unrecognized distros, the installer points to the driver source in the [mirror repo](https://github.com/bhusann/tuxedo-drivers-cctl-mirror) for manual installation.
 
 ---
 

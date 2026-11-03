@@ -1099,6 +1099,12 @@ static const char *mux_mode_str(int val)
     return "Unknown";
 }
 
+/* Color for a MUX mode: MSHybrid = green, dGPU = red. */
+static const char *mux_mode_color(int val)
+{
+    return (val == MUX_VAL_MSHYBRID) ? C_GRN : C_RED;
+}
+
 /* Detect the actual running MUX mode from PCI topology.
  * Intel iGPU at 00:02.0 with display class 0x0300xx → MSHybrid;
  * absent or non-display → dGPU.  Returns MUX_VAL_*, or -1 on error. */
@@ -1130,7 +1136,7 @@ static int mux_show_internal(const char *prefix)
         return 1;
     }
     int running = mux_running_mode();
-    const char *col = (running == MUX_VAL_MSHYBRID) ? C_GRN : C_RED;
+    const char *col = mux_mode_color(running);
     if (running >= 0 && nvram != running)
         cctl_stream_printf("%s%s%s%s  %s← %s pending (reboot to apply)%s\n",
                prefix,
@@ -1291,8 +1297,8 @@ static int mux_switch(void)
 
     /* Confirmation prompt */
     cctl_stream_printf("Switch GPU MUX mode from %s%s%s to %s%s%s? [y/N] ",
-           C_DIM, mux_mode_str(current), C_RST,
-           C_BLD, mux_mode_str(target), C_RST);
+           mux_mode_color(current), mux_mode_str(current), C_RST,
+           mux_mode_color(target), mux_mode_str(target), C_RST);
     fflush(stdout);
 
     char ans[32] = {0};
@@ -1333,8 +1339,8 @@ static int mux_switch(void)
     int prev_stream_mode = g_stream_mode;
     g_stream_mode = STREAM_MODE_LINE;
     stream_printf(STREAM_DELAY_US, "GPU MUX switched: %s%s%s → %s%s%s\n",
-                  C_DIM, mux_mode_str(current), C_RST,
-                  C_BLD, mux_mode_str(target), C_RST);
+                  mux_mode_color(current), mux_mode_str(current), C_RST,
+                  mux_mode_color(target), mux_mode_str(target), C_RST);
     stream_printf(STREAM_DELAY_US, "%sReboot to apply.%s\n", C_YLW, C_RST);
     if (target == MUX_VAL_DGPU && has_display_support()) {
         stream_printf(STREAM_DELAY_US,
