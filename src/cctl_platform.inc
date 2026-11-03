@@ -628,6 +628,111 @@ static int command_exists(const char *cmd)
     return 0;
 }
 
+/* Shared editor launcher for editconf and fan-curve create/edit. The editor
+ * always runs as the invoking user, even when cctl itself was elevated with
+ * sudo; only the parent process keeps root for validated installation. */
+static const char *cctl_pick_editor(void)
+{
+    const char *editor = getenv("SUDO_EDITOR");
+    if (!editor || !*editor) editor = getenv("VISUAL");
+    if (!editor || !*editor) editor = getenv("EDITOR");
+    if (!editor || !*editor) {
+        if (command_exists("nano")) editor = "nano";
+        else if (command_exists("micro")) editor = "micro";
+    }
+    return editor;
+}
+
+static int cctl_run_editor_as_user(const char *path, char *err, size_t err_sz)
+{
+    const char *editor = cctl_pick_editor();
+    if (!editor || !*editor) {
+        snprintf(err, err_sz,
+                 "no editor configured and neither nano nor micro is installed; "
+                 "set SUDO_EDITOR, VISUAL, or EDITOR");
+        return -1;
+    }
+
+    wordexp_t we = {0};
+    int wr = wordexp(editor, &we, WRDE_NOCMD);
+    if (wr != 0 || we.we_wordc == 0) {
+        if (wr == WRDE_NOSPACE) wordfree(&we);
+        snprintf(err, err_sz, "invalid editor command");
+        return -1;
+    }
+
+    char **args = calloc(we.we_wordc + 2, sizeof(*args));
+    if (!args) {
+        wordfree(&we);
+        snprintf(err, err_sz, "out of memory");
+        return -1;
+    }
+    for (size_t i = 0; i < we.we_wordc; i++)
+        args[i] = we.we_wordv[i];
+    args[we.we_wordc] = (char *)path;
+    args[we.we_wordc + 1] = NULL;
+
+    fflush(stdout);
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid < 0) {
+        snprintf(err, err_sz, "could not start editor: %s", strerror(errno));
+        free(args);
+        wordfree(&we);
+        return -1;
+    }
+    if (pid == 0) {
+        uid_t uid = cctl_invoking_uid();
+        if (geteuid() == 0 && uid != 0) {
+            gid_t gid = cctl_invoking_gid(uid);
+            struct passwd *pw = getpwuid(uid);
+            char home[PATH_MAX] = "";
+            char name[256] = "";
+            char shell[PATH_MAX] = "";
+            if (pw) {
+                if (pw->pw_dir)
+                    snprintf(home, sizeof(home), "%s", pw->pw_dir);
+                if (pw->pw_name)
+                    snprintf(name, sizeof(name), "%s", pw->pw_name);
+                if (pw->pw_shell)
+                    snprintf(shell, sizeof(shell), "%s", pw->pw_shell);
+            }
+            if (setgroups(0, NULL) != 0 ||
+                setresgid(gid, gid, gid) != 0 ||
+                setresuid(uid, uid, uid) != 0)
+                _exit(126);
+            if (home[0]) setenv("HOME", home, 1);
+            if (name[0]) {
+                setenv("USER", name, 1);
+                setenv("LOGNAME", name, 1);
+            }
+            if (shell[0]) setenv("SHELL", shell, 1);
+        }
+        execvp(args[0], args);
+        _exit(127);
+    }
+
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+
+    free(args);
+    wordfree(&we);
+
+    if (waited < 0) {
+        snprintf(err, err_sz, "could not wait for editor: %s", strerror(errno));
+        return -1;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        snprintf(err, err_sz, "editor exited with status %d",
+                 WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+        return -1;
+    }
+    return 0;
+}
+
 /* Fast check: native X11 only — DISPLAY set AND xrandr present AND not a
  * Wayland session (WAYLAND_DISPLAY stays set when Xwayland provides a fake
  * DISPLAY, which is how the README's "X11 only" rule is actually honored). */

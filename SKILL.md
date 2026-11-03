@@ -9,7 +9,11 @@ Use this skill when a user asks an agent to inspect or operate the installed `cc
 
 ## Start with the installed command
 
-Use the installed `cctl` executable. Check `cctl --version`, `cctl --help`, and `cctl status` when useful; `cctl --am` prints this guide. Run `cctl` as the user without `sudo`; it requests elevation when needed. This guide matches 5.0+; defer to the installed help for exact syntax on other builds.
+Use the installed `cctl` executable. Check `cctl --version` and `cctl --help` for this build; `cctl --am` prints this guide. This guide matches 5.0+; defer to the installed help for exact syntax on other builds.
+
+Before executing any other `cctl` command, run `cctl status` first to capture the current state so you can track changes.
+
+Do not prefix `cctl` commands with `sudo`; the installed binary has a sudoers rule and elevates itself when needed.
 
 When inspecting, prefer read-only commands such as `status`, `options`, `gov`, `epp`, `fancurve`, `snap`, and monitor one-shots. After a requested change, verify the result with a read-only command; don't claim success without confirming output.
 
@@ -188,8 +192,9 @@ numbers, `-`, and `_`, up to 64 characters.
 ## Display, MUX, battery, and privacy
 
 - `cctl rr` lists displays; `cctl rr <rate>` changes the primary display rate. `cctl rr toggle` switches between available rates; `cctl rr <rate> --2` targets display #2. Rates are matched to the closest supported value. `cctl scale <factor|WxH>` scales the internal panel; `cctl scale off` restores native 1:1. These commands require native X11; they may be unavailable under Wayland.
+- Never run `cctl rr` and `cctl scale` in parallel. Both reconfigure the same X11 output mode, and concurrent invocations race: one change can be silently lost while the other still prints `Done`. Run them strictly one after the other, and verify the final mode (rate and scale) with `cctl status` or `cctl rr` afterwards.
 - `cctl mux` shows the GPU MUX mode. `cctl mux switch` stages the other mode in firmware and requires a reboot; it does not switch immediately. If the user requests a switch, explain that reboot is required and follow cctl's confirmation prompt. Do not reboot unless the user asks.
-- `cctl bat` shows battery charge mode, thresholds, and available values. `cctl bat <start> <stop>` selects Custom mode and sets thresholds; `cctl bat standard` returns to the standard charge mode.
+- `cctl bat` shows battery charge mode, thresholds, and available values. `cctl bat <start> <stop>` selects Custom mode and sets thresholds; `cctl bat standard` returns to the standard charge mode. Standard mode ignores the Custom thresholds, so charge limiting is disabled and the battery charges normally to full.
 - To check webcam, microphone, or Fn Lock status, use `cctl status`. `cctl webcam` and `cctl mic` without an argument toggle the device, and `cctl fn` without an argument toggles Fn Lock. Use `cctl webcam on|off`, `cctl mic on|off`, or `cctl fn lock|unlock` to set the state explicitly; otherwise the bare command reverses the current state.
 - NVIDIA clock commands and `cctl gpumon` are available only when supported by the installed cctl build and hardware. NVIDIA-enabled builds may also provide `nvidia on|off|load|loadgame|unload|status`; check `cctl --help`.
 
@@ -202,7 +207,7 @@ numbers, `-`, and `_`, up to 64 characters.
 
   Change only the option the user requests.
 - `cctl drivers-manage` manages the supported driver package. Driver install/uninstall can affect loaded kernel modules; first stop any active fan curve. Follow cctl's prompts and report any module-in-use or reboot notices.
-- `cctl install [--force]` installs or upgrades cctl system-wide; `cctl uninstall` removes cctl, its saved data, and its sudo rule. Run these only when the user requests installation or removal.
+- `cctl install [--force] [--noconfirm]` installs or upgrades cctl system-wide; `cctl uninstall` removes cctl, its saved data, and its sudo rule. `--noconfirm` never prompts and configures passwordless sudo for the current user. Run these only when the user requests installation or removal.
 
 ## Files and runtime state
 

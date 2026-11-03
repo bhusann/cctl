@@ -487,6 +487,46 @@ static void self_elevate(int argc, char **argv)
     exit(1);
 }
 
+/* Resolve the real user behind an elevated cctl process. SUDO_UID/SUDO_GID
+ * are set by sudo and are not user-controlled for the elevated child. */
+static uid_t cctl_invoking_uid(void)
+{
+    if (geteuid() != 0)
+        return getuid();
+
+    const char *sudo_uid = getenv("SUDO_UID");
+    if (sudo_uid && *sudo_uid) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long v = strtoul(sudo_uid, &end, 10);
+        if (errno == 0 && end != sudo_uid && *end == '\0' && v <= UINT_MAX)
+            return (uid_t)v;
+    }
+    return 0;
+}
+
+static gid_t cctl_invoking_gid(uid_t uid)
+{
+    if (uid == 0)
+        return 0;
+    if (geteuid() != 0)
+        return getgid();
+
+    const char *sudo_gid = getenv("SUDO_GID");
+    if (sudo_gid && *sudo_gid) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long v = strtoul(sudo_gid, &end, 10);
+        if (errno == 0 && end != sudo_gid && *end == '\0' && v <= UINT_MAX)
+            return (gid_t)v;
+    }
+
+    struct passwd *pw = getpwuid(uid);
+    if (pw)
+        return pw->pw_gid;
+    return getgid();
+}
+
 static int read_cpu_temp_ex(int cached_fd);
 int cctl_gpumon(int argc, char **argv);
 int cctl_cpumon(int argc, char **argv);

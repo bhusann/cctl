@@ -20,7 +20,7 @@
  * cctl only ever installs exactly these driver sources — a re-tarred or
  * swapped file with any other name/content is rejected. When the MIRROR's
  * drivers/ tree changes: re-tar deterministically, update THIS constant,
- * bump CCTL_MICROVERSION, release a new cctl binary. (The driver sources
+ * release a new cctl binary. (The driver sources
  * themselves live only in the mirror repo, not in this checkout.) */
 #define DRIVERS_SHA256      "d28cc60fab001821c27a80985a2116d5562c8474bf1dd4c7c307c4e993be44e6"
 
@@ -608,7 +608,7 @@ static const struct command commands[] = {
     { "rapl",           0, cmd_rapl,            SEC_OVERRIDES, "<pl1> <pl2>",                      "RAPL power limits (watts, use 'skip' to omit)", NULL },
 
     /* System */
-    { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force]",                       "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
+    { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force] [--noconfirm]",         "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
     { "uninstall",      1, cmd_uninstall,       SEC_SYSTEM,    "",                                "Remove cctl, its profiles, sudo rule, and saved data", is_installed_systemwide },
     { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (sha256-verified)", NULL },
     { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [name] [--mask fields]", "Save, restore, view, or delete snapshots (alias: snap)", NULL },
@@ -732,7 +732,7 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST,
     C_GRN, C_RST, C_RED, C_RST);
 
-    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]  |  %s%s%s --am%s  (outputs usage guide skill for AI agents)\n\n",
+    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]  |  %s%s%s --am%s  (Detailed Usage guide/help for AI agents; Must read)\n\n",
                        C_BLD, C_RST, C_CYN_BLD, prog, C_RST,
                        C_BLD, C_CYN_BLD, prog, C_RST);
 
@@ -945,7 +945,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Hidden diagnostic (like --microversion: no help, no README) —
+    /* Hidden diagnostic (no help, no README) —
      * prints the sha256 baked into this binary for driver verification. */
     if (strcmp(argv[1], "--shasecret") == 0) {
         cctl_stream_printf("%s\n", DRIVERS_SHA256);
