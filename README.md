@@ -80,7 +80,7 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
    sudo ./cctl install
    ```
 
-3. When asked to upgrade or reinstall cctl, type `y` to confirm. The installer updates the installed binary and sudo rule.
+3. When asked to upgrade or reinstall cctl, type `y` to confirm. The installer updates the installed binary and sudo rule. It then asks whether passwordless sudo should apply to the current user only (default, `1`) or all users (`2`).
 
 ---
 

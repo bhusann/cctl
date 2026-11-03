@@ -608,7 +608,7 @@ static const struct command commands[] = {
     { "rapl",           0, cmd_rapl,            SEC_OVERRIDES, "<pl1> <pl2>",                      "RAPL power limits (watts, use 'skip' to omit)", NULL },
 
     /* System */
-    { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force]",                       "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
+    { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force] [--noconfirm]",         "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
     { "uninstall",      1, cmd_uninstall,       SEC_SYSTEM,    "",                                "Remove cctl, its profiles, sudo rule, and saved data", is_installed_systemwide },
     { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (sha256-verified)", NULL },
     { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [name] [--mask fields]", "Save, restore, view, or delete snapshots (alias: snap)", NULL },
@@ -732,7 +732,7 @@ static void print_usage(const char *prog)
     C_GRN, C_RST, C_RED, C_RST,
     C_GRN, C_RST, C_RED, C_RST);
 
-    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]  |  %s%s%s --am%s  (outputs usage guide skill for AI agents)\n\n",
+    cctl_stream_printf("  %sUsage:%s  %s%s%s <command> [options]  |  %s%s%s --am%s  (Detailed Usage guide/help for AI agents; Must read)\n\n",
                        C_BLD, C_RST, C_CYN_BLD, prog, C_RST,
                        C_BLD, C_CYN_BLD, prog, C_RST);
 

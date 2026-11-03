@@ -332,6 +332,15 @@ static int editconf_make_temp(char *tmp_path, size_t path_size)
     snprintf(tmp_path, path_size, "/tmp/cctl-profiles-edit-XXXXXX");
     int out = mkstemp(tmp_path);
     if (out < 0) return -1;
+
+    /* The editor runs as the invoking user, so hand the temporary file to
+     * that user even when cctl itself is root. Root only reads the result
+     * back for validation and installation. */
+    uid_t editor_uid = cctl_invoking_uid();
+    if (geteuid() == 0 && editor_uid != 0) {
+        gid_t editor_gid = cctl_invoking_gid(editor_uid);
+        if (fchown(out, editor_uid, editor_gid) != 0) goto fail;
+    }
     if (fchmod(out, 0600) != 0) goto fail;
 
     int in = open(USER_PROFILE_FILE, O_RDONLY | O_NOFOLLOW);
@@ -638,36 +647,22 @@ static int cmd_editconf(int argc, char **argv)
     if (argc == 4 && strcmp(argv[2], "__install") == 0) {
         if (geteuid() != 0)
             return fail("Internal profile installer must run as root");
-        return editconf_install_helper(argv[3], fc_invoking_uid());
+        return editconf_install_helper(argv[3], cctl_invoking_uid());
     }
     if (argc > 2)
         return fail("Unexpected extra argument '%s'", argv[2]);
 
-    const char *editor = getenv("SUDO_EDITOR");
-    if (!editor || !*editor) editor = getenv("VISUAL");
-    if (!editor || !*editor) editor = getenv("EDITOR");
-    if (!editor || !*editor) {
-        if (command_exists("nano")) editor = "nano";
-        else if (command_exists("micro")) editor = "micro";
-        else return fail("No editor configured and neither nano nor micro is installed; "
-                         "set SUDO_EDITOR, VISUAL, or EDITOR");
-    }
     char temp[PATH_MAX];
     if (editconf_make_temp(temp, sizeof(temp)) != 0)
         return fail("Could not prepare a temporary custom-profile file: %s", strerror(errno));
-    if (setenv("EDITOR", editor, 1) != 0) {
-        unlink(temp);
-        return fail("Could not set the configured editor");
-    }
 
-    char *const edit_args[] = { "/bin/sh", "-c", "exec $EDITOR \"$1\"",
-                                "cctl-editconf", temp, NULL };
     int rc;
     for (;;) {
-        rc = run(edit_args, RUN_RAW, NULL, 0);
+        char edit_err[256];
+        rc = cctl_run_editor_as_user(temp, edit_err, sizeof(edit_err));
         if (rc != 0) {
             unlink(temp);
-            return fail("Editor exited with status %d", rc);
+            return fail("%s", edit_err);
         }
 
         char read_err[256];
@@ -699,7 +694,7 @@ static int cmd_editconf(int argc, char **argv)
     }
 
     if (geteuid() == 0) {
-        rc = editconf_install_helper(temp, getuid());
+        rc = editconf_install_helper(temp, cctl_invoking_uid());
         unlink(temp);
         if (rc == 0) cctl_stream_printf("Saved custom profiles to %s\n", USER_PROFILE_FILE);
         return rc;
@@ -1605,6 +1600,46 @@ static int sudoers_user_is_safe(const char *s)
     return 1;
 }
 
+/* Build the passwordless-sudo rule for the chosen scope. Returns -1 when the
+ * buffer is too small instead of silently truncating a sudoers line. */
+static int sudoers_rule_for(const char *user, int all_users,
+                            char *out, size_t out_sz)
+{
+    int n;
+    if (all_users)
+        n = snprintf(out, out_sz,
+                     "ALL ALL=(ALL) NOPASSWD: /usr/local/bin/cctl\n");
+    else
+        n = snprintf(out, out_sz,
+                     "%s ALL=(ALL) NOPASSWD: /usr/local/bin/cctl\n", user);
+    return (n < 0 || (size_t)n >= out_sz) ? -1 : 0;
+}
+
+/* Ask whether the sudoers rule covers only the invoking user or every
+ * account. Blank input and EOF keep the safe default: the current user. */
+static int install_choose_sudo_scope(const char *user)
+{
+    char ans[32];
+    for (;;) {
+        stream_printf(STREAM_DELAY_US,
+                      "Passwordless sudo scope:\n"
+                      "  1) Current user only (%s) [default]\n"
+                      "  2) All users (every account can run cctl as root)\n"
+                      "Choice [1/2]: ", user);
+        fflush(stdout);
+        if (!fgets(ans, sizeof(ans), stdin)) {
+            stream_printf(STREAM_DELAY_US, "\nUsing current user only.\n");
+            return 0;
+        }
+        ans[strcspn(ans, "\r\n")] = '\0';
+        if (ans[0] == '\0' || strcmp(ans, "1") == 0)
+            return 0;
+        if (strcmp(ans, "2") == 0)
+            return 1;
+        stream_printf(STREAM_DELAY_US, "Please enter 1 or 2.\n");
+    }
+}
+
 static int cctl_uninstall_yes(const char *prompt)
 {
     char answer[64];
@@ -1731,6 +1766,39 @@ static int cctl_uninstall_remove_file(const char *path)
     return unlink(path);
 }
 
+/* Both install and uninstall replace or remove the on-disk binary, so stop
+ * the long-lived workers first. The fan worker restores EC auto on exit;
+ * repeat the request explicitly in case it was killed without doing so. */
+static void warn_managed_daemons(void)
+{
+    struct fancurve_state fc;
+    struct kbe_state kb;
+    int fc_on = fc_is_running(&fc);
+    int kbe_on = kbe_is_running(&kb);
+    if (!fc_on && !kbe_on)
+        return;
+    cctl_stream_printf("%sNote:%s running fan-curve/keyboard effects will be stopped.\n",
+                       C_YLW, C_RST);
+}
+
+static int stop_managed_daemons(void)
+{
+    struct fancurve_state fc;
+    int had_curve = fc_is_running(&fc);
+
+    if (fc_stop_worker(1, 0) != 0)
+        return -1;
+
+    /* Prefer tuxedo_io; fall back to direct EC control. Only touch the fans
+     * when a curve was active, so machines without fan hardware are left
+     * alone. */
+    if (had_curve && fc_auto_all_quiet() != 0)
+        fc_auto_direct();
+
+    kbe_stop(1);
+    return 0;
+}
+
 static int cmd_uninstall(int argc, char **argv)
 {
     (void)argv;
@@ -1779,6 +1847,7 @@ static int cmd_uninstall(int argc, char **argv)
     if (have_data_dir && cctl_uninstall_validate_tree("/var/lib/cctl", data_dir.st_dev) != 0)
         return fail("Refusing to remove unsafe contents under /var/lib/cctl");
 
+    warn_managed_daemons();
     if (module_stack_loaded) {
         cctl_stream_fprintf(stderr,
                 "TUXEDO/Clevo drivers are loaded. Use 'cctl drivers-manage' to uninstall them first.\n");
@@ -1791,12 +1860,11 @@ static int cmd_uninstall(int argc, char **argv)
 
     /* Stop workers before removing the binary so they cannot keep running
      * from a deleted executable and holding hardware state. */
-    if (fc_stop_worker(1, 0) != 0) {
+    if (stop_managed_daemons() != 0) {
         cctl_stream_fprintf(stderr,
                 "Error: could not stop the active fan-curve worker; uninstall aborted.\n");
         return 1;
     }
-    kbe_stop(1);
 
     static const char *const runtime_files[] = {
         "/run/cctl_curve.state",
@@ -1848,9 +1916,16 @@ static int cmd_uninstall(int argc, char **argv)
 
 static int cmd_install(int argc, char **argv)
 {
-    int force = (argc >= 3 && strcmp(argv[2], "--force") == 0);
-    if (argc > 3 || (argc == 3 && !force))
-        return fail("'cctl install' does not accept arguments");
+    int force = 0;
+    int noconfirm = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--force") == 0)
+            force = 1;
+        else if (strcmp(argv[i], "--noconfirm") == 0)
+            noconfirm = 1;
+        else
+            return fail("Usage: cctl install [--force] [--noconfirm]");
+    }
 
     /* needs_root=0 in the command table: main() does NOT pre-elevate.
      * The readlink/microversion checks below run unprivileged;
@@ -1878,22 +1953,44 @@ static int cmd_install(int argc, char **argv)
 
     require_root(argc, argv);
 
-    /* Confirmation prompt: simple enter is not allowed, must type y or n */
-    if (installed_ver == CCTL_MICROVERSION)
-        stream_printf(STREAM_DELAY_US, "Reinstall cctl at /usr/local/bin/cctl (build %d)? [y/n] ", CCTL_MICROVERSION);
-    else if (installed_ver > 0)
-        stream_printf(STREAM_DELAY_US, "Upgrade cctl at /usr/local/bin/cctl (build %d → build %d)? [y/n] ",
-               installed_ver, CCTL_MICROVERSION);
-    else
-        stream_printf(STREAM_DELAY_US, "Install cctl to /usr/local/bin/cctl with passwordless sudo? [y/n] ");
-    fflush(stdout);
+    /* Confirmation prompt: simple enter is not allowed, must type y or n.
+     * --noconfirm skips both this and the sudoers-scope prompt. */
+    warn_managed_daemons();
+    if (!noconfirm) {
+        if (installed_ver == CCTL_MICROVERSION)
+            stream_printf(STREAM_DELAY_US, "Reinstall cctl at /usr/local/bin/cctl (build %d)? [y/n] ", CCTL_MICROVERSION);
+        else if (installed_ver > 0)
+            stream_printf(STREAM_DELAY_US, "Upgrade cctl at /usr/local/bin/cctl (build %d → build %d)? [y/n] ",
+                   installed_ver, CCTL_MICROVERSION);
+        else
+            stream_printf(STREAM_DELAY_US, "Install cctl to /usr/local/bin/cctl with passwordless sudo? [y/n] ");
+        fflush(stdout);
 
-    char ans[32] = {0};
-    if (!fgets(ans, sizeof(ans), stdin) ||
-        (ans[0] != 'y' && ans[0] != 'Y') ||
-        (ans[1] != '\n' && strcasecmp(ans, "yes\n") != 0)) {
-        stream_printf(STREAM_DELAY_US, "Aborted.\n");
-        return 0;
+        char ans[32] = {0};
+        if (!fgets(ans, sizeof(ans), stdin) ||
+            (ans[0] != 'y' && ans[0] != 'Y') ||
+            (ans[1] != '\n' && strcasecmp(ans, "yes\n") != 0)) {
+            stream_printf(STREAM_DELAY_US, "Aborted.\n");
+            return 0;
+        }
+    }
+
+    /* Determine the human user (prefer the sudo invoker) before configuring
+     * the sudoers rule. */
+    const char *user = getenv("SUDO_USER");
+    if (!user || !*user) user = getenv("USER");
+    if (!user || !*user) {
+        struct passwd *pw = getpwuid(getuid());
+        user = (pw && pw->pw_name) ? pw->pw_name : "root";
+    }
+
+    int all_users = noconfirm ? 0 : install_choose_sudo_scope(user);
+
+    /* Stop the old binary's workers before replacing it on disk. */
+    if (stop_managed_daemons() != 0) {
+        cctl_stream_fprintf(stderr,
+                "Error: could not stop the active fan-curve worker; install aborted.\n");
+        return 1;
     }
 
     /* Keep the interactive confirmation prompt character-streamed, then
@@ -1919,15 +2016,7 @@ static int cmd_install(int argc, char **argv)
     }
     stream_printf(STREAM_DELAY_US, "Installed: /usr/local/bin/cctl (from %s)\n", src);
 
-    /* 2. Determine the human user (prefer the sudo invoker) */
-    const char *user = getenv("SUDO_USER");
-    if (!user || !*user) user = getenv("USER");
-    if (!user || !*user) {
-        struct passwd *pw = getpwuid(getuid());
-        user = (pw && pw->pw_name) ? pw->pw_name : "root";
-    }
-
-    /* 3. Write sudoers.d/cctl granting passwordless sudo.
+    /* 2. Write sudoers.d/cctl granting passwordless sudo.
      *    Order matters:
      *      a) validate the username charset before it goes near the file,
      *      b) back up the existing rule (cctl.bak — sudo's includedir skips
@@ -1937,7 +2026,7 @@ static int cmd_install(int argc, char **argv)
      *      e) rename it into place ONLY if it parses cleanly.
      *    A rejected rule never replaces a working one, and sudo can never
      *    be locked out by a bad install. */
-    if (!sudoers_user_is_safe(user)) {
+    if (!all_users && !sudoers_user_is_safe(user)) {
         cctl_stream_fprintf(stderr, "Error: username '%s' is not safe to write into sudoers.\n", user);
         cctl_stream_fprintf(stderr, "       Allowed: first character [A-Za-z_], then [A-Za-z0-9_-].\n");
         cctl_stream_fprintf(stderr, "       Create the rule manually with mode 0440:\n");
@@ -1965,8 +2054,13 @@ static int cmd_install(int argc, char **argv)
         return 1;
     }
     char rule[320];
-    int rule_len = snprintf(rule, sizeof(rule),
-                            "%s ALL=(ALL) NOPASSWD: /usr/local/bin/cctl\n", user);
+    if (sudoers_rule_for(user, all_users, rule, sizeof(rule)) != 0) {
+        cctl_stream_fprintf(stderr, "Error: generated sudoers rule is too long.\n");
+        close(sfd);
+        unlink(sudoers_tmp);
+        return 1;
+    }
+    int rule_len = (int)strlen(rule);
     ssize_t w = write(sfd, rule, (size_t)rule_len);
     int close_rc = close(sfd);
     if (w != rule_len || close_rc != 0) {
@@ -2002,7 +2096,10 @@ static int cmd_install(int argc, char **argv)
     }
     chmod(sudoers, 0440); /* rename preserves 0440; enforce explicitly anyway */
     stream_printf(STREAM_DELAY_US, "%sSudoers:%s %s (passwordless sudo for %s)\n", C_GRN, C_RST,
-           sudoers, user);
+           sudoers, all_users ? "all users" : user);
+    if (all_users)
+        stream_printf(STREAM_DELAY_US, "%sWarning:%s every local account can now run cctl as root without a password.\n",
+               C_YLW, C_RST);
 
     stream_printf(STREAM_DELAY_US, "\n%sDone.%s cctl is installed to /usr/local/bin/cctl and passwordless sudo is configured.\n",
            C_GRN, C_RST);

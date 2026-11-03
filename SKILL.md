@@ -9,7 +9,11 @@ Use this skill when a user asks an agent to inspect or operate the installed `cc
 
 ## Start with the installed command
 
-Use the installed `cctl` executable. Check `cctl --version`, `cctl --help`, and `cctl status` when useful; `cctl --am` prints this guide. Run `cctl` as the user without `sudo`; it requests elevation when needed. This guide matches 5.0+; defer to the installed help for exact syntax on other builds.
+Use the installed `cctl` executable. Check `cctl --version` and `cctl --help` for this build; `cctl --am` prints this guide. This guide matches 5.0+; defer to the installed help for exact syntax on other builds.
+
+Before executing any other `cctl` command, run `cctl status` first to capture the current state so you can track changes.
+
+Do not prefix `cctl` commands with `sudo`; the installed binary has a sudoers rule and elevates itself when needed.
 
 When inspecting, prefer read-only commands such as `status`, `options`, `gov`, `epp`, `fancurve`, `snap`, and monitor one-shots. After a requested change, verify the result with a read-only command; don't claim success without confirming output.
 
@@ -202,7 +206,7 @@ numbers, `-`, and `_`, up to 64 characters.
 
   Change only the option the user requests.
 - `cctl drivers-manage` manages the supported driver package. Driver install/uninstall can affect loaded kernel modules; first stop any active fan curve. Follow cctl's prompts and report any module-in-use or reboot notices.
-- `cctl install [--force]` installs or upgrades cctl system-wide; `cctl uninstall` removes cctl, its saved data, and its sudo rule. Run these only when the user requests installation or removal.
+- `cctl install [--force] [--noconfirm]` installs or upgrades cctl system-wide; `cctl uninstall` removes cctl, its saved data, and its sudo rule. `--noconfirm` never prompts and configures passwordless sudo for the current user. Run these only when the user requests installation or removal.
 
 ## Files and runtime state
 

@@ -78,9 +78,6 @@ struct fancurve_state {
     struct fancurve_profile profile;
 };
 
-static uid_t fc_invoking_uid(void);
-static gid_t fc_invoking_gid(uid_t uid);
-
 /* ---------------------------------------------------------------- names */
 
 /* Accept names that can safely be used as a profile file name. This remains
@@ -590,9 +587,9 @@ static int fc_write_temp_text(const char *text, char *out_path, size_t out_sz,
     }
 
     /* If cctl was elevated, the editor still runs as the invoking user. */
-    uid_t editor_uid = fc_invoking_uid();
+    uid_t editor_uid = cctl_invoking_uid();
     if (geteuid() == 0 && editor_uid != 0) {
-        gid_t editor_gid = fc_invoking_gid(editor_uid);
+        gid_t editor_gid = cctl_invoking_gid(editor_uid);
         if (fchown(fd, editor_uid, editor_gid) != 0) {
             snprintf(err, err_sz, "could not assign temporary file to user: %s",
                      strerror(errno));
@@ -772,48 +769,10 @@ static char *fc_read_owned_text(const char *path, uid_t uid,
     return buf;
 }
 
-static uid_t fc_invoking_uid(void)
-{
-    if (geteuid() != 0)
-        return getuid();
-
-    const char *sudo_uid = getenv("SUDO_UID");
-    if (sudo_uid && *sudo_uid) {
-        char *end = NULL;
-        errno = 0;
-        unsigned long v = strtoul(sudo_uid, &end, 10);
-        if (errno == 0 && end != sudo_uid && *end == '\0' && v <= UINT_MAX)
-            return (uid_t)v;
-    }
-    return 0;
-}
-
-static gid_t fc_invoking_gid(uid_t uid)
-{
-    if (uid == 0)
-        return 0;
-    if (geteuid() != 0)
-        return getgid();
-
-    const char *sudo_gid = getenv("SUDO_GID");
-    if (sudo_gid && *sudo_gid) {
-        char *end = NULL;
-        errno = 0;
-        unsigned long v = strtoul(sudo_gid, &end, 10);
-        if (errno == 0 && end != sudo_gid && *end == '\0' && v <= UINT_MAX)
-            return (gid_t)v;
-    }
-
-    struct passwd *pw = getpwuid(uid);
-    if (pw)
-        return pw->pw_gid;
-    return getgid();
-}
-
 static int fc_install_profile(const char *name, const char *src,
                               char *err, size_t err_sz)
 {
-    uid_t owner = fc_invoking_uid();
+    uid_t owner = cctl_invoking_uid();
     if (geteuid() == 0 || access(FANCURVE_DIR, W_OK) == 0) {
         char *text = fc_read_owned_text(src, owner, err, err_sz);
         if (!text) return -1;
@@ -859,7 +818,7 @@ static int fc_cmd_install_helper(int argc, char **argv)
         return fail("invalid temporary fan-curve path");
 
     char err[256];
-    char *text = fc_read_owned_text(src, fc_invoking_uid(), err, sizeof(err));
+    char *text = fc_read_owned_text(src, cctl_invoking_uid(), err, sizeof(err));
     if (!text)
         return fail("%s", err);
 
@@ -897,92 +856,6 @@ static int fc_load_profile(const char *name, struct fancurve_profile *prof,
     return fancurve_validate(prof, name, err, err_sz);
 }
 
-/* --------------------------------------------------------------- editor */
-
-static const char *fc_pick_editor(void)
-{
-    const char *editor = getenv("SUDO_EDITOR");
-    if (!editor || !*editor) editor = getenv("VISUAL");
-    if (!editor || !*editor) editor = getenv("EDITOR");
-    if (!editor || !*editor) {
-        if (command_exists("nano")) editor = "nano";
-        else if (command_exists("micro")) editor = "micro";
-    }
-    return editor;
-}
-
-static int fc_run_editor(const char *path, char *err, size_t err_sz)
-{
-    const char *editor = fc_pick_editor();
-    if (!editor || !*editor) {
-        snprintf(err, err_sz,
-                 "no editor configured and neither nano nor micro is installed; "
-                 "set SUDO_EDITOR, VISUAL, or EDITOR");
-        return -1;
-    }
-
-    wordexp_t we = {0};
-    int wr = wordexp(editor, &we, WRDE_NOCMD);
-    if (wr != 0 || we.we_wordc == 0) {
-        if (wr == WRDE_NOSPACE) wordfree(&we);
-        snprintf(err, err_sz, "invalid editor command");
-        return -1;
-    }
-
-    char **args = calloc(we.we_wordc + 2, sizeof(*args));
-    if (!args) {
-        wordfree(&we);
-        snprintf(err, err_sz, "out of memory");
-        return -1;
-    }
-    for (size_t i = 0; i < we.we_wordc; i++)
-        args[i] = we.we_wordv[i];
-    args[we.we_wordc] = (char *)path;
-    args[we.we_wordc + 1] = NULL;
-
-    fflush(stdout);
-    fflush(stderr);
-    pid_t pid = fork();
-    if (pid < 0) {
-        snprintf(err, err_sz, "could not start editor: %s", strerror(errno));
-        free(args);
-        wordfree(&we);
-        return -1;
-    }
-    if (pid == 0) {
-        uid_t uid = fc_invoking_uid();
-        if (geteuid() == 0 && uid != 0) {
-            gid_t gid = fc_invoking_gid(uid);
-            if (setgroups(0, NULL) != 0 ||
-                setresgid(gid, gid, gid) != 0 ||
-                setresuid(uid, uid, uid) != 0)
-                _exit(126);
-        }
-        execvp(args[0], args);
-        _exit(127);
-    }
-
-    int status = 0;
-    pid_t waited;
-    do {
-        waited = waitpid(pid, &status, 0);
-    } while (waited < 0 && errno == EINTR);
-
-    free(args);
-    wordfree(&we);
-
-    if (waited < 0) {
-        snprintf(err, err_sz, "could not wait for editor: %s", strerror(errno));
-        return -1;
-    }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        snprintf(err, err_sz, "editor exited with status %d",
-                 WIFEXITED(status) ? WEXITSTATUS(status) : 1);
-        return -1;
-    }
-    return 0;
-}
-
 /* Validate editor output; on errors offer to reopen the editor. */
 static int fc_edit_and_save(const char *initial, const char *name,
                             char *err, size_t err_sz)
@@ -999,7 +872,7 @@ static int fc_edit_and_save(const char *initial, const char *name,
             free(text);
             return -1;
         }
-        if (fc_run_editor(tmp, err, err_sz) < 0) {
+        if (cctl_run_editor_as_user(tmp, err, err_sz) < 0) {
             unlink(tmp);
             free(text);
             return -1;
