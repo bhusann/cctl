@@ -1,0 +1,775 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cctl-gui</title>
+<link rel="icon" href="/icon.svg">
+<style>
+:root {
+  --bg: #111418; --panel: #1a1f26; --panel2: #222831; --border: #2b323c;
+  --fg: #d7dde5; --muted: #8b94a0; --accent: #4f8fff; --ok: #3fb95c;
+  --warn: #d29922; --err: #f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 system-ui, sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel);
+}
+header h1 { margin: 0; font-size: 18px; letter-spacing: .5px; }
+header .ver { color: var(--muted); font-size: 12px; }
+#hostchips { display: flex; gap: 8px; flex-wrap: wrap; }
+main {
+  display: grid; gap: 14px; padding: 16px 20px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  max-width: 1280px; margin: 0 auto;
+}
+section {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px;
+}
+section h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+#telemetry { grid-column: 1 / -1; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.card h3 { margin: 0 0 8px; font-size: 15px; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin-bottom: 8px; }
+.metric { background: var(--panel); border-radius: 6px; padding: 6px 8px; }
+.metric .v { font-size: 17px; font-weight: 600; }
+.metric .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+.warnv { color: var(--warn); } .errv { color: var(--err); } .okv { color: var(--ok); }
+svg.spark { display: block; width: 100%; height: 52px; background: var(--panel); border-radius: 6px; }
+svg.spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+svg.spark polyline.p2 { stroke: var(--warn); }
+.bars { display: flex; gap: 3px; margin: 8px 0 2px; }
+.bars i { flex: 1; height: 14px; border-radius: 3px; background: var(--accent); opacity: .85; }
+.bars i.e { background: #7c5fd6; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; color: var(--muted);
+}
+.chip b { color: var(--fg); font-weight: 600; }
+.chip.on { border-color: var(--ok); color: var(--ok); }
+.chip.off { border-color: var(--err); color: var(--err); }
+button {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 7px; padding: 6px 12px; font: inherit; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger:hover { border-color: var(--err); color: var(--err); }
+button.mini { padding: 3px 8px; font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+input[type=text], input[type=number], select {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 8px; font: inherit;
+}
+input[type=number] { width: 72px; }
+select { min-width: 120px; }
+input[type=range] { width: 160px; accent-color: var(--accent); }
+input[type=color] { width: 40px; height: 30px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel2); padding: 2px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.switch input { accent-color: var(--accent); width: 16px; height: 16px; }
+ul { list-style: none; margin: 0; padding: 0; }
+li.item {
+  display: flex; align-items: center; gap: 8px; padding: 7px 8px;
+  border: 1px solid var(--border); border-radius: 7px; margin-bottom: 6px;
+}
+li.item .name { font-weight: 600; }
+li.item .meta { font-size: 12px; color: var(--muted); }
+li.item.active { border-color: var(--ok); }
+.preset { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 999px; cursor: pointer; background: var(--panel2); }
+.preset .dot { width: 12px; height: 12px; border-radius: 50%; }
+#logsec { grid-column: 1 / -1; }
+#logpre {
+  background: #0d1014; border: 1px solid var(--border); border-radius: 7px;
+  padding: 10px; margin: 0; font: 12px/1.4 ui-monospace, monospace;
+  white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto;
+}
+#logpre .err { color: var(--err); } #logpre .ok { color: var(--ok); }
+dialog {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px; width: min(560px, 92vw);
+}
+dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog h3 { margin: 0 0 12px; }
+.points td { padding: 3px; }
+.points input, .points select { width: 90px; }
+.hint { color: var(--muted); font-size: 12px; }
+.banner { grid-column: 1 / -1; border-color: var(--err); color: var(--err);
+  background: #241a1a; padding: 10px 14px; border: 1px solid var(--err); border-radius: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <img src="/icon.svg" width="26" height="26" alt="cctl">
+  <h1>cctl-gui <span class="ver" id="ver"></span></h1>
+  <div id="hostchips" class="chips"></div>
+</header>
+
+<section id="bannersec" class="banner" hidden></section>
+
+<main>
+  <section id="telemetry">
+    <div class="card" id="cpuCard">
+      <h3 id="cpuName">CPU</h3>
+      <div class="metrics" id="cpuMetrics"></div>
+      <div class="bars" id="cpuBars" title="Per-core frequency"></div>
+      <svg class="spark" viewBox="0 0 240 52" id="cpuSpark"><polyline points=""></polyline><polyline class="p2" points=""></polyline></svg>
+      <div class="hint" id="cpuSparkHint">usage % (blue) · package W (orange)</div>
+    </div>
+    <div class="card" id="gpuCard" hidden>
+      <h3 id="gpuName">GPU</h3>
+      <div class="metrics" id="gpuMetrics"></div>
+      <svg class="spark" viewBox="0 0 240 52" id="gpuSpark"><polyline points=""></polyline><polyline class="p2" points=""></polyline></svg>
+      <div class="hint" id="gpuSparkHint">util % (blue) · power W (orange)</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Power profiles</h2>
+    <div class="row" id="builtinRow"></div>
+    <ul id="customList"></ul>
+    <div class="row">
+      <button class="primary" id="addProfile">New profile</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>CPU overrides</h2>
+    <div class="row">
+      <label class="switch"><input type="checkbox" id="turboSw"> Turbo</label>
+      <select id="govSel"></select>
+      <select id="eppSel"></select>
+    </div>
+    <div class="row">
+      <label>PL1 <input type="number" id="pl1" min="0" max="90"></label>
+      <label>PL2 <input type="number" id="pl2" min="0" max="115"></label>
+      <button id="applyRapl">Apply limits</button>
+    </div>
+    <div class="hint">PL1 &le; 90 W in EC code 2, otherwise &le; 45 W; PL2 up to 115 W. Turbo ON in EC 2/3 sets fans to auto.</div>
+  </section>
+
+  <section>
+    <h2>Fans</h2>
+    <div class="row">
+      <button id="fanAuto">Fans auto</button>
+      <button id="fanMax">Fans max</button>
+      <span class="chip" id="curveChip">curve: none</span>
+    </div>
+    <div class="row">
+      <label class="switch"><input type="checkbox" id="expSw"> Experimental manual duty</label>
+    </div>
+    <div id="expFan" hidden>
+      <div class="row"><label>Both <input type="range" id="fanBoth" min="25" max="100"></label><button class="mini" id="fanBothSet">set</button></div>
+      <div class="row"><label>CPU <input type="range" id="fanCpu" min="25" max="100"></label><button class="mini" id="fanCpuSet">set</button><button class="mini" id="fanCpuAuto">auto</button></div>
+      <div class="row"><label>GPU <input type="range" id="fanGpu" min="25" max="100"></label><button class="mini" id="fanGpuSet">set</button><button class="mini" id="fanGpuAuto">auto</button></div>
+      <div class="hint">Fixed duty ignores temperature and can overheat.</div>
+    </div>
+    <ul id="curveList"></ul>
+    <div class="row"><button class="primary" id="addCurve">New fan curve</button></div>
+  </section>
+
+  <section>
+    <h2>Keyboard</h2>
+    <div class="chips" id="presetRow"></div>
+    <div class="row">
+      <input type="color" id="kbdColor" value="#ff0000">
+      <button id="applyColor">Set color</button>
+      <label>Brightness <input type="range" id="kbdBright" min="0" max="100"></label>
+    </div>
+    <div class="row">
+      <select id="effectSel"></select>
+      <button id="effectStart">Start</button>
+      <button id="effectStop">Stop</button>
+    </div>
+    <div class="row">
+      <select id="notifSel"><option>flash</option><option>pulse</option><option>sos</option><option>police</option></select>
+      <input type="color" id="notifColor" value="#ff0000">
+      <input type="number" id="notifTimes" min="1" max="20" value="1" style="width:52px">
+      <button id="notifPlay">Play notification</button>
+    </div>
+    <div class="row">
+      <label class="switch"><input type="checkbox" id="fnSw"> Fn Lock</label>
+      <span class="chip" id="kbdChip"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Privacy</h2>
+    <div class="row"><label class="switch"><input type="checkbox" id="camSw"> Webcam</label></div>
+    <div class="row"><label class="switch"><input type="checkbox" id="micSw"> Microphone</label></div>
+  </section>
+
+  <section>
+    <h2>Battery</h2>
+    <div class="chips" id="batChips"></div>
+    <div class="row">
+      <label>Start % <input type="number" id="batStart" min="0" max="100"></label>
+      <label>Stop % <input type="number" id="batStop" min="0" max="100"></label>
+      <button id="batApply">Set custom</button>
+      <button id="batStd">Standard mode</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>NVIDIA &amp; MUX</h2>
+    <div class="chips" id="gpuChips"></div>
+    <div class="row"><button id="muxSwitch">Switch MUX</button><span class="hint">UEFI NVRAM; applies after reboot.</span></div>
+    <div class="row">
+      <label>Core <input type="number" id="clkMin" min="0" max="3600" style="width:60px"></label>
+      <input type="number" id="clkMax" min="0" max="3600" style="width:60px">
+      <button class="mini" id="clkLock">lock</button>
+      <button class="mini danger" id="clkReset">reset</button>
+    </div>
+    <div class="row">
+      <label>Mem <input type="number" id="mclkMin" min="0" max="8000" style="width:60px"></label>
+      <input type="number" id="mclkMax" min="0" max="8000" style="width:60px">
+      <button class="mini" id="mclkLock">lock</button>
+      <button class="mini danger" id="mclkReset">reset</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Display</h2>
+    <div class="chips" id="dispChips"></div>
+    <div class="row">
+      <button class="mini" id="rrList">List modes</button>
+      <button class="mini" id="rrToggle">Toggle</button>
+      <input type="number" id="rrHz" min="1" max="240" style="width:60px">
+      <button class="mini" id="rrSet">Set Hz</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Snapshots</h2>
+    <div class="row">
+      <input type="text" id="snapName" placeholder="name" maxlength="64">
+      <button class="primary" id="snapSave">Save</button>
+    </div>
+    <ul id="snapList"></ul>
+  </section>
+
+  <section id="logsec">
+    <h2>Last output</h2>
+    <pre id="logpre">—</pre>
+  </section>
+</main>
+
+<dialog id="dlgCurve">
+  <h3 id="curveTitle">New fan curve</h3>
+  <div class="row">
+    <label>Name <input type="text" id="cName" maxlength="40"></label>
+    <label>Hysteresis °C <input type="number" id="cHyst" min="0" max="20" value="3"></label>
+    <label>Interval ms <input type="number" id="cMs" min="250" max="60000" value="1000"></label>
+  </div>
+  <table class="points" id="cPoints"></table>
+  <div class="row">
+    <button class="mini" id="cAdd">Add point</button>
+    <button class="mini danger" id="cDel">Remove point</button>
+    <span class="hint">Temps 0–95 increasing; fan 25–100; last point may be auto.</span>
+  </div>
+  <div class="row">
+    <button class="primary" id="cSave">Save curve</button>
+    <button id="cClose">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="dlgProfile">
+  <h3 id="profTitle">New custom profile</h3>
+  <div class="row">
+    <label>Name <input type="text" id="pName" maxlength="40"></label>
+    <label>EC code <select id="pEc"><option>skip</option><option>0</option><option>1</option><option>2</option><option>3</option></select></label>
+    <label>Turbo <select id="pTurbo"><option>skip</option><option>0</option><option>1</option></select></label>
+  </div>
+  <div class="row">
+    <label>Governor <select id="pGov"></select></label>
+    <label>EPP <select id="pEpp"></select></label>
+  </div>
+  <div class="row">
+    <label>PL1 <input type="text" id="pPl1" value="skip" size="6"></label>
+    <label>PL2 <input type="text" id="pPl2" value="skip" size="6"></label>
+    <label>Refresh <input type="text" id="pRefresh" value="skip" size="8"></label>
+  </div>
+  <div class="hint">Use “skip” to leave a field unchanged; set both PL1 and PL2 or neither. Refresh: number, lowest, highest, skip.</div>
+  <div class="row">
+    <button class="primary" id="pSave">Save profile</button>
+    <button id="pClose">Cancel</button>
+  </div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(method, url, fields) {
+  const opts = { method, headers: {} };
+  if (method === 'POST') {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(fields || {})) {
+      if (Array.isArray(v)) v.forEach(x => p.append(k, String(x)));
+      else p.append(k, String(v));
+    }
+    opts.headers['X-CCTL'] = '1';
+    opts.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    opts.body = p.toString();
+  }
+  const r = await fetch(url, opts);
+  const data = await r.json().catch(() => ({ rc: -1, stderr: 'server returned non-JSON (HTTP ' + r.status + ')' }));
+  return data;
+}
+
+function out(label, res) {
+  const pre = $('logpre');
+  let txt = '$ cctl ' + label + '\n';
+  const stdout = res.stdout !== undefined ? res.stdout : JSON.stringify(res, null, 2);
+  if (res.rc !== undefined && res.rc !== 0) txt += '(exit ' + res.rc + ')\n';
+  if (stdout) txt += stdout;
+  if (res.stderr) txt += '\n[stderr] ' + res.stderr;
+  pre.textContent = txt;
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function banner(msg) {
+  const b = $('bannersec');
+  if (!msg) { b.hidden = true; return; }
+  b.hidden = false; b.textContent = msg;
+}
+
+/* ------------------------------------------------------------ telemetry */
+const hist = { usage: [], power: [], temp: [], gpuUtil: [], gpuPower: [] };
+const HIST_MAX = 60;
+
+function spark(svg, a, b) {
+  const polylines = svg.querySelectorAll('polyline');
+  const mk = arr => {
+    if (arr.length < 2) return '';
+    const max = Math.max(...arr, 1);
+    return arr.map((v, i) => `${(i / (HIST_MAX - 1)) * 240},${52 - (v / max) * 48}`).join(' ');
+  };
+  polylines[0].setAttribute('points', mk(a));
+  polylines[1].setAttribute('points', mk(b));
+}
+
+function metric(l, v, cls) {
+  return `<div class="metric"><div class="v ${cls || ''}">${v}</div><div class="l">${l}</div></div>`;
+}
+
+async function pollTelemetry() {
+  try {
+    const cpu = await api('GET', '/api/cpu');
+    if (cpu.rc !== undefined) throw new Error(cpu.stderr || 'cpumon failed');
+    hist.usage.push(cpu.cpu_usage_pct || 0);
+    hist.power.push(cpu.package_power_w || 0);
+    hist.temp.push(cpu.cpu_temp_c || 0);
+    trim(hist);
+    $('cpuName').textContent = cpu.cpu_model || 'CPU';
+    $('cpuMetrics').innerHTML =
+      metric('Usage', (cpu.cpu_usage_pct ?? 0).toFixed(0) + '%') +
+      metric('Temp', (cpu.cpu_temp_c ?? 0).toFixed(0) + '°C', cpu.cpu_temp_c >= 90 ? 'errv' : '') +
+      metric('Power', (cpu.package_power_w ?? 0).toFixed(1) + ' W') +
+      metric('Fan', (cpu.cpu_fan_duty_pct ?? 0).toFixed(0) + '% · ' + (cpu.cpu_fan_rpm ?? 0) + ' rpm') +
+      metric('Turbo', cpu.turbo_enabled ? 'ON' : 'OFF', cpu.turbo_enabled ? 'okv' : '') +
+      metric('Throttle', cpu.thermal_throttling_active ? 'active' : 'idle', cpu.thermal_throttling_active ? 'warnv' : 'okv');
+    const bars = $('cpuBars');
+    bars.innerHTML = (cpu.cores || []).map(c =>
+      `<i class="${c.group === 'E' ? 'e' : ''}" style="height:${Math.min(14, Math.max(2, (c.frequency_mhz || 0) / 250))}px" title="core ${c.index} (${c.group}) ${c.frequency_mhz} MHz"></i>`
+    ).join('');
+    spark($('cpuSpark'), hist.usage, hist.power);
+  } catch (e) { banner('CPU telemetry error: ' + e.message); }
+
+  try {
+    const gpu = await api('GET', '/api/gpu');
+    if (gpu.rc !== undefined) { $('gpuCard').hidden = true; throw null; }
+    $('gpuCard').hidden = false;
+    hist.gpuUtil.push(gpu.gpu_util_pct || 0);
+    hist.gpuPower.push(gpu.power_w || 0);
+    trim(hist);
+    $('gpuName').textContent = gpu.gpu_name || 'GPU';
+    $('gpuMetrics').innerHTML =
+      metric('Util', (gpu.gpu_util_pct ?? 0).toFixed(0) + '%') +
+      metric('Temp', (gpu.temperature_c ?? 0).toFixed(0) + '°C', gpu.temperature_c >= 80 ? 'errv' : '') +
+      metric('Power', (gpu.power_w ?? 0).toFixed(0) + '/' + (gpu.power_limit_w ?? 0) + ' W') +
+      metric('VRAM', Math.round((gpu.vram_used_mib ?? 0) / 102.4) + '%') +
+      metric('Clock', (gpu.gpu_clock_mhz ?? 0) + '/' + (gpu.gpu_clock_max_mhz ?? 0) + ' MHz') +
+      metric('Fan', (gpu.gpu_fan_duty_pct ?? 0).toFixed(0) + '% · ' + (gpu.gpu_fan_rpm ?? 0) + ' rpm');
+    spark($('gpuSpark'), hist.gpuUtil, hist.gpuPower);
+  } catch (e) { if (e) banner('GPU telemetry error: ' + e.message); }
+}
+
+function trim(h) {
+  for (const k of Object.keys(h)) if (h[k].length > HIST_MAX) h[k] = h[k].slice(-HIST_MAX);
+}
+
+/* ------------------------------------------------------------ status */
+async function pollStatus() {
+  try {
+    const st = await api('GET', '/api/status');
+    if (st.rc !== undefined) throw new Error(st.stderr || 'status failed');
+    banner(null);
+    renderStatus(st);
+  } catch (e) { banner('Status error: ' + e.message); }
+}
+
+function chip(l, v, cls) {
+  return `<span class="chip${cls ? ' ' + cls : ''}">${l} <b>${v}</b></span>`;
+}
+
+function renderStatus(st) {
+  $('hostchips').innerHTML = chip('profile', st.mode) + chip('turbo', st.turbo_enabled ? 'on' : 'off', st.turbo_enabled ? 'on' : 'off');
+  $('cpuSparkHint').textContent = `usage % · package W · governor ${st.governor} · EPP ${st.epp}`;
+  $('govSel').value = st.governor; $('eppSel').value = st.epp;
+  $('pl1').value = st.pl1_w; $('pl2').value = st.pl2_w;
+  $('turboSw').checked = st.turbo_enabled;
+  $('fnSw').checked = st.fn_lock;
+  $('camSw').checked = st.webcam_enabled;
+  $('micSw').checked = st.microphone_enabled;
+  $('kbdColor').value = rgbHex(st.keyboard_color_rgb);
+  $('kbdBright').value = st.keyboard_brightness_pct;
+  $('kbdChip').innerHTML = st.keyboard_effect
+    ? `effect <b>${st.keyboard_effect}</b>` : `color <b>${st.keyboard_color_preset || 'custom'}</b>`;
+  $('gpuChips').innerHTML =
+    chip('mux', st.gpu_mux_mode + (st.gpu_mux_pending_reboot ? ' (pending reboot)' : '')) +
+    chip('dgpu', st.dgpu_power_state) +
+    chip('core clocks', st.gpu_core_clock_state) +
+    chip('mem clocks', st.gpu_memory_clock_state);
+  $('dispChips').innerHTML = st.display_refresh_hz
+    ? chip('refresh', st.display_refresh_hz + ' Hz') + chip('output', st.display_output || '?')
+    : '<span class="hint">display info unavailable</span>';
+  $('batChips').innerHTML =
+    chip('charge', (st.battery_capacity_pct ?? 0) + '%') +
+    chip('state', st.battery_status || '?') +
+    chip('mode', st.battery_charge_type || '?') +
+    (st.battery_charge_start_threshold_pct >= 0 ? chip('limits', st.battery_charge_start_threshold_pct + '–' + st.battery_charge_end_threshold_pct + '%') : '') +
+    (st.battery_health_pct != null ? chip('health', st.battery_health_pct + '%') : '');
+  if (st.battery_charge_type === 'Custom') {
+    $('batStart').value = st.battery_charge_start_threshold_pct;
+    $('batStop').value = st.battery_charge_end_threshold_pct;
+  }
+  $('curveChip').innerHTML = st.fan_curve_active
+    ? `curve <b>${st.fan_curve_name}</b> active <button class="mini danger" id="curveStop">stop</button>`
+    : 'curve: none';
+  loadCurves();
+  loadProfiles();
+}
+
+function rgbHex(rgb) {
+  if (!Array.isArray(rgb)) return '#ff0000';
+  return '#' + rgb.map(x => String(x).toString(16).padStart(2, '0')).join('');
+}
+
+/* ------------------------------------------------------------ lists */
+async function loadProfiles() {
+  try {
+    const p = await api('GET', '/api/profiles');
+    if (p.rc !== undefined) throw new Error(p.stderr);
+    $('builtinRow').innerHTML = p.builtin.map(n =>
+      `<button data-prof="${n}">${n}</button>`).join('');
+    $('customList').innerHTML = p.custom.map(c =>
+      `<li class="item"><span class="name">${c.name}</span>` +
+      `<span class="meta">EC ${c.ec} · turbo ${c.turbo} · ${c.gov}/${c.epp} · ${c.pl1}/${c.pl2} W${c.refresh !== 'skip' ? ' · ' + c.refresh + 'Hz' : ''}</span>` +
+      `<button class="mini" data-prof="${c.name}">apply</button>` +
+      `<button class="mini" data-edit="${c.name}">edit</button>` +
+      `<button class="mini danger" data-del="${c.name}">del</button></li>`).join('');
+  } catch (e) { /* profile list not critical */ }
+}
+
+async function loadCurves() {
+  try {
+    const c = await api('GET', '/api/curves');
+    if (c.rc !== undefined) throw new Error(c.stderr);
+    $('curveList').innerHTML = c.names.map(n => {
+      const active = c.active && c.name === n;
+      return `<li class="item${active ? ' active' : ''}"><span class="name">${n}</span>` +
+        `<button class="mini" data-cstart="${n}">${active ? 'running' : 'start'}</button>` +
+        `<button class="mini" data-cedit="${n}" ${active ? 'disabled' : ''}>edit</button>` +
+        `<button class="mini danger" data-cdel="${n}" ${active ? 'disabled' : ''}>del</button></li>`;
+    }).join('') || '<div class="hint">No fan curves saved.</div>';
+  } catch (e) { /* not critical */ }
+}
+
+async function loadPresets() {
+  try {
+    const p = await api('GET', '/api/presets');
+    if (p.rc !== undefined) throw new Error(p.stderr);
+    $('presetRow').innerHTML = p.presets.map(x =>
+      `<span class="preset" data-preset="${x.name}"><span class="dot" style="background:rgb(${x.rgb.join(',')})"></span>${x.name}</span>`).join('');
+    $('effectSel').innerHTML = p.effects.map(e => `<option value="${e.name}" title="${e.desc}">${e.name}</option>`).join('');
+  } catch (e) { /* not critical */ }
+}
+
+async function loadOptions() {
+  try {
+    const o = await api('GET', '/api/settings');
+    if (o.rc !== undefined) throw new Error(o.stderr);
+    $('expSw').checked = !!o.experimental_fan;
+    $('expFan').hidden = !o.experimental_fan;
+  } catch (e) { /* not critical */ }
+}
+
+async function loadSnapshots() {
+  try {
+    const s = await api('GET', '/api/snapshots');
+    if (s.rc !== undefined) throw new Error(s.stderr);
+    $('snapList').innerHTML = s.names.map(n =>
+      `<li class="item"><span class="name">${n}</span>` +
+      `<button class="mini" data-srestore="${n}">restore</button>` +
+      `<button class="mini" data-sview="${n}">view</button>` +
+      `<button class="mini danger" data-sdel="${n}">del</button></li>`).join('') ||
+      '<div class="hint">No snapshots saved.</div>';
+  } catch (e) { /* not critical */ }
+}
+
+async function loadCpuOptions() {
+  try {
+    const o = await api('GET', '/api/cpu-options');
+    if (o.rc !== undefined) throw new Error(o.stderr);
+    fillSel('govSel', o.governors);
+    fillSel('eppSel', o.epp);
+    fillSel('pGov', [...o.governors, 'skip']);
+    fillSel('pEpp', [...o.epp, 'skip']);
+  } catch (e) { /* selects keep defaults */ }
+}
+
+function fillSel(id, vals) {
+  const cur = $(id).value;
+  $(id).innerHTML = vals.map(v => `<option>${v}</option>`).join('');
+  if (vals.includes(cur)) $(id).value = cur;
+}
+
+/* ------------------------------------------------------------ actions */
+async function run(label, cmd, args) {
+  const res = await api('POST', '/api/run', { cmd, args });
+  out(label + (args.length ? ' ' + args.join(' ') : ''), res);
+  refreshSoon();
+}
+
+function refreshSoon() { setTimeout(pollStatus, 400); setTimeout(pollTelemetry, 400); }
+
+$('builtinRow').addEventListener('click', e => {
+  const b = e.target.closest('[data-prof]'); if (!b) return;
+  run('set', 'set', [b.dataset.prof]);
+});
+$('customList').addEventListener('click', async e => {
+  const apply = e.target.closest('[data-prof]');
+  if (apply) return run('set', 'set', [apply.dataset.prof]);
+  const del = e.target.closest('[data-del]');
+  if (del) return run('editconf --am --delete', 'editconf', ['--am', '--delete', del.dataset.del]);
+  const edit = e.target.closest('[data-edit]');
+  if (edit) openProfileDialog(edit.dataset.edit);
+});
+$('turboSw').addEventListener('change', async e => {
+  const res = await api('POST', '/api/turbo', { state: e.target.checked ? 'on' : 'off' });
+  out('turbo ' + (e.target.checked ? 'on' : 'off'), res);
+  refreshSoon();
+});
+$('govSel').addEventListener('change', e => run('gov', 'gov', [e.target.value]));
+$('eppSel').addEventListener('change', e => run('epp', 'epp', [e.target.value]));
+$('applyRapl').addEventListener('click', () => {
+  const a = [];
+  a.push($('pl1').value === '' ? 'skip' : String($('pl1').value));
+  a.push($('pl2').value === '' ? 'skip' : String($('pl2').value));
+  run('rapl', 'rapl', a);
+});
+$('fanAuto').addEventListener('click', () => run('fan auto', 'fan', ['auto']));
+$('fanMax').addEventListener('click', () => run('fan max', 'fan', ['max']));
+$('expSw').addEventListener('change', async e => {
+  const res = await api('POST', '/api/options', { key: 'experimental-fan', value: e.target.checked ? 'on' : 'off' });
+  out('options experimental-fan ' + (e.target.checked ? 'on' : 'off'), res);
+  loadOptions();
+  refreshSoon();
+});
+$('fanBothSet').addEventListener('click', () => run('fan pct', 'fan', [String($('fanBoth').value), '--nosafe']));
+$('fanCpuSet').addEventListener('click', () => run('fan cpu pct', 'fan', ['cpu', String($('fanCpu').value), '--nosafe']));
+$('fanGpuSet').addEventListener('click', () => run('fan gpu pct', 'fan', ['gpu', String($('fanGpu').value), '--nosafe']));
+$('fanCpuAuto').addEventListener('click', () => run('fan cpu auto', 'fan', ['cpu', 'auto']));
+$('fanGpuAuto').addEventListener('click', () => run('fan gpu auto', 'fan', ['gpu', 'auto']));
+$('presetRow').addEventListener('click', e => {
+  const p = e.target.closest('[data-preset]'); if (!p) return;
+  run('kbc', 'kbc', [p.dataset.preset]);
+});
+$('applyColor').addEventListener('click', () => {
+  const h = $('kbdColor').value.slice(1);
+  run('kbc', 'kbc', [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]);
+});
+$('kbdBright').addEventListener('change', e => run('kbb', 'kbb', [String(e.target.value)]));
+$('effectStart').addEventListener('click', () => run('kbe', 'kbe', [$('effectSel').value]));
+$('effectStop').addEventListener('click', () => run('kbe stop', 'kbe', ['stop']));
+$('notifPlay').addEventListener('click', () => {
+  const eff = $('notifSel').value;
+  const args = [eff];
+  if (eff !== 'police') args.push($('notifColor').value, String($('notifTimes').value));
+  run('kbn', 'kbn', args);
+});
+$('fnSw').addEventListener('change', e => run('fn', 'fn', [e.target.checked ? 'lock' : 'unlock']));
+$('camSw').addEventListener('change', e => run('webcam', 'webcam', [e.target.checked ? 'on' : 'off']));
+$('micSw').addEventListener('change', e => run('mic', 'mic', [e.target.checked ? 'on' : 'off']));
+$('batApply').addEventListener('click', () => run('bat', 'bat', [String($('batStart').value), String($('batStop').value)]));
+$('batStd').addEventListener('click', () => run('bat standard', 'bat', ['standard']));
+$('muxSwitch').addEventListener('click', () => run('mux switch', 'mux', ['switch']));
+$('clkLock').addEventListener('click', () => {
+  const a = ['clock'];
+  if ($('clkMin').value) a.push(String($('clkMin').value));
+  a.push(String($('clkMax').value));
+  run('nvidia', 'nvidia', a);
+});
+$('clkReset').addEventListener('click', () => run('nvidia clock reset', 'nvidia', ['clock', 'reset']));
+$('mclkLock').addEventListener('click', () => {
+  const a = ['memclock'];
+  if ($('mclkMin').value) a.push(String($('mclkMin').value));
+  a.push(String($('mclkMax').value));
+  run('nvidia', 'nvidia', a);
+});
+$('mclkReset').addEventListener('click', () => run('nvidia memclock reset', 'nvidia', ['memclock', 'reset']));
+$('rrList').addEventListener('click', () => run('rr', 'rr', []));
+$('rrToggle').addEventListener('click', () => run('rr toggle', 'rr', ['toggle']));
+$('rrSet').addEventListener('click', () => run('rr', 'rr', [String($('rrHz').value)]));
+$('snapSave').addEventListener('click', () => {
+  const n = $('snapName').value.trim();
+  if (n) api('POST', '/api/snapshot', { action: 'save', name: n }).then(r => { out('snapshot save ' + n, r); loadSnapshots(); });
+});
+$('snapList').addEventListener('click', async e => {
+  const r = e.target.closest('[data-srestore]'), v = e.target.closest('[data-sview]'), d = e.target.closest('[data-sdel]');
+  if (r) { const res = await api('POST', '/api/snapshot', { action: 'restore', name: r.dataset.srestore }); out('snapshot restore ' + r.dataset.srestore, res); refreshSoon(); }
+  if (v) { const res = await api('POST', '/api/snapshot', { action: 'view', name: v.dataset.sview }); out('snapshot view ' + v.dataset.sview, res); }
+  if (d) { const res = await api('POST', '/api/snapshot', { action: 'delete', name: d.dataset.sdel }); out('snapshot delete ' + d.dataset.sdel, res); loadSnapshots(); }
+});
+$('curveChip').addEventListener('click', async e => {
+  if (e.target.id === 'curveStop') {
+    const res = await api('POST', '/api/curve-stop', {});
+    out('fancurve stop', res);
+    refreshSoon();
+  } else loadCurves();
+});
+
+/* ------------------------------------------------------------ dialogs */
+let curveEditing = null, profileEditing = null;
+
+function pointRow(t = '', f = '') {
+  const sel = `<select>${[25,30,40,50,60,70,80,90,100].map(x => `<option value="${x}"${String(x) === String(f) ? ' selected' : ''}>${x}%</option>`).join('')}<option value="auto"${f === 'auto' ? ' selected' : ''}>auto</option></select>`;
+  return `<tr><td><input type="number" min="0" max="95" value="${t}"></td><td>${sel}</td></tr>`;
+}
+
+function setPoints(rows) {
+  $('cPoints').innerHTML = rows.map(([t, f]) => pointRow(t, f)).join('');
+}
+
+$('addCurve').addEventListener('click', () => {
+  curveEditing = null;
+  $('curveTitle').textContent = 'New fan curve';
+  $('cName').value = ''; $('cName').disabled = false;
+  $('cHyst').value = 3; $('cMs').value = 1000;
+  setPoints([['45', '40'], ['70', '70'], ['90', 'auto']]);
+  $('dlgCurve').showModal();
+});
+$('cAdd').addEventListener('click', () => {
+  const rows = readPoints();
+  if (rows.length >= 16) return;
+  rows.push(['', '']);
+  setPoints(rows);
+});
+$('cDel').addEventListener('click', () => {
+  const rows = readPoints();
+  if (rows.length <= 2) return;
+  rows.pop();
+  setPoints(rows);
+});
+$('cClose').addEventListener('click', () => $('dlgCurve').close());
+$('cSave').addEventListener('click', async () => {
+  const name = $('cName').value.trim();
+  if (!name) return banner('Curve name required');
+  const rows = readPoints();
+  const points = rows.flatMap(([t, f]) => [String(t), String(f)]);
+  const fields = { name, hysteresis: String($('cHyst').value), interval_ms: String($('cMs').value), points };
+  if (curveEditing) {
+    const del = await api('POST', '/api/curve-delete', { name: curveEditing });
+    out('fancurve del ' + curveEditing, del);
+  }
+  const res = await api('POST', '/api/curve-create', fields);
+  out('fancurve create --am ' + name, res);
+  if (res.rc === 0) $('dlgCurve').close();
+  loadCurves(); refreshSoon();
+});
+$('curveList').addEventListener('click', async e => {
+  const s = e.target.closest('[data-cstart]'), d = e.target.closest('[data-cdel]'), ed = e.target.closest('[data-cedit]');
+  if (s) { const res = await api('POST', '/api/curve-start', { name: s.dataset.cstart }); out('fancurve start ' + s.dataset.cstart, res); loadCurves(); refreshSoon(); }
+  if (d) { const res = await api('POST', '/api/curve-delete', { name: d.dataset.cdel }); out('fancurve del ' + d.dataset.cdel, res); loadCurves(); refreshSoon(); }
+  if (ed) openCurveDialog(ed.dataset.cedit);
+});
+
+function readPoints() {
+  return [...$('cPoints').querySelectorAll('tr')].map(tr => [
+    tr.querySelector('input').value, tr.querySelector('select').value]);
+}
+
+async function openCurveDialog(name) {
+  const c = await api('GET', '/api/curve?name=' + encodeURIComponent(name));
+  if (c.rc !== undefined || c.error) return out('curve view ' + name, c);
+  curveEditing = name;
+  $('curveTitle').textContent = 'Edit fan curve: ' + name;
+  $('cName').value = name; $('cName').disabled = true;
+  $('cHyst').value = c.hysteresis; $('cMs').value = c.interval_ms;
+  setPoints(c.points.map(p => [p.temp, String(p.fan)]));
+  $('dlgCurve').showModal();
+}
+
+$('addProfile').addEventListener('click', () => {
+  profileEditing = null;
+  $('profTitle').textContent = 'New custom profile';
+  $('pName').value = ''; $('pName').disabled = false;
+  $('pEc').value = 'skip'; $('pTurbo').value = 'skip';
+  $('pPl1').value = 'skip'; $('pPl2').value = 'skip'; $('pRefresh').value = 'skip';
+  $('dlgProfile').showModal();
+});
+$('pClose').addEventListener('click', () => $('dlgProfile').close());
+$('pSave').addEventListener('click', async () => {
+  const name = $('pName').value.trim();
+  if (!name) return banner('Profile name required');
+  const fields = { name, ec: $('pEc').value, turbo: $('pTurbo').value,
+                   gov: $('pGov').value, epp: $('pEpp').value,
+                   pl1: $('pPl1').value || 'skip', pl2: $('pPl2').value || 'skip',
+                   refresh: $('pRefresh').value || 'skip' };
+  if (profileEditing) {
+    const del = await api('POST', '/api/profile-delete', { name: profileEditing });
+    out('editconf --am --delete ' + profileEditing, del);
+  }
+  const res = await api('POST', '/api/profile-create', fields);
+  out('editconf --am --create ' + name, res);
+  if (res.rc === 0) $('dlgProfile').close();
+  loadProfiles(); refreshSoon();
+});
+
+async function openProfileDialog(name) {
+  const p = await api('GET', '/api/profiles');
+  if (p.rc !== undefined) return out('profiles', p);
+  const row = p.custom.find(x => x.name === name);
+  if (!row) return;
+  profileEditing = name;
+  $('profTitle').textContent = 'Edit custom profile: ' + name;
+  $('pName').value = name; $('pName').disabled = true;
+  $('pEc').value = row.ec; $('pTurbo').value = row.turbo;
+  fillSel('pGov', [...(p.governors || []), row.gov, 'skip']);
+  fillSel('pEpp', [...(p.epp || []), row.epp, 'skip']);
+  $('pGov').value = row.gov; $('pEpp').value = row.epp;
+  $('pPl1').value = row.pl1; $('pPl2').value = row.pl2; $('pRefresh').value = row.refresh;
+  $('dlgProfile').showModal();
+}
+
+/* ------------------------------------------------------------ boot */
+async function boot() {
+  const v = await api('GET', '/api/version').catch(() => null);
+  $('ver').textContent = v && v.version ? 'cctl ' + v.version : '';
+  await Promise.all([loadCpuOptions(), loadPresets(), loadOptions(), loadSnapshots(), pollStatus(), pollTelemetry()]);
+  setInterval(pollTelemetry, 2000);
+  setInterval(pollStatus, 5000);
+  setInterval(loadSnapshots, 15000);
+}
+boot();
+</script>
+</body>
+</html>

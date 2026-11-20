@@ -21,6 +21,45 @@ CCTL is written in C, runs without a GUI, and needs no always-on service —
 keyboard effects and custom fan curves use a small background worker only
 while they are active.
 
+---
+
+## This fork: cctl-gui (browser control panel)
+
+This fork of [bhusann/cctl](https://github.com/bhusann/cctl) adds one
+command: `cctl gui`. It serves a browser control panel on
+`http://127.0.0.1:8723/` from the same binary — no extra dependencies.
+
+```sh
+make
+./cctl gui            # or ./cctl gui --port 9000
+```
+
+The panel shows live CPU/GPU telemetry (polled via `cpumon`/`gpumon --json`)
+and drives every control through real cctl commands executed as child
+processes, so EC safety rules (fan-auto on EC 2/3, curve ownership, snapshot
+restore semantics) stay exactly as the CLI enforces them. Non-interactive
+helpers are used for editors: `fancurve create --am` for fan curves and
+`editconf --am --create/--delete` for custom profiles.
+
+Differences from upstream:
+* The default build compiles in NVIDIA GPU management (`-DCCTL_NVIDIA`) and
+  the GUI (`-DCCTL_GUI`); the upstream `experimental` target is merged into
+  the default build.
+* `cctl gui` runs unprivileged: each API request forks a child that elevates
+  through the installed cctl's passwordless sudoers rule. Run `sudo cctl gui`
+  once the fork binary is installed, or use `/usr/local/bin/cctl` children
+  (default when the server is unprivileged).
+* The web UI is embedded at build time (`gui/web/index.html` →
+  `src/cctl_gui_html.inc` via `tools/gen_gui_html.py`), keeping the
+  single-binary philosophy.
+* POST requests require an `X-CCTL` header, so random web pages cannot
+  change settings by POSTing to localhost.
+
+See [docs/gui.md](docs/gui.md) for the endpoint map. The original CLI is
+untouched; `upstream` points at bhusann/cctl for rebases.
+
+---
+
 ## Hardware Compatibility
 
 Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis).

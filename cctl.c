@@ -59,5 +59,9 @@
 #include "src/cctl_nvidia.inc"
 #include "src/cctl_snapshot.inc"
 #include "src/cctl_skill.inc"
+#ifdef CCTL_GUI
+#include "src/cctl_gui_html.inc"
+#include "src/cctl_gui_server.inc"
+#endif
 #include "src/cctl_commands.inc"
 #include "src/cctl_drivers_cli.inc"

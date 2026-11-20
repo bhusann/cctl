@@ -611,8 +611,11 @@ static const struct command commands[] = {
     { "install",        0, cmd_install,         SEC_SYSTEM,    "[--force] [--noconfirm]",         "Install/upgrade system-wide + passwordless sudo", not_installed_systemwide },
     { "uninstall",      1, cmd_uninstall,       SEC_SYSTEM,    "",                                "Remove cctl, its profiles, sudo rule, and saved data", is_installed_systemwide },
     { "drivers-manage", 0, cmd_drivers_install, SEC_SYSTEM,    "",                                "Install, reinstall, or uninstall kernel drivers (sha256-verified)", NULL },
-    { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [name] [--mask fields]", "Save, restore, view, or delete snapshots (alias: snap)", NULL },
-    { "options",        0, cmd_options,          SEC_SYSTEM,    "[setting [value]]",               "Show or change cctl-specific settings", NULL },
+    { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [name] [--mask fields]",  "Save, restore, view, or delete snapshots (alias: snap)", NULL },
+    { "options",        0, cmd_options,          SEC_SYSTEM,    "[setting [value]]",                "Show or change cctl-specific settings", NULL },
+#ifdef CCTL_GUI
+    { "gui",            0, cmd_gui,              SEC_SYSTEM,    "[--port PORT]",                    "Serve the browser control panel on http://127.0.0.1:8723", NULL },
+#endif
 };
 
 struct section_def {
