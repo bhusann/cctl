@@ -2,774 +2,1913 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cctl-gui</title>
-<link rel="icon" href="/icon.svg">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>cctl — control center</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
 <style>
-:root {
-  --bg: #111418; --panel: #1a1f26; --panel2: #222831; --border: #2b323c;
-  --fg: #d7dde5; --muted: #8b94a0; --accent: #4f8fff; --ok: #3fb95c;
-  --warn: #d29922; --err: #f85149;
+:root{
+  --bg:#0a0d13;--bg1:#10141d;--bg2:#161b26;--bg3:#1e2432;--line:#222a3a;--line2:#2c3548;
+  --tx:#e7ecf5;--tx2:#98a2b8;--tx3:#5b6579;--acc:#7c5cff;--acc2:#22d3ee;
+  --ok:#34d399;--warn:#fbbf24;--bad:#f87171;--hot:#fb923c;--mag:#e879f9;
+  --r:14px;--r2:10px;--mono:ui-monospace,"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,"Segoe UI",Roboto,Inter,sans-serif;
 }
-* { box-sizing: border-box; }
-body {
-  margin: 0; background: var(--bg); color: var(--fg);
-  font: 14px/1.5 system-ui, sans-serif;
+*{box-sizing:border-box;margin:0;padding:0}
+html{scrollbar-color:var(--line2) var(--bg)}
+body{background:var(--bg);color:var(--tx);font:14px/1.5 var(--sans);min-height:100vh;
+  background-image:radial-gradient(1100px 500px at 85% -10%,rgba(124,92,255,.07),transparent 60%),radial-gradient(900px 420px at -10% 0%,rgba(34,211,238,.05),transparent 55%)}
+::selection{background:rgba(124,92,255,.35)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,select{font:inherit;color:var(--tx);background:var(--bg2);border:1px solid var(--line2);border-radius:8px;padding:7px 10px;outline:none;min-width:0}
+input:focus,select:focus{border-color:var(--acc)}
+input[type=number]{font-family:var(--mono)}
+input[type=color]{padding:2px;width:44px;height:34px;cursor:pointer}
+a{color:var(--acc2);text-decoration:none}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--tx2)}.dim{color:var(--tx3)}
+h2{font-size:15px;font-weight:650;letter-spacing:.2px}
+h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.9px;color:var(--tx2)}
+svg{display:block}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
+
+/* ---------- header ---------- */
+header{position:fixed;inset:0 0 auto 0;height:56px;z-index:40;display:flex;align-items:center;gap:14px;padding:0 16px;
+  background:rgba(10,13,19,.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px;letter-spacing:.3px}
+.brand img{width:24px;height:24px}
+.brand .fork{color:var(--acc2);font-weight:500}
+#verChip{font:11px var(--mono);color:var(--tx3);border:1px solid var(--line);border-radius:20px;padding:2px 8px}
+.vitals{display:flex;gap:8px;margin-left:6px;flex:1;min-width:0;overflow:hidden}
+.vital{display:flex;align-items:baseline;gap:5px;font:12px var(--mono);color:var(--tx2);background:var(--bg1);
+  border:1px solid var(--line);border-radius:20px;padding:4px 11px;white-space:nowrap;cursor:pointer;transition:border-color .15s}
+.vital:hover{border-color:var(--line2)}
+.vital b{font-size:13px;color:var(--tx);font-weight:600}
+.vital .lb{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3)}
+.hbtns{display:flex;align-items:center;gap:6px}
+.iconbtn{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:9px;color:var(--tx2);
+  border:1px solid transparent;transition:.15s}
+.iconbtn:hover{background:var(--bg2);color:var(--tx);border-color:var(--line)}
+.iconbtn.on{color:var(--acc2);border-color:var(--line2);background:var(--bg2)}
+.iconbtn svg{width:17px;height:17px}
+#connWrap{display:flex;align-items:center;gap:7px;font:11px var(--mono);color:var(--tx2);padding:0 6px}
+#connDot{width:8px;height:8px;border-radius:50%;background:var(--warn);box-shadow:0 0 8px currentColor;transition:.3s}
+#connDot.ok{background:var(--ok)}#connDot.bad{background:var(--bad)}
+.kbd-hint{font:10px var(--mono);color:var(--tx3);border:1px solid var(--line);border-radius:5px;padding:1px 5px;margin-left:2px}
+#offlineBar{display:none;position:fixed;top:56px;left:0;right:0;z-index:39;background:rgba(248,113,113,.12);
+  border-bottom:1px solid rgba(248,113,113,.3);color:#fca5a5;font-size:12.5px;padding:7px 18px;text-align:center}
+body.offline #offlineBar{display:block}
+
+/* ---------- nav / layout ---------- */
+nav{position:fixed;top:56px;left:0;bottom:0;width:200px;z-index:30;padding:16px 10px;display:flex;flex-direction:column;gap:3px;
+  border-right:1px solid var(--line);background:rgba(13,16,24,.5)}
+.nav-btn{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:10px;color:var(--tx2);font-weight:500;
+  border:1px solid transparent;transition:.15s;text-align:left;width:100%}
+.nav-btn svg{width:17px;height:17px;flex:none}
+.nav-btn:hover{color:var(--tx);background:var(--bg1)}
+.nav-btn.on{color:var(--tx);background:var(--bg2);border-color:var(--line2)}
+.nav-btn.on svg{color:var(--acc2)}
+.nav-foot{margin-top:auto;padding:10px 12px;font-size:11px;color:var(--tx3)}
+main{margin-left:200px;padding:76px 22px 60px;max-width:1240px}
+.page{display:none;animation:pgin .28s cubic-bezier(.2,.7,.3,1)}
+.page.on{display:block}
+@keyframes pgin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.page-head{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.page-head .sub{color:var(--tx3);font-size:12.5px}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}
+.card{background:linear-gradient(180deg,var(--bg1),rgba(16,20,29,.7));border:1px solid var(--line);border-radius:var(--r);
+  padding:16px;position:relative;transition:border-color .2s}
+.card:hover{border-color:var(--line2)}
+.card-h{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.card-h h2{flex:1}
+.card-h .sub{font-size:11.5px;color:var(--tx3)}
+.span2{grid-column:1/-1}
+
+/* ---------- controls ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:7px 14px;border-radius:9px;font-weight:550;
+  background:var(--bg2);border:1px solid var(--line2);color:var(--tx);transition:.15s;white-space:nowrap}
+.btn:hover{border-color:var(--tx3);transform:translateY(-1px)}
+.btn:active{transform:none}
+.btn:disabled{opacity:.4;pointer-events:none}
+.btn.pri{background:var(--acc);border-color:transparent;color:#fff}
+.btn.pri:hover{filter:brightness(1.12)}
+.btn.danger{background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.35);color:#fca5a5}
+.btn.ghost{background:transparent;border-color:var(--line)}
+.btn.sm{padding:4px 10px;font-size:12.5px;border-radius:7px}
+.btn.xs{padding:2px 8px;font-size:11.5px;border-radius:6px}
+.seg{display:inline-flex;background:var(--bg2);border:1px solid var(--line2);border-radius:9px;padding:3px;gap:2px}
+.seg button{padding:5px 12px;border-radius:7px;color:var(--tx2);font-weight:550;font-size:12.5px;transition:.15s}
+.seg button:hover{color:var(--tx)}
+.seg button.on{background:var(--acc);color:#fff}
+.switch{position:relative;display:inline-block;width:38px;height:22px;flex:none}
+.switch input{position:absolute;opacity:0;width:100%;height:100%;cursor:pointer;z-index:2;margin:0}
+.switch i{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--line2);border-radius:20px;transition:.2s}
+.switch i:before{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--tx2);transition:.2s}
+.switch input:checked+i{background:var(--acc);border-color:transparent}
+.switch input:checked+i:before{transform:translateX(16px);background:#fff}
+.switch input:disabled+i{opacity:.4}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row+.row{margin-top:10px}
+.row .lbl{min-width:86px;color:var(--tx2);font-size:13px}
+.row .grow{flex:1}
+input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;border:0;padding:0;height:22px;cursor:pointer;flex:1}
+input[type=range]::-webkit-slider-runnable-track{height:5px;border-radius:3px;background:var(--bg3)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;border-radius:50%;background:var(--acc);
+  margin-top:-5px;border:2px solid #fff2;box-shadow:0 1px 6px rgba(0,0,0,.5);transition:transform .1s}
+input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.2)}
+input[type=range]::-moz-range-track{height:5px;border-radius:3px;background:var(--bg3)}
+input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:var(--acc);border:2px solid #fff2}
+.rv{font:12.5px var(--mono);color:var(--tx);min-width:52px;text-align:right}
+.chip{display:inline-flex;align-items:center;gap:6px;font:11.5px var(--mono);color:var(--tx2);background:var(--bg2);
+  border:1px solid var(--line);border-radius:20px;padding:3px 10px;white-space:nowrap}
+.chip b{color:var(--tx);font-weight:600}
+.chip.ok{color:var(--ok);border-color:rgba(52,211,153,.3)}
+.chip.warn{color:var(--warn);border-color:rgba(251,191,36,.3)}
+.chip.bad{color:var(--bad);border-color:rgba(248,113,113,.35)}
+.chip.acc{color:var(--acc2);border-color:rgba(34,211,238,.3)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.note{font-size:12px;color:var(--tx3);line-height:1.55}
+.warnbox{background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.25);border-radius:var(--r2);
+  padding:10px 12px;font-size:12.5px;color:#fcd34d;line-height:1.5}
+.errbox{background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.3);border-radius:var(--r2);padding:10px 12px;font-size:12.5px;color:#fca5a5}
+details.raw{margin-top:10px}
+details.raw summary{cursor:pointer;font-size:12px;color:var(--tx3)}
+pre.out{font:11.5px/1.55 var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:8px;
+  padding:10px;overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-word;color:var(--tx2);margin-top:8px}
+.empty{padding:22px;text-align:center;color:var(--tx3);font-size:13px;border:1px dashed var(--line2);border-radius:var(--r2)}
+
+/* ---------- telemetry ---------- */
+.big{font:600 34px/1 var(--mono);letter-spacing:-1px;font-variant-numeric:tabular-nums}
+.big small{font-size:15px;color:var(--tx3);font-weight:400;letter-spacing:0}
+.metric{display:flex;flex-direction:column;gap:3px}
+.metric .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--tx3)}
+.mrow{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end}
+.bar{height:6px;border-radius:3px;background:var(--bg3);overflow:hidden;position:relative;flex:1;min-width:60px}
+.bar i{position:absolute;inset:0 auto 0 0;width:0%;border-radius:3px;background:var(--acc2);transition:width .5s cubic-bezier(.2,.7,.3,1)}
+.bar .mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--tx3);border-radius:1px}
+.spark{width:100%;height:44px}
+.spark.sm{height:26px}
+.fan{width:74px;height:74px;color:var(--acc2);flex:none;transition:color .4s}
+.fan.stopped{color:var(--tx3)}
+.fan .ring{fill:none;stroke:currentColor;stroke-width:2.5;opacity:.45}
+.fan .blades{fill:currentColor;opacity:.85}
+.fan .hub{fill:var(--bg3);stroke:currentColor;stroke-width:2}
+.fantile{display:flex;align-items:center;gap:14px}
+.fantile .nums{display:flex;flex-direction:column;gap:2px}
+.fantile .nums b{font:600 19px var(--mono)}
+.fantile .nums span{font:11px var(--mono);color:var(--tx3)}
+.statepill{display:inline-flex;align-items:center;gap:7px;font:11.5px var(--mono);padding:4px 11px;border-radius:20px;
+  border:1px solid var(--line2);background:var(--bg2)}
+.coregrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:7px 16px}
+.core{display:flex;align-items:center;gap:8px;font:11.5px var(--mono)}
+.core .cl{width:26px;color:var(--tx3);font-weight:600}
+.core .cm{width:44px;text-align:right;color:var(--tx2)}
+.core.p .cl{color:#c4b5fd}.core.e .cl{color:#67e8f9}
+.core.p .bar i{background:linear-gradient(90deg,#5a46ff,#e879f9)}
+.core.e .bar i{background:linear-gradient(90deg,#0891b2,#34d399)}
+.asleep{position:absolute;inset:0;border-radius:var(--r);display:none;align-items:center;justify-content:center;flex-direction:column;gap:8px;
+  background:rgba(10,13,19,.55);backdrop-filter:blur(2px);z-index:3;color:var(--tx2);font:13px var(--mono)}
+.asleep .zz{font-size:22px;color:var(--tx3);animation:zz 2.4s ease-in-out infinite}
+@keyframes zz{0%,100%{opacity:.35;transform:translateY(0)}50%{opacity:1;transform:translateY(-4px)}}
+.card.sleeping .asleep{display:flex}
+.card.sleeping .dim-on-sleep{opacity:.35}
+.gpu-err{display:none}
+.card.gpuerr .gpu-err{display:block}
+.reasons{display:flex;gap:5px;flex-wrap:wrap}
+
+/* ---------- tiles / lists ---------- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.tile{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r2);padding:11px;cursor:pointer;transition:.15s;text-align:left}
+.tile:hover{border-color:var(--acc);transform:translateY(-2px)}
+.tile.on{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.tile .tn{font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px}
+.tile .td{font-size:11px;color:var(--tx3);margin-top:3px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:8px}
+.swatch{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 6px;border-radius:var(--r2);
+  background:var(--bg2);border:1px solid var(--line);cursor:pointer;transition:.15s;font-size:11.5px;color:var(--tx2)}
+.swatch:hover{transform:translateY(-2px);border-color:var(--line2);color:var(--tx)}
+.swatch i{width:26px;height:26px;border-radius:50%;border:2px solid rgba(255,255,255,.15);box-shadow:0 0 12px -2px currentColor}
+.list{display:flex;flex-direction:column;gap:8px}
+.lrow{display:flex;align-items:center;gap:10px;background:var(--bg2);border:1px solid var(--line);border-radius:var(--r2);padding:9px 12px;flex-wrap:wrap}
+.lrow .nm{font:600 13px var(--mono);flex:1;min-width:100px;display:flex;align-items:center;gap:8px}
+.lrow .meta{font:11px var(--mono);color:var(--tx3)}
+.profile-card{display:flex;flex-direction:column;gap:8px;background:var(--bg2);border:1px solid var(--line);border-radius:var(--r2);padding:13px;transition:.15s}
+.profile-card:hover{border-color:var(--line2)}
+.profile-card.on{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 4px 24px -8px var(--acc)}
+.profile-card .pn{font-weight:650;font-size:14px;display:flex;align-items:center;gap:8px}
+.profile-card .pd{font-size:11.5px;color:var(--tx3);line-height:1.5;flex:1}
+.profile-card .pm{display:flex;gap:5px;flex-wrap:wrap}
+
+/* ---------- curve editor ---------- */
+#ceSvg{width:100%;height:auto;touch-action:none;user-select:none;cursor:crosshair}
+#ceSvg .grid-l{stroke:var(--line);stroke-width:1}
+#ceSvg .axis-t{fill:var(--tx3);font:10px var(--mono)}
+#ceSvg .zone-min{fill:rgba(248,113,113,.05)}
+#ceSvg .zone-hot{fill:rgba(251,191,36,.06)}
+#ceSvg .hold{stroke:var(--tx3);stroke-width:1.5;stroke-dasharray:4 4;fill:none}
+#ceSvg .curve{stroke:var(--acc2);stroke-width:2.5;fill:none;stroke-linejoin:round}
+#ceSvg .area{fill:url(#ceGrad);opacity:.5}
+#ceSvg .pt{fill:var(--bg1);stroke:var(--acc2);stroke-width:2.5;cursor:grab}
+#ceSvg .pt.sel{stroke:var(--acc);fill:var(--acc2)}
+#ceSvg .pt.auto{stroke:var(--warn)}
+#ceSvg .pt-l{fill:var(--tx2);font:10px var(--mono);pointer-events:none}
+.ce-rows{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.ce-row{display:flex;align-items:center;gap:8px;font:12px var(--mono)}
+.ce-row input[type=number]{width:74px;padding:5px 8px}
+.ce-row .idx{width:20px;color:var(--tx3)}
+.ce-row label{display:flex;align-items:center;gap:5px;color:var(--tx2);font-size:11.5px}
+
+/* ---------- fx previews ---------- */
+.fxp{height:30px;border-radius:7px;margin-bottom:8px;background:var(--bg3)}
+.fx-breathe{background:#22d3ee;animation:fb 3.2s ease-in-out infinite}
+.fx-breathe-cycle{background:linear-gradient(90deg,#f43f5e,#fbbf24,#34d399,#22d3ee,#a78bfa,#f43f5e);background-size:300% 100%;animation:fb 3.2s ease-in-out infinite,fcyc 7s linear infinite}
+.fx-cycle{background:linear-gradient(90deg,#f43f5e,#fbbf24,#34d399,#22d3ee,#a78bfa,#f43f5e);background-size:300% 100%;animation:fcyc 6s linear infinite}
+.fx-flash{background:#fff;animation:ffl 1s steps(2,jump-none) infinite}
+.fx-flash-cycle{background:linear-gradient(90deg,#f43f5e,#fbbf24,#34d399,#22d3ee,#a78bfa,#f43f5e);background-size:300% 100%;animation:ffl 1s steps(2,jump-none) infinite,fcyc 6s linear infinite}
+.fx-candle{background:radial-gradient(ellipse at 50% 90%,#fde047,#f97316 55%,#7c2d12);animation:fcnd .8s ease-in-out infinite alternate}
+.fx-pulse{background:#f87171;animation:fpul 1.5s ease-in-out infinite}
+.fx-pulse-cycle{background:linear-gradient(90deg,#f43f5e,#fbbf24,#34d399,#22d3ee,#a78bfa,#f43f5e);background-size:300% 100%;animation:fpul 1.5s ease-in-out infinite,fcyc 7s linear infinite}
+.fx-police{background:linear-gradient(90deg,#ef4444 50%,#3b82f6 50%);background-size:200% 100%;animation:fpol .7s steps(2,jump-none) infinite}
+.fx-fire{background:linear-gradient(0deg,#7c2d12,#f97316 55%,#fde047);animation:ffir .45s ease-in-out infinite alternate}
+.fx-aurora{background:linear-gradient(120deg,#06b6d4,#34d399,#a78bfa,#22d3ee);background-size:300% 300%;animation:faur 8s ease-in-out infinite}
+.fx-storm{background:#141a2a;animation:fstm 2.6s linear infinite}
+.fx-temp{background:linear-gradient(90deg,#22d3ee,#34d399,#fbbf24,#fb923c,#f87171)}
+.fx-ram{background:linear-gradient(90deg,#22d3ee,#34d399,#fbbf24,#fb923c,#f87171)}
+.fx-sos{background:#f87171;animation:fsos 2.8s steps(1) infinite}
+.fx-firecrackers{background:#fde047;animation:ffcr .3s steps(2,jump-none) infinite}
+@keyframes fb{0%,100%{opacity:.12}50%{opacity:1}}
+@keyframes fcyc{to{background-position:300% 0}}
+@keyframes ffl{0%{opacity:1}50%{opacity:.06}}
+@keyframes fcnd{0%{filter:brightness(.75)}45%{filter:brightness(1.15)}70%{filter:brightness(.9)}100%{filter:brightness(1.25)}}
+@keyframes fpul{0%,100%{opacity:.15}12%{opacity:1}24%{opacity:.3}36%{opacity:.9}55%{opacity:.15}}
+@keyframes fpol{to{background-position:200% 0}}
+@keyframes ffir{from{filter:brightness(.8) saturate(.9)}to{filter:brightness(1.3) saturate(1.2)}}
+@keyframes faur{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+@keyframes fstm{0%,86%,92%,100%{background:#141a2a}88%,94%{background:#e2e8f0}90%{background:#94a3b8}}
+@keyframes fsos{0%,7%,14%,21%,55%,69%,83%{opacity:1}3.5%,10.5%,17.5%,24%,58%,72%,86%,100%{opacity:.07}30%,40%{opacity:1}33%,37%,43%{opacity:.07}}
+@keyframes ffcr{0%{opacity:1;background:#fde047}50%{opacity:.1;background:#f97316}}
+
+/* ---------- overlays ---------- */
+#toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:90;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+.toast{pointer-events:auto;display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid var(--line2);
+  border-radius:11px;padding:9px 15px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.5);animation:tin .25s cubic-bezier(.2,.7,.3,1);max-width:min(560px,90vw)}
+.toast.ok{border-color:rgba(52,211,153,.4)}.toast.bad{border-color:rgba(248,113,113,.5)}
+.toast .dot{flex:none}
+.toast.ok .dot{background:var(--ok)}.toast.bad .dot{background:var(--bad)}
+.toast.out{opacity:0;transform:translateY(8px);transition:.3s}
+@keyframes tin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+#drawer{position:fixed;top:56px;right:0;bottom:0;width:400px;max-width:94vw;z-index:45;background:var(--bg1);
+  border-left:1px solid var(--line2);transform:translateX(102%);transition:transform .28s cubic-bezier(.2,.7,.3,1);display:flex;flex-direction:column}
+#drawer.on{transform:none;box-shadow:-20px 0 60px rgba(0,0,0,.45)}
+.drawer-h{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.drawer-h h2{flex:1}
+#logList{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:9px}
+.logitem{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r2);padding:9px 11px;font-size:12.5px}
+.logitem .lh{display:flex;align-items:center;gap:8px}
+.logitem .lt{font:10.5px var(--mono);color:var(--tx3)}
+.logitem .ll{flex:1;font-weight:550}
+.logitem .rc{font:10.5px var(--mono);padding:1px 7px;border-radius:10px}
+.logitem .rc.ok{background:rgba(52,211,153,.13);color:var(--ok)}
+.logitem .rc.bad{background:rgba(248,113,113,.13);color:var(--bad)}
+.logitem .cmd{font:11px var(--mono);color:var(--tx3);margin-top:3px;word-break:break-all}
+.logitem details summary{cursor:pointer;font-size:11.5px;color:var(--tx3);margin-top:5px}
+#modalRoot{position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;background:rgba(5,7,11,.66);backdrop-filter:blur(3px)}
+#modalRoot.on{display:flex}
+.modal{background:var(--bg1);border:1px solid var(--line2);border-radius:16px;padding:20px;width:min(480px,92vw);
+  max-height:86vh;overflow-y:auto;animation:pgin .22s cubic-bezier(.2,.7,.3,1);box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.modal h2{margin-bottom:10px}
+.modal .mbody{font-size:13.5px;color:var(--tx2);line-height:1.6}
+.modal .mbody p+p{margin-top:8px}
+.modal .mact{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}
+.modal .fld{display:flex;flex-direction:column;gap:4px;margin-top:10px}
+.modal .fld label{font-size:11.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:.6px}
+.modal .frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cmdcopy{display:flex;gap:8px;align-items:center;background:var(--bg);border:1px solid var(--line2);border-radius:9px;padding:9px 12px;font:13px var(--mono);margin-top:10px}
+.cmdcopy code{flex:1;color:var(--acc2)}
+#palette{position:fixed;inset:0;z-index:85;display:none;justify-content:center;align-items:flex-start;padding-top:12vh;background:rgba(5,7,11,.6);backdrop-filter:blur(3px)}
+#palette.on{display:flex}
+.pal{width:min(600px,93vw);background:var(--bg1);border:1px solid var(--line2);border-radius:15px;overflow:hidden;box-shadow:0 30px 90px rgba(0,0,0,.65);animation:pgin .18s}
+#palInput{width:100%;border:0;border-radius:0;background:transparent;padding:15px 18px;font-size:15px;border-bottom:1px solid var(--line)}
+#palList{max-height:46vh;overflow-y:auto;padding:7px}
+.palitem{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:9px;cursor:pointer;font-size:13.5px}
+.palitem .pg{font:10px var(--mono);color:var(--tx3);text-transform:uppercase;letter-spacing:.7px;min-width:64px}
+.palitem .pl{flex:1}
+.palitem .pc{font:11px var(--mono);color:var(--tx3)}
+.palitem.sel{background:var(--bg3)}
+.palitem.sel .pl{color:var(--acc2)}
+.pal-foot{padding:8px 16px;border-top:1px solid var(--line);font:11px var(--mono);color:var(--tx3);display:flex;gap:14px}
+#settingsPop{position:fixed;top:62px;right:14px;z-index:60;width:290px;background:var(--bg1);border:1px solid var(--line2);
+  border-radius:14px;padding:15px;display:none;box-shadow:0 20px 60px rgba(0,0,0,.55);animation:pgin .18s}
+#settingsPop.on{display:block}
+#settingsPop .row .lbl{min-width:118px;font-size:12.5px}
+#settingsPop select{padding:5px 8px;font-size:12.5px}
+#settingsPop hr{border:0;border-top:1px solid var(--line);margin:12px 0}
+.about{font:11px var(--mono);color:var(--tx3);line-height:1.7}
+
+/* ---------- responsive / motion ---------- */
+@media (max-width:940px){
+  nav{position:fixed;top:56px;left:0;right:0;bottom:auto;width:auto;flex-direction:row;overflow-x:auto;padding:8px 10px;border-right:0;border-bottom:1px solid var(--line);background:rgba(10,13,19,.92);backdrop-filter:blur(10px)}
+  .nav-btn{width:auto;flex:none;padding:7px 11px;font-size:12.5px}
+  .nav-btn span{display:none}
+  .nav-foot{display:none}
+  main{margin-left:0;padding:118px 14px 60px}
+  .vitals .vital:nth-child(n+3){display:none}
+  .kbd-hint{display:none}
 }
-header {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel);
-}
-header h1 { margin: 0; font-size: 18px; letter-spacing: .5px; }
-header .ver { color: var(--muted); font-size: 12px; }
-#hostchips { display: flex; gap: 8px; flex-wrap: wrap; }
-main {
-  display: grid; gap: 14px; padding: 16px 20px;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  max-width: 1280px; margin: 0 auto;
-}
-section {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-  padding: 14px 16px;
-}
-section h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
-#telemetry { grid-column: 1 / -1; display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-.card { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-.card h3 { margin: 0 0 8px; font-size: 15px; }
-.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin-bottom: 8px; }
-.metric { background: var(--panel); border-radius: 6px; padding: 6px 8px; }
-.metric .v { font-size: 17px; font-weight: 600; }
-.metric .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
-.warnv { color: var(--warn); } .errv { color: var(--err); } .okv { color: var(--ok); }
-svg.spark { display: block; width: 100%; height: 52px; background: var(--panel); border-radius: 6px; }
-svg.spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.6; }
-svg.spark polyline.p2 { stroke: var(--warn); }
-.bars { display: flex; gap: 3px; margin: 8px 0 2px; }
-.bars i { flex: 1; height: 14px; border-radius: 3px; background: var(--accent); opacity: .85; }
-.bars i.e { background: #7c5fd6; }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip {
-  background: var(--panel2); border: 1px solid var(--border); border-radius: 999px;
-  padding: 3px 10px; font-size: 12px; color: var(--muted);
-}
-.chip b { color: var(--fg); font-weight: 600; }
-.chip.on { border-color: var(--ok); color: var(--ok); }
-.chip.off { border-color: var(--err); color: var(--err); }
-button {
-  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
-  border-radius: 7px; padding: 6px 12px; font: inherit; cursor: pointer;
-}
-button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.danger:hover { border-color: var(--err); color: var(--err); }
-button.mini { padding: 3px 8px; font-size: 12px; }
-.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
-input[type=text], input[type=number], select {
-  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
-  border-radius: 7px; padding: 5px 8px; font: inherit;
-}
-input[type=number] { width: 72px; }
-select { min-width: 120px; }
-input[type=range] { width: 160px; accent-color: var(--accent); }
-input[type=color] { width: 40px; height: 30px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel2); padding: 2px; }
-.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
-.switch input { accent-color: var(--accent); width: 16px; height: 16px; }
-ul { list-style: none; margin: 0; padding: 0; }
-li.item {
-  display: flex; align-items: center; gap: 8px; padding: 7px 8px;
-  border: 1px solid var(--border); border-radius: 7px; margin-bottom: 6px;
-}
-li.item .name { font-weight: 600; }
-li.item .meta { font-size: 12px; color: var(--muted); }
-li.item.active { border-color: var(--ok); }
-.preset { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
-  border: 1px solid var(--border); border-radius: 999px; cursor: pointer; background: var(--panel2); }
-.preset .dot { width: 12px; height: 12px; border-radius: 50%; }
-#logsec { grid-column: 1 / -1; }
-#logpre {
-  background: #0d1014; border: 1px solid var(--border); border-radius: 7px;
-  padding: 10px; margin: 0; font: 12px/1.4 ui-monospace, monospace;
-  white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto;
-}
-#logpre .err { color: var(--err); } #logpre .ok { color: var(--ok); }
-dialog {
-  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
-  border-radius: 10px; padding: 18px; width: min(560px, 92vw);
-}
-dialog::backdrop { background: rgba(0,0,0,.6); }
-dialog h3 { margin: 0 0 12px; }
-.points td { padding: 3px; }
-.points input, .points select { width: 90px; }
-.hint { color: var(--muted); font-size: 12px; }
-.banner { grid-column: 1 / -1; border-color: var(--err); color: var(--err);
-  background: #241a1a; padding: 10px 14px; border: 1px solid var(--err); border-radius: 8px; }
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01s!important;transition-duration:.01s!important}}
+body.no-motion *{animation:none!important;transition:none!important}
 </style>
 </head>
 <body>
-<header>
-  <img src="/icon.svg" width="26" height="26" alt="cctl">
-  <h1>cctl-gui <span class="ver" id="ver"></span></h1>
-  <div id="hostchips" class="chips"></div>
-</header>
 
-<section id="bannersec" class="banner" hidden></section>
+<header>
+  <div class="brand"><img src="/icon.svg" alt="">cctl<span class="fork">gui</span></div>
+  <span id="verChip">…</span>
+  <div class="vitals" id="vitals" title="Open overview">
+    <div class="vital"><span class="lb">cpu</span><b id="vCpuT">—</b><span>°C</span></div>
+    <div class="vital"><span class="lb">pkg</span><b id="vCpuW">—</b><span>W</span></div>
+    <div class="vital"><span class="lb">gpu</span><b id="vGpuT">—</b><span id="vGpuU">°C</span></div>
+    <div class="vital"><span class="lb">gpu</span><b id="vGpuW">—</b><span>W</span></div>
+  </div>
+  <div class="hbtns">
+    <div id="connWrap"><span id="connDot"></span><span id="connTxt">connecting</span></div>
+    <button class="iconbtn" id="gpuPollBtn" title="NVIDIA polling (pause to let the dGPU sleep)"></button>
+    <button class="iconbtn" id="paletteBtn" title="Command palette"></button>
+    <button class="iconbtn" id="drawerBtn" title="Activity log"></button>
+    <button class="iconbtn" id="settingsBtn" title="Settings"></button>
+    <span class="kbd-hint">Ctrl K</span>
+  </div>
+</header>
+<div id="offlineBar">Cannot reach cctl-gui — is the server still running? Retrying…</div>
+
+<nav id="nav">
+  <button class="nav-btn" data-page="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 13a9 9 0 1 1 18 0"/><path d="M12 13l4-4"/><circle cx="12" cy="13" r="1.6"/></svg><span>Overview</span></button>
+  <button class="nav-btn" data-page="thermal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 2-6 5-6 2 0 3 1.5 3 3 0 3-4 3-8 3zM14 12c4 0 6 2 6 5 0 2-1.5 3-3 3-3 0-3-4-3-8zM12 14c0 4-2 6-5 6-2 0-3-1.5-3-3 0-3 4-3 8-3zM10 12c-4 0-6-2-6-5 0-2 1.5-3 3-3 3 0 3 4 3 8z"/></svg><span>Thermal</span></button>
+  <button class="nav-btn" data-page="power"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg><span>Power</span></button>
+  <button class="nav-btn" data-page="keyboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg><span>Keyboard</span></button>
+  <button class="nav-btn" data-page="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2.2"/><circle cx="8" cy="16" r="2.2"/></svg><span>System</span></button>
+  <button class="nav-btn" data-page="snapshots"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7l8-4 8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4M4 17l8 4 8-4"/></svg><span>Snapshots</span></button>
+  <div class="nav-foot">Colorful Evol P15<br>localhost only · no cloud</div>
+</nav>
 
 <main>
-  <section id="telemetry">
-    <div class="card" id="cpuCard">
-      <h3 id="cpuName">CPU</h3>
-      <div class="metrics" id="cpuMetrics"></div>
-      <div class="bars" id="cpuBars" title="Per-core frequency"></div>
-      <svg class="spark" viewBox="0 0 240 52" id="cpuSpark"><polyline points=""></polyline><polyline class="p2" points=""></polyline></svg>
-      <div class="hint" id="cpuSparkHint">usage % (blue) · package W (orange)</div>
+<!-- ================= OVERVIEW ================= -->
+<section class="page" id="page-overview">
+  <div class="page-head"><h2>Overview</h2><span class="sub" id="cpuModel">…</span></div>
+  <div class="grid" style="gap:14px">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row" id="profileStrip">
+          <span class="chip acc" id="psEc">EC —</span>
+          <span class="chip" id="psGov">gov —</span>
+          <span class="chip" id="psEpp">epp —</span>
+          <span class="chip" id="psTurbo">turbo —</span>
+          <span class="chip" id="psPl">PL —/—</span>
+          <span class="chip" id="psTj">Tj —</span>
+        </div>
+        <div class="seg" id="quickProfiles"></div>
+      </div>
     </div>
-    <div class="card" id="gpuCard" hidden>
-      <h3 id="gpuName">GPU</h3>
-      <div class="metrics" id="gpuMetrics"></div>
-      <svg class="spark" viewBox="0 0 240 52" id="gpuSpark"><polyline points=""></polyline><polyline class="p2" points=""></polyline></svg>
-      <div class="hint" id="gpuSparkHint">util % (blue) · power W (orange)</div>
+    <div class="grid g2">
+      <div class="card">
+        <div class="card-h"><h2>CPU</h2><span class="statepill" id="cpuState"><span class="dot"></span>…</span></div>
+        <div class="mrow">
+          <div class="metric"><span class="k">temp</span><span class="big" id="cpuTemp">—<small>°C</small></span></div>
+          <div class="metric"><span class="k">usage</span><span class="big" id="cpuUsage">—<small>%</small></span></div>
+          <div class="metric"><span class="k">package</span><span class="big" id="cpuPow">—<small>W</small></span></div>
+        </div>
+        <div class="row" style="margin-top:12px"><span class="dim mono" style="font-size:11px">0</span>
+          <div class="bar" id="cpuPowBarWrap"><i id="cpuPowBar"></i><span class="mark" id="cpuPl1Mark"></span><span class="mark" id="cpuPl2Mark"></span></div>
+          <span class="dim mono" style="font-size:11px" id="cpuPowScale">—</span></div>
+        <div class="row" style="margin-top:12px;gap:16px">
+          <div style="flex:1"><h3>usage</h3><canvas class="spark" id="sparkUsage"></canvas></div>
+          <div style="flex:1"><h3>power</h3><canvas class="spark" id="sparkPow"></canvas></div>
+        </div>
+        <div class="row" style="margin-top:12px;justify-content:space-between">
+          <div class="fantile"><div class="fan" id="cpuFan"></div>
+            <div class="nums"><b id="cpuFanRpm">—</b><span>RPM · duty <span id="cpuFanDuty">—</span></span></div></div>
+          <div style="flex:1;max-width:230px"><h3>ram</h3>
+            <div class="row" style="margin-top:4px"><div class="bar"><i id="ramBar" style="background:linear-gradient(90deg,#22d3ee,#a78bfa)"></i></div>
+            <span class="mono" style="font-size:11.5px" id="ramTxt">—</span></div></div>
+        </div>
+      </div>
+      <div class="card" id="gpuCard">
+        <div class="asleep"><span class="zz">z z Z</span><span id="asleepTxt">GPU suspended</span><span class="dim" style="font-size:11px">fan telemetry stays live · polling never wakes it</span></div>
+        <div class="card-h"><h2>GPU</h2><span class="sub" id="gpuName">…</span><span class="statepill" id="gpuState"><span class="dot"></span>…</span></div>
+        <div class="errbox gpu-err" id="gpuErrMsg" style="margin-bottom:10px"></div>
+        <div class="dim-on-sleep">
+          <div class="mrow">
+            <div class="metric"><span class="k">temp</span><span class="big" id="gpuTemp">—<small>°C</small></span></div>
+            <div class="metric"><span class="k">load</span><span class="big" id="gpuUtil">—<small>%</small></span></div>
+            <div class="metric"><span class="k">power</span><span class="big" id="gpuPow">—<small>W</small></span></div>
+          </div>
+          <div class="row" style="margin-top:12px"><span class="dim mono" style="font-size:11px">0</span>
+            <div class="bar"><i id="gpuPowBar" style="background:linear-gradient(90deg,#34d399,#fbbf24,#f87171)"></i></div>
+            <span class="dim mono" style="font-size:11px" id="gpuPowLim">—</span></div>
+          <div class="row" style="margin-top:10px"><span class="lbl mono" style="font-size:11px;min-width:44px">CORE</span>
+            <div class="bar"><i id="gpuClkBar" style="background:linear-gradient(90deg,#5a46ff,#e879f9)"></i></div>
+            <span class="mono" style="font-size:11.5px;min-width:96px;text-align:right" id="gpuClk">—</span></div>
+          <div class="row" style="margin-top:8px"><span class="lbl mono" style="font-size:11px;min-width:44px">MEM</span>
+            <div class="bar"><i id="gpuMemBar" style="background:linear-gradient(90deg,#0891b2,#a78bfa)"></i></div>
+            <span class="mono" style="font-size:11.5px;min-width:96px;text-align:right" id="gpuMemClk">—</span></div>
+          <div class="row" style="margin-top:8px"><span class="lbl mono" style="font-size:11px;min-width:44px">VRAM</span>
+            <div class="bar"><i id="vramBar" style="background:linear-gradient(90deg,#22d3ee,#fbbf24,#f87171)"></i></div>
+            <span class="mono" style="font-size:11.5px;min-width:96px;text-align:right" id="vramTxt">—</span></div>
+          <div class="row" style="margin-top:10px">
+            <span class="chip" id="gpuPstate">P—</span><span class="chip" id="pcieLink">Gen— x—</span>
+            <div class="reasons" id="gpuReasons"></div>
+          </div>
+          <div class="row" style="margin-top:10px;gap:16px">
+            <div style="flex:1"><h3>pcie rx <span class="mono dim" id="rxVal"></span></h3><canvas class="spark sm" id="sparkRx"></canvas></div>
+            <div style="flex:1"><h3>pcie tx <span class="mono dim" id="txVal"></span></h3><canvas class="spark sm" id="sparkTx"></canvas></div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div class="fantile"><div class="fan" id="gpuFan"></div>
+            <div class="nums"><b id="gpuFanRpm">—</b><span>RPM · duty <span id="gpuFanDuty">—</span></span></div></div>
+        </div>
+      </div>
     </div>
-  </section>
+    <div class="card">
+      <div class="card-h"><h2>Cores</h2><span class="sub">physical cores · current frequency</span>
+        <span class="chip" id="coreAvg">avg —</span></div>
+      <div class="coregrid" id="coresWrap"><div class="empty" style="grid-column:1/-1">Waiting for CPU data…</div></div>
+    </div>
+  </div>
+</section>
 
-  <section>
-    <h2>Power profiles</h2>
-    <div class="row" id="builtinRow"></div>
-    <ul id="customList"></ul>
-    <div class="row">
-      <button class="primary" id="addProfile">New profile</button>
+<!-- ================= THERMAL ================= -->
+<section class="page" id="page-thermal">
+  <div class="page-head"><h2>Thermal</h2><span class="sub">fans &amp; curves — a running curve owns both fans</span></div>
+  <div class="grid g2">
+    <div class="card">
+      <div class="card-h"><h2>Fan control</h2>
+        <button class="btn sm" id="fanAutoBtn">Auto</button>
+        <button class="btn sm" id="fanMaxBtn">Max</button></div>
+      <p class="note">Auto returns both fans to the EC and stops any running curve. Max requests 100% duty.</p>
+      <div id="expLocked" style="margin-top:12px">
+        <div class="warnbox">Manual duty is experimental: it ignores temperature and can overheat the laptop. It stays hidden until enabled.</div>
+        <div class="row" style="margin-top:10px"><button class="btn sm" id="expEnableBtn">Enable experimental fan controls</button></div>
+      </div>
+      <div id="expPanel" style="display:none;margin-top:12px">
+        <div class="warnbox">Fixed duty ignores temperature. A curve must be stopped first. <b>--nosafe</b> is applied automatically.</div>
+        <div class="row" style="margin-top:12px"><span class="lbl">Both</span>
+          <input type="range" id="fanBothRange" min="25" max="100" value="50"><span class="rv" id="fanBothVal">50%</span>
+          <button class="btn sm" id="fanBothApply">Set</button></div>
+        <div class="row"><span class="lbl">CPU fan</span>
+          <input type="range" id="fanCpuRange" min="25" max="100" value="50"><span class="rv" id="fanCpuVal">50%</span>
+          <button class="btn sm" id="fanCpuApply">Set</button><button class="btn sm ghost" id="fanCpuAuto">Auto</button></div>
+        <div class="row"><span class="lbl">GPU fan</span>
+          <input type="range" id="fanGpuRange" min="25" max="100" value="50"><span class="rv" id="fanGpuVal">50%</span>
+          <button class="btn sm" id="fanGpuApply">Set</button><button class="btn sm ghost" id="fanGpuAuto">Auto</button></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn sm" id="fanSilentBtn">Silent mode</button>
+          <span class="note">forces the silent profile</span>
+          <span class="grow"></span>
+          <button class="btn xs ghost" id="expDisableBtn">disable experimental</button></div>
+      </div>
     </div>
-  </section>
+    <div class="card">
+      <div class="card-h"><h2>Fan curves</h2><button class="btn sm pri" id="newCurveBtn">+ New curve</button></div>
+      <div class="lrow" id="curveActive" style="display:none;border-color:rgba(52,211,153,.35)">
+        <span class="nm"><span class="dot" style="color:var(--ok)"></span><span id="caName">—</span></span>
+        <span class="meta" id="caPid"></span>
+        <button class="btn sm danger" id="curveStopBtn">Stop</button>
+      </div>
+      <div class="list" id="curveList" style="margin-top:10px"><div class="empty">Loading…</div></div>
+      <p class="note" style="margin-top:10px">Curves run for this boot only. Above 95°C the EC takes over; the curve resumes below 90°C. Save one inside a snapshot to restore it at boot.</p>
+    </div>
+    <div class="card span2" id="curveEditor" style="display:none">
+      <div class="card-h"><h2 id="ceTitle">New fan curve</h2>
+        <span class="sub">drag points · temps strictly increasing · fan 25–100%</span></div>
+      <div class="grid g2">
+        <div>
+          <svg id="ceSvg" viewBox="0 0 600 340" aria-label="fan curve editor">
+            <defs><linearGradient id="ceGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+            </linearGradient></defs>
+          </svg>
+          <p class="note" style="margin-top:6px">Below 25% the EC clamps or stops the fans. The last point may switch to <b>AUTO</b> (EC control) at its temperature.</p>
+        </div>
+        <div>
+          <div class="row"><span class="lbl">Name</span><input id="ceName" class="grow mono" maxlength="31" placeholder="quiet" pattern="[A-Za-z0-9_-]+"></div>
+          <div class="row"><span class="lbl">Hysteresis</span><input type="number" id="ceHyst" min="0" max="20" step="1" value="3" style="width:80px"><span class="note">°C — prevents rapid speed flapping</span></div>
+          <div class="row"><span class="lbl">Interval</span><input type="number" id="ceInt" min="250" max="60000" step="50" value="2000" style="width:96px"><span class="note">ms polling delay</span></div>
+          <div class="ce-rows" id="ceRows"></div>
+          <div class="row" style="margin-top:8px"><button class="btn sm" id="ceAdd">+ Add point</button>
+            <span class="note">2–16 points</span></div>
+          <div id="ceMsg" class="note" style="margin-top:10px;min-height:18px"></div>
+          <div class="row" style="margin-top:10px;justify-content:flex-end">
+            <button class="btn ghost" id="ceCancel">Cancel</button>
+            <button class="btn pri" id="ceSave">Save curve</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
-  <section>
-    <h2>CPU overrides</h2>
-    <div class="row">
-      <label class="switch"><input type="checkbox" id="turboSw"> Turbo</label>
-      <select id="govSel"></select>
-      <select id="eppSel"></select>
+<!-- ================= POWER ================= -->
+<section class="page" id="page-power">
+  <div class="page-head"><h2>Power</h2><span class="sub">EC profiles &amp; CPU overrides</span>
+    <span class="grow"></span>
+    <label class="row" style="gap:7px;font-size:12px;color:var(--warn)" title="Skip the fan-auto safety step when applying EC 2/3 or Turbo">
+      <input type="checkbox" id="nosafeChk"> bypass fan safety (--nosafe)</label>
+    <button class="btn sm pri" id="newProfileBtn">+ New profile</button></div>
+  <div class="grid" style="gap:14px">
+    <div class="tiles" id="profileGrid" style="grid-template-columns:repeat(auto-fill,minmax(215px,1fr))"></div>
+    <div class="grid g2">
+      <div class="card">
+        <div class="card-h"><h2>CPU overrides</h2></div>
+        <div class="row"><span class="lbl">Turbo</span>
+          <label class="switch"><input type="checkbox" id="turboSwitch"><i></i></label>
+          <span class="note" id="turboNote">Turbo ON in EC 2/3 sets fans to auto.</span></div>
+        <div class="row"><span class="lbl">Governor</span><select id="govSel" class="grow"></select>
+          <button class="btn sm" id="govApply">Apply</button></div>
+        <div class="row"><span class="lbl">EPP</span><select id="eppSel" class="grow"></select>
+          <button class="btn sm" id="eppApply">Apply</button></div>
+        <div class="note" id="eppHint" style="margin-top:6px;display:none;color:var(--warn)">Governor is “performance” — EPP is locked. Switch to powersave first.</div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>RAPL limits</h2><span class="chip" id="raplCur">— / —</span></div>
+        <div class="row"><span class="lbl">PL1</span>
+          <input type="range" id="pl1Range" min="1" max="90" value="45"><span class="rv" id="pl1Val">45 W</span></div>
+        <div class="row"><span class="lbl">PL2</span>
+          <input type="range" id="pl2Range" min="1" max="115" value="115"><span class="rv" id="pl2Val">115 W</span></div>
+        <div class="row" style="margin-top:12px">
+          <span class="note" id="pl1Warn">PL1 ≤ 45 W unless EC code 2 is active (then ≤ 90 W). PL2 ≤ 115 W and &gt; PL1.</span>
+          <span class="grow"></span><button class="btn sm pri" id="raplApply">Apply limits</button></div>
+      </div>
     </div>
-    <div class="row">
-      <label>PL1 <input type="number" id="pl1" min="0" max="90"></label>
-      <label>PL2 <input type="number" id="pl2" min="0" max="115"></label>
-      <button id="applyRapl">Apply limits</button>
-    </div>
-    <div class="hint">PL1 &le; 90 W in EC code 2, otherwise &le; 45 W; PL2 up to 115 W. Turbo ON in EC 2/3 sets fans to auto.</div>
-  </section>
+  </div>
+</section>
 
-  <section>
-    <h2>Fans</h2>
-    <div class="row">
-      <button id="fanAuto">Fans auto</button>
-      <button id="fanMax">Fans max</button>
-      <span class="chip" id="curveChip">curve: none</span>
+<!-- ================= KEYBOARD ================= -->
+<section class="page" id="page-keyboard">
+  <div class="page-head"><h2>Keyboard</h2><span class="sub">single-zone RGB</span>
+    <span class="chip" id="kbdStateColor"><span class="dot" id="kbdSwatch"></span><span id="kbdColorTxt">—</span></span>
+    <span class="chip" id="kbdStateBri">brightness —</span>
+    <span class="chip" id="kbdStateFx">effect —</span></div>
+  <div class="grid g2">
+    <div class="card">
+      <div class="card-h"><h2>Color</h2></div>
+      <div class="swatches" id="presetGrid"></div>
+      <div class="row" style="margin-top:14px"><span class="lbl">Custom</span>
+        <input type="color" id="customColor" value="#7c5cff">
+        <input id="customHex" class="mono" value="#7c5cff" maxlength="7" style="width:96px">
+        <button class="btn sm" id="colorApply">Set color</button></div>
+      <div class="row" style="margin-top:12px"><span class="lbl">Brightness</span>
+        <input type="range" id="briRange" min="0" max="100" value="100"><span class="rv" id="briVal">100%</span></div>
     </div>
-    <div class="row">
-      <label class="switch"><input type="checkbox" id="expSw"> Experimental manual duty</label>
+    <div class="card">
+      <div class="card-h"><h2>Notifications</h2><span class="sub">plays, then restores your setup</span></div>
+      <div class="row"><span class="lbl">Type</span>
+        <select id="notifType" class="grow"><option>flash</option><option>pulse</option><option>sos</option><option>police</option></select></div>
+      <div class="row"><span class="lbl">Color</span>
+        <input id="notifC1" class="grow mono" list="colorNames" value="red" placeholder="preset or #hex"></div>
+      <div class="row" id="notifC2Wrap"><span class="lbl">Color 2</span>
+        <input id="notifC2" class="grow mono" list="colorNames" value="blue" placeholder="preset or #hex"></div>
+      <datalist id="colorNames"></datalist>
+      <div class="row"><span class="lbl">Repeats</span>
+        <input type="number" id="notifTimes" min="1" max="20" value="1" style="width:80px">
+        <span class="note">1–20 · blocks until finished</span></div>
+      <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn pri" id="notifPlay">Play notification</button></div>
+      <div class="row" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+        <span class="lbl">Fn Lock</span>
+        <label class="switch"><input type="checkbox" id="fnSwitch"><i></i></label>
+        <span class="note">locks the Fn row to F1–F12 behavior</span></div>
     </div>
-    <div id="expFan" hidden>
-      <div class="row"><label>Both <input type="range" id="fanBoth" min="25" max="100"></label><button class="mini" id="fanBothSet">set</button></div>
-      <div class="row"><label>CPU <input type="range" id="fanCpu" min="25" max="100"></label><button class="mini" id="fanCpuSet">set</button><button class="mini" id="fanCpuAuto">auto</button></div>
-      <div class="row"><label>GPU <input type="range" id="fanGpu" min="25" max="100"></label><button class="mini" id="fanGpuSet">set</button><button class="mini" id="fanGpuAuto">auto</button></div>
-      <div class="hint">Fixed duty ignores temperature and can overheat.</div>
+    <div class="card span2">
+      <div class="card-h"><h2>Effects</h2><span class="sub">live previews are approximations</span>
+        <button class="btn sm danger" id="fxStopBtn" disabled>Stop effect</button></div>
+      <div class="tiles" id="fxGrid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))"></div>
     </div>
-    <ul id="curveList"></ul>
-    <div class="row"><button class="primary" id="addCurve">New fan curve</button></div>
-  </section>
+  </div>
+</section>
 
-  <section>
-    <h2>Keyboard</h2>
-    <div class="chips" id="presetRow"></div>
-    <div class="row">
-      <input type="color" id="kbdColor" value="#ff0000">
-      <button id="applyColor">Set color</button>
-      <label>Brightness <input type="range" id="kbdBright" min="0" max="100"></label>
+<!-- ================= SYSTEM ================= -->
+<section class="page" id="page-system">
+  <div class="page-head"><h2>System</h2><span class="sub">battery · privacy · GPU · display</span></div>
+  <div class="grid g2">
+    <div class="card">
+      <div class="card-h"><h2>Battery</h2>
+        <span class="chip" id="batModeChip">mode —</span><span class="chip" id="batThreshChip">— → —</span><span class="chip" id="batPctChip" style="display:none"></span></div>
+      <div class="row"><span class="lbl">Start</span>
+        <input type="range" id="batStart" min="1" max="99" value="40"><span class="rv" id="batStartVal">40%</span></div>
+      <div class="row"><span class="lbl">Stop</span>
+        <input type="range" id="batStop" min="2" max="100" value="80"><span class="rv" id="batStopVal">80%</span></div>
+      <div class="row" style="margin-top:12px">
+        <span class="note">Custom mode charges only between the thresholds.</span><span class="grow"></span>
+        <button class="btn sm ghost" id="batStd">Standard</button>
+        <button class="btn sm pri" id="batApply">Set custom</button></div>
     </div>
-    <div class="row">
-      <select id="effectSel"></select>
-      <button id="effectStart">Start</button>
-      <button id="effectStop">Stop</button>
+    <div class="card">
+      <div class="card-h"><h2>Privacy</h2></div>
+      <div class="row"><span class="lbl">Webcam</span><span class="chip" id="webcamChip">—</span><span class="grow"></span>
+        <div class="seg"><button data-dev="webcam" data-v="on">On</button><button data-dev="webcam" data-v="off">Off</button></div></div>
+      <div class="row" style="margin-top:12px"><span class="lbl">Microphone</span><span class="chip" id="micChip">—</span><span class="grow"></span>
+        <div class="seg"><button data-dev="mic" data-v="on">On</button><button data-dev="mic" data-v="off">Off</button></div></div>
+      <p class="note" style="margin-top:12px">Hardware-level toggles via the EC / ALSA (internal mic only).</p>
     </div>
-    <div class="row">
-      <select id="notifSel"><option>flash</option><option>pulse</option><option>sos</option><option>police</option></select>
-      <input type="color" id="notifColor" value="#ff0000">
-      <input type="number" id="notifTimes" min="1" max="20" value="1" style="width:52px">
-      <button id="notifPlay">Play notification</button>
+    <div class="card">
+      <div class="card-h"><h2>GPU MUX</h2>
+        <span class="chip" id="muxRun">running —</span><span class="chip" id="muxNvram">nvram —</span>
+        <span class="chip warn" id="muxPending" style="display:none">reboot pending</span></div>
+      <p class="note">MSHybrid (iGPU + dGPU) ↔ dGPU-only. The switch is staged in UEFI NVRAM and applies <b>after a reboot</b>. The CLI asks for an interactive confirmation, which the GUI server cannot answer — run it in a terminal.</p>
+      <div class="row" style="margin-top:12px"><button class="btn sm" id="muxBtn">Switch MUX…</button>
+        <span class="note">refused below 10% battery without AC</span></div>
     </div>
-    <div class="row">
-      <label class="switch"><input type="checkbox" id="fnSw"> Fn Lock</label>
-      <span class="chip" id="kbdChip"></span>
+    <div class="card">
+      <div class="card-h"><h2>NVIDIA clocks</h2><span class="sub">caps clocks, not wattage</span></div>
+      <div class="row"><span class="lbl">Core</span><span class="chip" id="nvCoreCur">—</span><span class="chip" id="nvCoreLockChip">unlocked</span></div>
+      <div class="row"><input type="number" id="nvCoreMax" class="grow" min="100" max="4000" step="15" placeholder="max MHz">
+        <button class="btn sm" id="nvCoreLock">Lock</button><button class="btn sm ghost" id="nvCoreReset">Reset</button></div>
+      <div class="row" style="margin-top:14px"><span class="lbl">Memory</span><span class="chip" id="nvMemCur">—</span><span class="chip" id="nvMemLockChip">unlocked</span></div>
+      <div class="row"><input type="number" id="nvMemMax" class="grow" min="100" max="12000" step="50" placeholder="max MHz">
+        <button class="btn sm" id="nvMemLock">Lock</button><button class="btn sm ghost" id="nvMemReset">Reset</button></div>
+      <p class="note" style="margin-top:10px">Locks need an awake dGPU. Use EC profile “max” for the 100 W GPU cap.</p>
     </div>
-  </section>
+    <div class="card">
+      <div class="card-h"><h2>Display</h2><span class="chip" id="dispRateChip">— Hz</span><span class="sub">native X11 only</span></div>
+      <div class="row"><button class="btn sm" id="rrList">List modes</button><button class="btn sm" id="rrToggle">Toggle rate</button></div>
+      <div class="row" style="margin-top:10px"><span class="lbl">Refresh</span>
+        <input type="number" id="rrHz" min="20" max="500" value="165" style="width:88px">
+        <select id="rrTarget"><option value="1">display #1</option><option value="2">display #2</option></select>
+        <button class="btn sm" id="rrSet">Set Hz</button></div>
+      <div class="row" style="margin-top:10px"><span class="lbl">Scale</span>
+        <input id="scaleInput" class="grow mono" placeholder="0.75 or 1920x1080">
+        <button class="btn sm" id="scaleSet">Set</button><button class="btn sm ghost" id="scaleOff">Off</button></div>
+      <p class="note" style="margin-top:10px">Hidden under Wayland. In dGPU mode X11 boots at 40 Hz — set 165 Hz after reboot.</p>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>cctl options</h2><span class="sub">persist in /var/lib/cctl/settings</span></div>
+      <div class="row"><span class="lbl">Stream text</span>
+        <label class="switch"><input type="checkbox" id="optStream"><i></i></label>
+        <span class="note">CLI output character streaming</span></div>
+      <div class="row"><span class="lbl">Bare `cctl`</span>
+        <select id="optDefault"><option value="help">help</option><option value="status">status</option></select></div>
+      <div class="row"><span class="lbl">Experimental fan</span>
+        <label class="switch"><input type="checkbox" id="optExp"><i></i></label>
+        <span class="note">unlocks manual duty on the Thermal page</span></div>
+    </div>
+  </div>
+</section>
 
-  <section>
-    <h2>Privacy</h2>
-    <div class="row"><label class="switch"><input type="checkbox" id="camSw"> Webcam</label></div>
-    <div class="row"><label class="switch"><input type="checkbox" id="micSw"> Microphone</label></div>
-  </section>
-
-  <section>
-    <h2>Battery</h2>
-    <div class="chips" id="batChips"></div>
-    <div class="row">
-      <label>Start % <input type="number" id="batStart" min="0" max="100"></label>
-      <label>Stop % <input type="number" id="batStop" min="0" max="100"></label>
-      <button id="batApply">Set custom</button>
-      <button id="batStd">Standard mode</button>
+<!-- ================= SNAPSHOTS ================= -->
+<section class="page" id="page-snapshots">
+  <div class="page-head"><h2>Snapshots</h2><span class="sub">saved system states — restore one at boot via your service manager</span></div>
+  <div class="grid" style="gap:14px">
+    <div class="card">
+      <div class="card-h"><h2>Save current state</h2></div>
+      <div class="row"><input id="snapName" class="grow mono" maxlength="64" placeholder="my-setup" pattern="[A-Za-z0-9_-]+">
+        <button class="btn pri" id="snapSave">Save snapshot</button></div>
+      <p class="note" style="margin-top:8px">Captures power, keyboard, privacy, battery, display, GPU locks and the <b>active fan-curve configuration</b>. Manual fan duty is not saved.</p>
     </div>
-  </section>
-
-  <section>
-    <h2>NVIDIA &amp; MUX</h2>
-    <div class="chips" id="gpuChips"></div>
-    <div class="row"><button id="muxSwitch">Switch MUX</button><span class="hint">UEFI NVRAM; applies after reboot.</span></div>
-    <div class="row">
-      <label>Core <input type="number" id="clkMin" min="0" max="3600" style="width:60px"></label>
-      <input type="number" id="clkMax" min="0" max="3600" style="width:60px">
-      <button class="mini" id="clkLock">lock</button>
-      <button class="mini danger" id="clkReset">reset</button>
+    <div class="card">
+      <div class="card-h"><h2>Saved snapshots</h2><button class="btn sm ghost" id="snapRefresh">Refresh</button></div>
+      <div class="list" id="snapList"><div class="empty">Loading…</div></div>
+      <p class="note" style="margin-top:10px">Restore first sets fans to AUTO, then applies settings; the saved curve state is applied last. Field masks are not exposed by the GUI server (its argument validator rejects commas) — use the CLI for <span class="mono">--mask</span>.</p>
     </div>
-    <div class="row">
-      <label>Mem <input type="number" id="mclkMin" min="0" max="8000" style="width:60px"></label>
-      <input type="number" id="mclkMax" min="0" max="8000" style="width:60px">
-      <button class="mini" id="mclkLock">lock</button>
-      <button class="mini danger" id="mclkReset">reset</button>
-    </div>
-  </section>
-
-  <section>
-    <h2>Display</h2>
-    <div class="chips" id="dispChips"></div>
-    <div class="row">
-      <button class="mini" id="rrList">List modes</button>
-      <button class="mini" id="rrToggle">Toggle</button>
-      <input type="number" id="rrHz" min="1" max="240" style="width:60px">
-      <button class="mini" id="rrSet">Set Hz</button>
-    </div>
-  </section>
-
-  <section>
-    <h2>Snapshots</h2>
-    <div class="row">
-      <input type="text" id="snapName" placeholder="name" maxlength="64">
-      <button class="primary" id="snapSave">Save</button>
-    </div>
-    <ul id="snapList"></ul>
-  </section>
-
-  <section id="logsec">
-    <h2>Last output</h2>
-    <pre id="logpre">—</pre>
-  </section>
+  </div>
+</section>
 </main>
 
-<dialog id="dlgCurve">
-  <h3 id="curveTitle">New fan curve</h3>
-  <div class="row">
-    <label>Name <input type="text" id="cName" maxlength="40"></label>
-    <label>Hysteresis °C <input type="number" id="cHyst" min="0" max="20" value="3"></label>
-    <label>Interval ms <input type="number" id="cMs" min="250" max="60000" value="1000"></label>
-  </div>
-  <table class="points" id="cPoints"></table>
-  <div class="row">
-    <button class="mini" id="cAdd">Add point</button>
-    <button class="mini danger" id="cDel">Remove point</button>
-    <span class="hint">Temps 0–95 increasing; fan 25–100; last point may be auto.</span>
-  </div>
-  <div class="row">
-    <button class="primary" id="cSave">Save curve</button>
-    <button id="cClose">Cancel</button>
-  </div>
-</dialog>
-
-<dialog id="dlgProfile">
-  <h3 id="profTitle">New custom profile</h3>
-  <div class="row">
-    <label>Name <input type="text" id="pName" maxlength="40"></label>
-    <label>EC code <select id="pEc"><option>skip</option><option>0</option><option>1</option><option>2</option><option>3</option></select></label>
-    <label>Turbo <select id="pTurbo"><option>skip</option><option>0</option><option>1</option></select></label>
-  </div>
-  <div class="row">
-    <label>Governor <select id="pGov"></select></label>
-    <label>EPP <select id="pEpp"></select></label>
-  </div>
-  <div class="row">
-    <label>PL1 <input type="text" id="pPl1" value="skip" size="6"></label>
-    <label>PL2 <input type="text" id="pPl2" value="skip" size="6"></label>
-    <label>Refresh <input type="text" id="pRefresh" value="skip" size="8"></label>
-  </div>
-  <div class="hint">Use “skip” to leave a field unchanged; set both PL1 and PL2 or neither. Refresh: number, lowest, highest, skip.</div>
-  <div class="row">
-    <button class="primary" id="pSave">Save profile</button>
-    <button id="pClose">Cancel</button>
-  </div>
-</dialog>
+<!-- ================= overlays ================= -->
+<div id="toasts"></div>
+<aside id="drawer" aria-label="Activity log">
+  <div class="drawer-h"><h2>Activity</h2><button class="btn xs ghost" id="logClear">Clear</button>
+    <button class="iconbtn" id="drawerClose" title="Close">✕</button></div>
+  <div id="logList"><div class="empty">No commands yet.</div></div>
+</aside>
+<div id="modalRoot" role="dialog" aria-modal="true"></div>
+<div id="palette"><div class="pal">
+  <input id="palInput" placeholder="Type a command…  (prefix with > to run raw cctl)" autocomplete="off" spellcheck="false">
+  <div id="palList"></div>
+  <div class="pal-foot"><span>↑↓ navigate</span><span>↵ run</span><span>esc close</span><span>&gt; raw mode</span></div>
+</div></div>
+<div id="settingsPop">
+  <div class="row"><span class="lbl">Poll interval</span>
+    <select id="setPoll"><option value="1500">1.5 s</option><option value="2500">2.5 s</option><option value="5000">5 s</option></select></div>
+  <div class="row"><span class="lbl">NVIDIA polling</span>
+    <label class="switch"><input type="checkbox" id="setGpu"><i></i></label></div>
+  <div class="row"><span class="lbl">Animations</span>
+    <label class="switch"><input type="checkbox" id="setMotion"><i></i></label></div>
+  <div class="row"><span class="lbl">Accent = keyboard</span>
+    <label class="switch"><input type="checkbox" id="setAccent"><i></i></label></div>
+  <hr>
+  <div class="about" id="aboutTxt">cctl-gui</div>
+</div>
 
 <script>
-const $ = (id) => document.getElementById(id);
-
-async function api(method, url, fields) {
-  const opts = { method, headers: {} };
-  if (method === 'POST') {
-    const p = new URLSearchParams();
-    for (const [k, v] of Object.entries(fields || {})) {
-      if (Array.isArray(v)) v.forEach(x => p.append(k, String(x)));
-      else p.append(k, String(v));
+'use strict';
+/* ================================================================ helpers */
+const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const isNum=v=>typeof v==='number'&&isFinite(v);
+const fmtN=(v,d)=>isNum(v)?v.toFixed(d==null?0:d):'—';
+function el(html){const t=document.createElement('template');t.innerHTML=html.trim();return t.content.firstElementChild;}
+function hex2rgb(h){h=h.replace('#','');return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+function rgb2hex(r,g,b){return '#'+[r,g,b].map(v=>clamp(Math.round(v),0,255).toString(16).padStart(2,'0')).join('');}
+function mixc(a,b,t){return a.map((v,i)=>Math.round(v+(b[i]-v)*t));}
+const TEMP_STOPS=[[20,[34,211,238]],[45,[52,211,153]],[65,[251,191,36]],[80,[251,146,60]],[95,[248,113,113]]];
+function tempColor(t){
+  if(!isNum(t))return 'var(--tx3)';
+  if(t<=TEMP_STOPS[0][0])return rgb2hex.apply(null,TEMP_STOPS[0][1]);
+  for(let i=1;i<TEMP_STOPS.length;i++){
+    if(t<=TEMP_STOPS[i][0]){
+      const [t0,c0]=TEMP_STOPS[i-1],[t1,c1]=TEMP_STOPS[i];
+      return rgb2hex.apply(null,mixc(c0,c1,(t-t0)/(t1-t0)));
     }
-    opts.headers['X-CCTL'] = '1';
-    opts.headers['Content-Type'] = 'application/x-www-form-urlencoded';
-    opts.body = p.toString();
   }
-  const r = await fetch(url, opts);
-  const data = await r.json().catch(() => ({ rc: -1, stderr: 'server returned non-JSON (HTTP ' + r.status + ')' }));
-  return data;
+  return rgb2hex.apply(null,TEMP_STOPS[TEMP_STOPS.length-1][1]);
+}
+function normBool(v){
+  if(v===true||v===1)return true; if(v===false||v===0)return false;
+  if(typeof v==='string'){const s=v.toLowerCase();
+    if(['on','enabled','locked','yes','true','standard'].includes(s))return s==='standard'?undefined:true;
+    if(['off','disabled','unlocked','no','false'].includes(s))return false;}
+  return undefined;
 }
 
-function out(label, res) {
-  const pre = $('logpre');
-  let txt = '$ cctl ' + label + '\n';
-  const stdout = res.stdout !== undefined ? res.stdout : JSON.stringify(res, null, 2);
-  if (res.rc !== undefined && res.rc !== 0) txt += '(exit ' + res.rc + ')\n';
-  if (stdout) txt += stdout;
-  if (res.stderr) txt += '\n[stderr] ' + res.stderr;
-  pre.textContent = txt;
-  pre.scrollTop = pre.scrollHeight;
+/* ================================================================ prefs */
+const prefs=Object.assign({poll:2500,gpuPoll:true,motion:!matchMedia('(prefers-reduced-motion: reduce)').matches,accentSync:true,page:'overview'},
+  JSON.parse(localStorage.getItem('cctlgui')||'{}'));
+function savePrefs(){localStorage.setItem('cctlgui',JSON.stringify(prefs));}
+function applyMotion(){document.body.classList.toggle('no-motion',!prefs.motion);}
+
+/* ================================================================ state */
+const S={cpu:null,gpu:null,gpuErr:null,status:null,settings:null,profiles:null,curves:null,presets:null,snapshots:null,cpuOpts:null,version:null};
+const EC_NAMES={0:'Silent',1:'Power saving',2:'High performance',3:'Standard'};
+const BUILTIN=[
+  {name:'silent',ec:0,turbo:0,epp:'power',tdp:'15/30 W · GPU 70 W',desc:'Ultra power saving. Fans unchanged.'},
+  {name:'powersave',ec:1,turbo:0,epp:'balance_power',tdp:'15/30 W · GPU 70 W',desc:'Turbo off, lowest refresh under X11.'},
+  {name:'balanced',ec:3,turbo:1,epp:'balance_performance',tdp:'45/115 W · GPU 70 W',desc:'Balanced daily use.'},
+  {name:'cpuperf',ec:3,turbo:1,epp:'performance',tdp:'45/115 W · GPU 70 W',desc:'Performance CPU only.'},
+  {name:'max',ec:2,turbo:1,epp:'performance',tdp:'90/115 W · GPU 100 W',desc:'Maximum performance. Can sustain 60–90 W near 98°C.'}
+];
+
+/* ================================================================ api */
+async function jget(path){
+  const r=await fetch(path,{cache:'no-store'});
+  let j=null; try{j=await r.json();}catch(e){}
+  if(j&&typeof j.rc==='number')throw {kind:'cmd',rc:j.rc,stderr:(j.stderr||j.stdout||'command failed').trim()};
+  if(!r.ok||j==null)throw {kind:'cmd',rc:r.status,stderr:(j&&j.error)||('HTTP '+r.status)};
+  return j;
+}
+async function jpost(path,params){
+  const body=new URLSearchParams();
+  Object.keys(params||{}).forEach(k=>{const v=params[k];
+    if(Array.isArray(v))v.forEach(x=>body.append(k,String(x)));
+    else if(v!=null)body.append(k,String(v));});
+  const r=await fetch(path,{method:'POST',headers:{'X-CCTL':'1','Content-Type':'application/x-www-form-urlencoded'},body});
+  let j=null; try{j=await r.json();}catch(e){}
+  if(j&&typeof j.rc==='number')return j;
+  if(j&&j.error)return {rc:r.status||-1,stdout:'',stderr:j.error};
+  return {rc:-1,stdout:'',stderr:'bad server response'};
+}
+/* All POSTs are serialized: the CLI must never see rr/scale (or any writes) race. */
+let _q=Promise.resolve();
+const logEntries=[];
+function act(label,cmdText,path,params,after){
+  const p=_q.then(async()=>{
+    let res;
+    try{res=await jpost(path,params);}catch(e){res={rc:-1,stdout:'',stderr:'network error: server unreachable'};}
+    logEntries.unshift({t:new Date(),label,cmd:cmdText,rc:res.rc,out:res.stdout||'',err:res.stderr||''});
+    if(logEntries.length>120)logEntries.pop();
+    renderLog();
+    toast(label,res.rc===0,res.rc!==0?(res.stderr||res.stdout||'').split('\n')[0].slice(0,140):'');
+    if(res.rc!==0)openDrawer();
+    if(after)after(res);
+    refreshSoon(res.rc===0?afterKeysFor(path):[]);
+    return res;
+  });
+  _q=p.catch(()=>{});
+  return p;
+}
+function runCmd(label,args,after){
+  return act(label,'cctl '+args.join(' '),'/api/run',{cmd:args[0],args:args.slice(1)},after);
+}
+function afterKeysFor(path){
+  if(/curve/.test(path))return ['curves','cpu','status'];
+  if(/profile/.test(path))return ['profiles','status'];
+  if(/snapshot/.test(path))return ['snapshots','curves','cpu','status'];
+  if(/options/.test(path))return ['settings'];
+  if(/fan|turbo|set/.test(path))return ['cpu','status','curves'];
+  return ['status','cpu'];
+}
+let _refreshT=null;const _pending=new Set();
+function refreshSoon(keys){
+  (keys||[]).forEach(k=>_pending.add(k));
+  _pending.add('status');
+  clearTimeout(_refreshT);
+  _refreshT=setTimeout(()=>{
+    const map={status:fStatus,cpu:fCpu,curves:fCurves,profiles:fProfiles,settings:fSettings,snapshots:fSnaps};
+    _pending.forEach(k=>{if(map[k])map[k]().catch(()=>{});});
+    _pending.clear();
+  },350);
 }
 
-function banner(msg) {
-  const b = $('bannersec');
-  if (!msg) { b.hidden = true; return; }
-  b.hidden = false; b.textContent = msg;
+/* ================================================================ toast / log / drawer */
+function toast(msg,ok,sub){
+  const t=el('<div class="toast '+(ok?'ok':'bad')+'"><span class="dot"></span><div><div>'+esc(msg)+'</div>'+
+    (sub?'<div class="dim" style="font-size:11.5px">'+esc(sub)+'</div>':'')+'</div></div>');
+  t.onclick=()=>openDrawer();
+  $('#toasts').appendChild(t);
+  while($('#toasts').children.length>3)$('#toasts').firstChild.remove();
+  setTimeout(()=>{t.classList.add('out');setTimeout(()=>t.remove(),350);},ok?3200:6000);
+}
+function renderLog(){
+  const host=$('#logList');
+  if(!logEntries.length){host.innerHTML='<div class="empty">No commands yet.</div>';return;}
+  host.innerHTML=logEntries.map(e=>{
+    const ok=e.rc===0;
+    const out=(e.out||'')+(e.err?((e.out?'\n':'')+e.err):'');
+    return '<div class="logitem"><div class="lh"><span class="ll">'+esc(e.label)+'</span>'+
+      '<span class="rc '+(ok?'ok':'bad')+'">rc '+e.rc+'</span><span class="lt">'+e.t.toLocaleTimeString()+'</span></div>'+
+      '<div class="cmd">'+esc(e.cmd)+'</div>'+
+      (out.trim()?'<details><summary>output</summary><pre class="out">'+esc(out.trim())+'</pre></details>':'')+'</div>';
+  }).join('');
+}
+function openDrawer(){$('#drawer').classList.add('on');$('#drawerBtn').classList.add('on');}
+function closeDrawer(){$('#drawer').classList.remove('on');$('#drawerBtn').classList.remove('on');}
+
+/* ================================================================ modal */
+let modalResolve=null;
+function modal(opts){
+  return new Promise(res=>{
+    modalResolve=res;
+    const root=$('#modalRoot');
+    root.innerHTML='';
+    const m=el('<div class="modal"><h2>'+esc(opts.title)+'</h2><div class="mbody">'+(opts.body||'')+'</div>'+
+      '<div class="mact"><button class="btn ghost" data-m="0">'+esc(opts.cancel||'Cancel')+'</button>'+
+      '<button class="btn '+(opts.danger?'danger':'pri')+'" data-m="1">'+esc(opts.ok||'Confirm')+'</button></div></div>');
+    m.addEventListener('click',e=>{
+      const b=e.target.closest('[data-m]');
+      if(b)closeModal(b.dataset.m==='1');
+      if(e.target.closest('[data-copy]')){
+        const cmd=e.target.closest('[data-copy]').dataset.copy;
+        navigator.clipboard.writeText(cmd).then(()=>toast('Copied: '+cmd,true));
+      }
+    });
+    root.appendChild(m);root.classList.add('on');
+    root.onclick=e=>{if(e.target===root)closeModal(false);};
+    m.querySelector('[data-m="1"]').focus();
+  });
+}
+function closeModal(v){
+  $('#modalRoot').classList.remove('on');$('#modalRoot').innerHTML='';
+  if(modalResolve){const r=modalResolve;modalResolve=null;r(v);}
 }
 
-/* ------------------------------------------------------------ telemetry */
-const hist = { usage: [], power: [], temp: [], gpuUtil: [], gpuPower: [] };
-const HIST_MAX = 60;
+/* ================================================================ animation engine */
+const sparks=[];
+class Spark{
+  constructor(cv,o){o=o||{};this.cv=cv;this.ctx=cv.getContext('2d');this.n=o.n||90;
+    this.buf=new Array(this.n).fill(null);this.color=o.color||'#22d3ee';this.floor=o.floor||0;this.max=o.max||null;this.dirty=false;sparks.push(this);}
+  push(v){this.buf.push(isNum(v)?v:null);this.buf.shift();this.dirty=true;}
+  draw(){
+    if(!this.dirty)return;this.dirty=false;
+    const cv=this.cv,dpr=window.devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;
+    if(!w||!h)return;
+    if(cv.width!==Math.round(w*dpr)||cv.height!==Math.round(h*dpr)){cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);}
+    const c=this.ctx;c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,w,h);
+    let mx=this.max||0;this.buf.forEach(v=>{if(isNum(v)&&v>mx)mx=v;});
+    mx=Math.max(mx,this.floor,1e-6);
+    const step=w/(this.n-1);let first=null,last=null;
+    c.beginPath();
+    this.buf.forEach((v,i)=>{if(!isNum(v))return;
+      const x=i*step,y=h-2-(clamp(v,0,mx)/mx)*(h-7);
+      if(first===null){first=x;c.moveTo(x,y);}else c.lineTo(x,y);last=x;});
+    if(first===null)return;
+    c.strokeStyle=this.color;c.lineWidth=1.6;c.lineJoin='round';c.stroke();
+    c.lineTo(last,h);c.lineTo(first,h);c.closePath();
+    const g=c.createLinearGradient(0,0,0,h);g.addColorStop(0,this.color+'33');g.addColorStop(1,this.color+'00');
+    c.fillStyle=g;c.fill();
+  }
+}
+const fans=[];
+function makeFan(host,o){
+  o=o||{};const N=o.blades||7,max=o.max||5800;
+  let blades='';
+  for(let i=0;i<N;i++)blades+='<path d="M0 -10 C 12 -18, 16 -34, 6 -44 C 2 -47, -3 -45, -4 -38 C -6 -24, -4 -16, 0 -10 Z" transform="rotate('+(i*360/N)+')"/>';
+  host.innerHTML='<svg viewBox="-50 -50 100 100"><circle class="ring" r="46"/><g class="blades">'+blades+'</g><circle class="hub" r="9"/></svg>';
+  const rot=host.querySelector('.blades');
+  const f={rps:0,phase:0,target:0,
+    set(rpm){this.target=isNum(rpm)&&rpm>1?0.12+0.95*clamp(rpm/max,0,1):0;},
+    tick(dt){
+      const k=this.target>this.rps?2.2:0.9;
+      this.rps+=(this.target-this.rps)*(1-Math.exp(-k*dt));
+      if(this.target===0&&this.rps<0.02)this.rps=0;
+      this.phase=(this.phase+this.rps*dt)%1;
+      rot.setAttribute('transform','rotate('+(this.phase*360).toFixed(2)+')');
+      host.classList.toggle('stopped',this.rps<0.02);
+    }};
+  fans.push(f);return f;
+}
+const nums=new Map();
+function setNum(node,v,f){
+  if(!node)return;
+  let s=nums.get(node);
+  if(!s){s={cur:isNum(v)?v:0,tgt:v,f:f};nums.set(node,s);}
+  s.tgt=v;if(f)s.f=f;
+  if(!isNum(v)){node.innerHTML='—';return;}
+  if(!prefs.motion){s.cur=v;node.innerHTML=s.f(v);}
+}
+let _lastT=performance.now();
+function frame(now){
+  const dt=clamp((now-_lastT)/1000,0,0.1);_lastT=now;
+  if(!document.hidden){
+    nums.forEach((s,node)=>{
+      if(!isNum(s.tgt))return;
+      if(prefs.motion){s.cur+=(s.tgt-s.cur)*(1-Math.exp(-7*dt));
+        if(Math.abs(s.tgt-s.cur)<0.01)s.cur=s.tgt;}
+      else s.cur=s.tgt;
+      node.innerHTML=s.f(s.cur);
+    });
+    fans.forEach(f=>f.tick(prefs.motion?dt:0));
+    sparks.forEach(s=>s.draw());
+  }
+  requestAnimationFrame(frame);
+}
 
-function spark(svg, a, b) {
-  const polylines = svg.querySelectorAll('polyline');
-  const mk = arr => {
-    if (arr.length < 2) return '';
-    const max = Math.max(...arr, 1);
-    return arr.map((v, i) => `${(i / (HIST_MAX - 1)) * 240},${52 - (v / max) * 48}`).join(' ');
+/* ================================================================ telemetry render */
+const spUsage=new Spark($('#sparkUsage'),{color:'#22d3ee',max:100});
+const spPow=new Spark($('#sparkPow'),{color:'#fbbf24',floor:20});
+const spRx=new Spark($('#sparkRx'),{color:'#22d3ee',floor:50,n:60});
+const spTx=new Spark($('#sparkTx'),{color:'#e879f9',floor:50,n:60});
+const fanCpu=makeFan($('#cpuFan'),{blades:9,max:5800});
+const fanGpu=makeFan($('#gpuFan'),{blades:7,max:3200});
+function big(node,v,d,unit){setNum(node,v,x=>fmtN(x,d)+'<small>'+unit+'</small>');}
+
+function cpuState(c){
+  if(!c)return ['…','var(--tx3)'];
+  if(c.thermal_throttling_active===true)return ['THERMAL THROTTLE','var(--bad)'];
+  if(c.power_limit_active===true)return ['POWER LIMIT','var(--mag)'];
+  const p=c.package_power_w,p1=c.pl1_w,p2=c.pl2_w;
+  if(isNum(p)&&isNum(p2)&&p>=p2*0.98)return ['NEAR PL2','var(--mag)'];
+  if(isNum(p)&&isNum(p1)&&p>p1*1.02)return ['ABOVE PL1','var(--warn)'];
+  if(isNum(p)&&isNum(p1)&&p>=p1*0.9&&c.cpu_usage_pct>60)return ['NEAR PL1','var(--warn)'];
+  if(isNum(c.cpu_usage_pct)&&c.cpu_usage_pct<10)return ['IDLE','var(--acc2)'];
+  return ['NORMAL','var(--ok)'];
+}
+function renderCpu(){
+  const c=S.cpu;if(!c)return;
+  $('#cpuModel').textContent=c.cpu_model||'';
+  big($('#cpuTemp'),c.cpu_temp_c,0,'°C');$('#cpuTemp').style.color=tempColor(c.cpu_temp_c);
+  big($('#cpuUsage'),c.cpu_usage_pct,0,'%');
+  big($('#cpuPow'),c.package_power_w,1,'W');
+  const scale=isNum(c.pl2_w)&&c.pl2_w>0?c.pl2_w:115;
+  $('#cpuPowScale').textContent=fmtN(scale,0)+' W';
+  $('#cpuPowBar').style.width=(isNum(c.package_power_w)?clamp(c.package_power_w/scale*100,0,100):0)+'%';
+  $('#cpuPowBar').style.background='linear-gradient(90deg,#22d3ee,#34d399,#fbbf24,#f87171)';
+  $('#cpuPl1Mark').style.left=(isNum(c.pl1_w)?clamp(c.pl1_w/scale*100,0,100):0)+'%';
+  $('#cpuPl2Mark').style.left=(isNum(c.pl2_w)?clamp(c.pl2_w/scale*100,0,100):0)+'%';
+  const [st,sc]=cpuState(c);
+  const pill=$('#cpuState');pill.innerHTML='<span class="dot"></span>'+st;pill.style.color=sc;
+  setNum($('#cpuFanRpm'),c.cpu_fan_rpm,v=>fmtN(v,0));
+  $('#cpuFanDuty').textContent=fmtN(c.cpu_fan_duty_pct,0)+'%';
+  fanCpu.set(c.cpu_fan_rpm);
+  const ramPct=isNum(c.memory_used_gb)&&isNum(c.memory_total_gb)&&c.memory_total_gb>0?c.memory_used_gb/c.memory_total_gb*100:0;
+  $('#ramBar').style.width=ramPct+'%';
+  $('#ramTxt').textContent=fmtN(c.memory_used_gb,1)+' / '+fmtN(c.memory_total_gb,0)+' GB';
+  spUsage.push(c.cpu_usage_pct);spPow.push(c.package_power_w);
+  /* profile strip */
+  const ec=c.ec_profile_code;
+  $('#psEc').innerHTML='EC <b>'+(isNum(ec)?ec+' · '+EC_NAMES[ec]:'—')+'</b>';
+  $('#psGov').innerHTML='gov <b>'+esc(c.governor||'—')+'</b>';
+  $('#psEpp').innerHTML='epp <b>'+esc(c.epp||'—')+'</b>';
+  const tb=$('#psTurbo');tb.innerHTML='turbo <b>'+(c.turbo_enabled===true?'on':c.turbo_enabled===false?'off':'—')+'</b>';
+  tb.className='chip'+(c.turbo_enabled===true?' warn':'');
+  $('#psPl').innerHTML='PL <b>'+fmtN(c.pl1_w,0)+'/'+fmtN(c.pl2_w,0)+' W</b>';
+  $('#psTj').innerHTML='Tj <b>'+fmtN(c.prochot_c,0)+'°C</b>';
+  renderCores(c);renderPowerLive(c);markActiveProfiles();
+  /* vitals */
+  setNum($('#vCpuT'),c.cpu_temp_c,v=>fmtN(v,0));$('#vCpuT').style.color=tempColor(c.cpu_temp_c);
+  setNum($('#vCpuW'),c.package_power_w,v=>fmtN(v,1));
+}
+let coreEls=[],coreKey='';
+function renderCores(c){
+  const cores=c.cores||[];
+  const key=cores.map(x=>x.group).join('');
+  const host=$('#coresWrap');
+  if(key!==coreKey){
+    coreKey=key;host.innerHTML='';coreEls=[];
+    cores.forEach(cr=>{
+      const g=(cr.group||'P').toLowerCase();
+      const n=cores.filter(x=>x.group===cr.group&&x.index<cr.index).length;
+      const row=el('<div class="core '+g+'"><span class="cl">'+cr.group+n+'</span><div class="bar"><i></i></div><span class="cm">—</span></div>');
+      host.appendChild(row);
+      coreEls.push({bar:row.querySelector('i'),txt:row.querySelector('.cm'),group:cr.group});
+    });
+    if(!cores.length)host.innerHTML='<div class="empty" style="grid-column:1/-1">No core data.</div>';
+  }
+  const gmax={P:1000,E:1000};
+  cores.forEach(cr=>{if(isNum(cr.frequency_mhz)&&cr.frequency_mhz>gmax[cr.group])gmax[cr.group]=cr.frequency_mhz;});
+  let sum=0,n=0;
+  cores.forEach((cr,i)=>{
+    const e=coreEls[i];if(!e)return;
+    const m=cr.frequency_mhz;
+    e.bar.style.width=(isNum(m)?clamp(m/gmax[cr.group]*100,0,100):0)+'%';
+    e.txt.textContent=fmtN(m,0);
+    if(isNum(m)){sum+=m;n++;}
+  });
+  $('#coreAvg').innerHTML='avg <b>'+(n?fmtN(sum/n/1000,2)+' GHz':'—')+'</b>';
+}
+const CLK_REASONS=[[0x002,'App Clocks',0],[0x004,'SW Power Cap',1],[0x008,'HW Slowdown',2],[0x010,'Sync Boost',0],[0x020,'SW Thermal',1],[0x040,'HW Thermal',2],[0x080,'HW Pwr Brake',2],[0x100,'Display Clk',0]];
+function renderGpu(){
+  const card=$('#gpuCard'),g=S.gpu;
+  card.classList.remove('sleeping','gpuerr');
+  if(S.gpuErr){
+    card.classList.add('gpuerr');
+    $('#gpuErrMsg').textContent='NVIDIA telemetry unavailable: '+S.gpuErr;
+    $('#gpuState').innerHTML='<span class="dot"></span>unavailable';$('#gpuState').style.color='var(--bad)';
+    $('#gpuName').textContent='';
+    return;
+  }
+  if(!g)return;
+  const pm=g.power_state||'unknown';
+  const active=pm==='D0'&&isNum(g.temperature_c);
+  $('#gpuName').textContent=g.gpu_name||'';
+  const st=$('#gpuState');
+  if(pm!=='D0'){
+    card.classList.add('sleeping');
+    $('#asleepTxt').textContent='GPU suspended · '+pm;
+    st.innerHTML='<span class="dot"></span>'+pm+' · asleep';st.style.color='var(--tx2)';
+  }else if(g.nvidia_smi_error){
+    st.innerHTML='<span class="dot"></span>D0 · smi error';st.style.color='var(--bad)';
+  }else if(!active){
+    st.innerHTML='<span class="dot"></span>D0 · syncing';st.style.color='var(--warn)';
+  }else{
+    st.innerHTML='<span class="dot"></span>D0 · active';st.style.color='var(--ok)';
+  }
+  big($('#gpuTemp'),active?g.temperature_c:null,0,'°C');$('#gpuTemp').style.color=tempColor(g.temperature_c);
+  big($('#gpuUtil'),active?g.gpu_util_pct:null,0,'%');
+  big($('#gpuPow'),active?g.power_w:null,1,'W');
+  const lim=isNum(g.power_limit_w)&&g.power_limit_w>0?g.power_limit_w:g.power_max_w;
+  $('#gpuPowLim').textContent=fmtN(lim,0)+' W';
+  $('#gpuPowBar').style.width=(active&&isNum(lim)&&lim>0?clamp(g.power_w/lim*100,0,100):0)+'%';
+  const clkMax=isNum(g.gpu_clock_max_mhz)&&g.gpu_clock_max_mhz>0?g.gpu_clock_max_mhz:3000;
+  const memMax=isNum(g.memory_clock_max_mhz)&&g.memory_clock_max_mhz>0?g.memory_clock_max_mhz:10000;
+  $('#gpuClkBar').style.width=(active?clamp(g.gpu_clock_mhz/clkMax*100,0,100):0)+'%';
+  $('#gpuMemBar').style.width=(active?clamp(g.memory_clock_mhz/memMax*100,0,100):0)+'%';
+  $('#gpuClk').textContent=fmtN(g.gpu_clock_mhz,0)+' / '+fmtN(g.gpu_clock_max_mhz,0)+' MHz';
+  $('#gpuMemClk').textContent=fmtN(g.memory_clock_mhz,0)+' / '+fmtN(g.memory_clock_max_mhz,0)+' MHz';
+  const vp=active&&isNum(g.vram_total_mib)&&g.vram_total_mib>0?g.vram_used_mib/g.vram_total_mib*100:0;
+  $('#vramBar').style.width=vp+'%';
+  $('#vramTxt').textContent=active?fmtN(g.vram_used_mib/1024,1)+' / '+fmtN(g.vram_total_mib/1024,1)+' GB':'—';
+  $('#gpuPstate').innerHTML='P-state <b>'+(active&&isNum(g.pstate)?'P'+g.pstate:'—')+'</b>';
+  $('#pcieLink').innerHTML=(active&&isNum(g.pcie_gen)?'Gen'+g.pcie_gen+' x'+g.pcie_width+' <b>(max Gen'+g.pcie_gen_max+')</b>':'Gen— x—');
+  const rs=$('#gpuReasons');rs.innerHTML='';
+  if(active&&isNum(g.clock_reasons_active)){
+    const hits=CLK_REASONS.filter(r=>g.clock_reasons_active&r[0]);
+    hits.slice(0,4).forEach(r=>{
+      rs.appendChild(el('<span class="chip '+(r[2]===2?'bad':r[2]===1?'warn':'')+'">'+r[1]+'</span>'));
+    });
+    if(hits.length>4)rs.appendChild(el('<span class="chip">+'+(hits.length-4)+'</span>'));
+  }
+  spRx.push(active?g.pcie_rx_mbs:null);spTx.push(active?g.pcie_tx_mbs:null);
+  $('#rxVal').textContent=isNum(g.pcie_rx_mbs)?fmtN(g.pcie_rx_mbs,0)+' MB/s':'';
+  $('#txVal').textContent=isNum(g.pcie_tx_mbs)?fmtN(g.pcie_tx_mbs,0)+' MB/s':'';
+  setNum($('#gpuFanRpm'),g.gpu_fan_rpm,v=>fmtN(v,0));
+  $('#gpuFanDuty').textContent=fmtN(g.gpu_fan_duty_pct,0)+'%';
+  fanGpu.set(g.gpu_fan_rpm);
+  setNum($('#vGpuT'),active?g.temperature_c:null,v=>fmtN(v,0));
+  $('#vGpuT').style.color=active?tempColor(g.temperature_c):'var(--tx3)';
+  $('#vGpuU').textContent=active?'°C':pm;
+  setNum($('#vGpuW'),active?g.power_w:null,v=>fmtN(v,1));
+  $('#nvCoreCur').innerHTML='now <b>'+fmtN(g.gpu_clock_mhz,0)+' MHz</b>';
+  $('#nvMemCur').innerHTML='now <b>'+fmtN(g.memory_clock_mhz,0)+' MHz</b>';
+  if(active){
+    $('#nvCoreMax').placeholder='max '+fmtN(g.gpu_clock_max_mhz,0)+' MHz';
+    $('#nvMemMax').placeholder='max '+fmtN(g.memory_clock_max_mhz,0)+' MHz';
+  }
+}
+
+/* ================================================================ status (tolerant key map)
+   The exact `cctl status --json` emitter was not in the provided sources.
+   SMAP is the single place to pin exact keys once a sample is available;
+   patterns are matched breadth-first over the whole JSON tree. */
+const SMAP={
+  kbdColor:[/keyboard.*colo/i,/kbd.*colo/i,/^kbc$/i,/colo.*keyboard/i],
+  kbdBri:[/keyboard.*bright/i,/kbd.*bright/i,/^kbb$/i,/bright/i],
+  kbdEffect:[/keyboard.*effect/i,/^kbe$/i,/^effect$/i],
+  fn:[/fn.?lock/i],
+  webcam:[/webcam/i],
+  mic:[/mic(rophone)?/i],
+  batMode:[/charge.?mode/i,/battery.*mode/i],
+  batStart:[/battery.*start/i,/charge.*start/i,/start.*threshold/i],
+  batStop:[/battery.*stop/i,/charge.*stop/i,/stop.*threshold/i],
+  batPct:[/battery.*(pct|percent|capacity|level)/i],
+  muxMode:[/^gpu_mux_mode$/i],
+  muxNvram:[/^gpu_mux_nvram$/i],
+  muxPending:[/^gpu_mux_pending_reboot$/i,/pending.*reboot/i],
+  refresh:[/refresh/i,/display.*rate/i,/_hz$/i],
+  scale:[/scale/i],
+  nvCore:[/nvidia.*(core|gpu).*clock/i,/core.*clock/i],
+  nvMem:[/nvidia.*mem.*clock/i,/mem.*clock/i]
+};
+function dig(o,res){
+  if(o==null)return undefined;
+  const q=[o],seen=new Set();
+  while(q.length){
+    const cur=q.shift();
+    if(!cur||typeof cur!=='object'||seen.has(cur))continue;
+    seen.add(cur);
+    for(const k of Object.keys(cur)){
+      const v=cur[k];
+      if(res.some(r=>r.test(k))&&v!=null)return v;
+      if(v&&typeof v==='object')q.push(v);
+    }
+  }
+  return undefined;
+}
+function normColor(v){
+  if(v==null)return null;
+  if(Array.isArray(v)&&v.length>=3)return [v[0],v[1],v[2]];
+  if(typeof v==='object'&&'r'in v&&'g'in v&&'b'in v)return [v.r,v.g,v.b];
+  if(typeof v==='string'){
+    const s=v.trim();
+    let m=s.match(/^#?([0-9a-fA-F]{6})$/);if(m)return hex2rgb(m[1]);
+    m=s.match(/(\d+)\D+(\d+)\D+(\d+)/);if(m)return [+m[1],+m[2],+m[3]];
+    const p=(S.presets&&S.presets.presets||[]).find(x=>x.name===s.toLowerCase());
+    if(p)return p.rgb;
+  }
+  return null;
+}
+function applyAccent(rgb){
+  if(!prefs.accentSync||!rgb||(rgb[0]+rgb[1]+rgb[2]<40)){document.documentElement.style.setProperty('--acc','#7c5cff');return;}
+  let c=rgb;
+  const lum=(0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2])/255;
+  if(lum<0.22)c=mixc(rgb,[255,255,255],0.4);
+  document.documentElement.style.setProperty('--acc',rgb2hex(c[0],c[1],c[2]));
+}
+let batTouched=false;
+function renderStatus(){
+  const s=S.status;if(!s)return;
+  /* keyboard */
+  const col=normColor(dig(s,SMAP.kbdColor));
+  if(col){
+    $('#kbdSwatch').style.background=rgb2hex(col[0],col[1],col[2]);
+    $('#kbdSwatch').style.color=rgb2hex(col[0],col[1],col[2]);
+    const p=(S.presets&&S.presets.presets||[]).find(x=>x.rgb[0]===col[0]&&x.rgb[1]===col[1]&&x.rgb[2]===col[2]);
+    $('#kbdColorTxt').textContent=p?p.name:rgb2hex(col[0],col[1],col[2]);
+    applyAccent(col);
+  }else $('#kbdColorTxt').textContent='—';
+  let bri=dig(s,SMAP.kbdBri);
+  if(isNum(bri)){if(bri>100)bri=Math.round(bri*100/255);
+    $('#kbdStateBri').innerHTML='brightness <b>'+fmtN(bri,0)+'%</b>';
+    if(document.activeElement!==$('#briRange')){$('#briRange').value=bri;$('#briVal').textContent=bri+'%';}
+  }
+  let fx=dig(s,SMAP.kbdEffect);
+  if(typeof fx==='string'&&fx!=='none'&&fx!=='skip'&&fx!=='stopped'&&fx!==''){
+    $('#kbdStateFx').innerHTML='effect <b>'+esc(fx)+'</b>';$('#kbdStateFx').className='chip acc';
+    $('#fxStopBtn').disabled=false;
+    $$('#fxGrid .tile').forEach(t=>t.classList.toggle('on',t.dataset.fx===fx));
+  }else{
+    $('#kbdStateFx').innerHTML='effect <b>none</b>';$('#kbdStateFx').className='chip';
+    $('#fxStopBtn').disabled=true;
+    $$('#fxGrid .tile').forEach(t=>t.classList.remove('on'));
+  }
+  /* fn / privacy */
+  const fn=normBool(dig(s,SMAP.fn));
+  if(fn!==undefined)$('#fnSwitch').checked=fn;
+  const wc=normBool(dig(s,SMAP.webcam)),mc=normBool(dig(s,SMAP.mic));
+  setDevChip($('#webcamChip'),wc,'webcam');setDevChip($('#micChip'),mc,'mic');
+  /* battery */
+  const bm=dig(s,SMAP.batMode),bs=dig(s,SMAP.batStart),be=dig(s,SMAP.batStop),bp=dig(s,SMAP.batPct);
+  if(bm!=null)$('#batModeChip').innerHTML='mode <b>'+esc(String(bm))+'</b>';
+  if(isNum(bs)&&isNum(be)){
+    $('#batThreshChip').innerHTML='<b>'+bs+'% → '+be+'%</b>';
+    if(!batTouched){$('#batStart').value=bs;$('#batStartVal').textContent=bs+'%';
+      $('#batStop').value=be;$('#batStopVal').textContent=be+'%';}
+  }
+  if(isNum(bp)){$('#batPctChip').style.display='';$('#batPctChip').innerHTML='charge <b>'+bp+'%</b>';}
+  /* mux — exact keys confirmed in cctl_core.inc */
+  const mr=dig(s,SMAP.muxMode),mn=dig(s,SMAP.muxNvram),mp=normBool(dig(s,SMAP.muxPending));
+  $('#muxRun').innerHTML='running <b>'+esc(mr||'—')+'</b>';
+  $('#muxNvram').innerHTML='nvram <b>'+esc(mn||'—')+'</b>';
+  $('#muxPending').style.display=mp===true?'':'none';
+  /* display */
+  const rr=dig(s,SMAP.refresh);
+  if(rr!=null)$('#dispRateChip').innerHTML='<b>'+esc(String(rr))+' Hz</b>';
+  /* nvidia locks */
+  const nc=dig(s,SMAP.nvCore),nm=dig(s,SMAP.nvMem);
+  $('#nvCoreLockChip').innerHTML=nc!=null&&String(nc)!=='none'?'locked <b>'+esc(String(nc))+'</b>':'unlocked';
+  $('#nvMemLockChip').innerHTML=nm!=null&&String(nm)!=='none'?'locked <b>'+esc(String(nm))+'</b>':'unlocked';
+  /* raw fallback */
+  let raw=$('#statusRaw');
+  if(!raw){
+    raw=el('<details class="raw span2" id="statusRaw"><summary>raw status JSON</summary><pre class="out"></pre></details>');
+    $('#page-system .grid').appendChild(raw);
+  }
+  raw.querySelector('pre').textContent=JSON.stringify(s,null,2);
+}
+function setDevChip(node,v,dev){
+  node.innerHTML=dev+' <b>'+(v===true?'on':v===false?'off':'—')+'</b>';
+  node.className='chip'+(v===true?' ok':v===false?' bad':'');
+  $$('.seg button[data-dev="'+dev+'"]').forEach(b=>b.classList.toggle('on',(b.dataset.v==='on')===v&&v!==undefined));
+}
+
+/* ================================================================ power page */
+function renderPowerLive(c){
+  if(document.activeElement!==$('#turboSwitch')&&c.turbo_enabled!==null&&c.turbo_enabled!==undefined)
+    $('#turboSwitch').checked=c.turbo_enabled===true;
+  if(c.governor&&$('#govSel').value!==c.governor&&document.activeElement!==$('#govSel'))$('#govSel').value=c.governor;
+  if(c.epp&&document.activeElement!==$('#eppSel'))$('#eppSel').value=c.epp;
+  $('#eppHint').style.display=c.governor==='performance'?'':'none';
+  $('#raplCur').innerHTML='live <b>'+fmtN(c.pl1_w,0)+' / '+fmtN(c.pl2_w,0)+' W</b>';
+  if(!raplTouched){
+    if(isNum(c.pl1_w)){$('#pl1Range').value=Math.round(c.pl1_w);$('#pl1Val').textContent=Math.round(c.pl1_w)+' W';}
+    if(isNum(c.pl2_w)){$('#pl2Range').value=Math.round(c.pl2_w);$('#pl2Val').textContent=Math.round(c.pl2_w)+' W';}
+  }
+  const ec=c.ec_profile_code;
+  $('#pl1Warn').style.color=isNum(ec)&&ec!==2&&+$('#pl1Range').value>45?'var(--bad)':'';
+  $('#turboNote').style.color=(isNum(ec)&&(ec===2||ec===3))?'var(--warn)':'';
+}
+let raplTouched=false;
+function markActiveProfiles(){
+  const c=S.cpu;if(!c)return;
+  const ec=c.ec_profile_code,epp=c.epp;
+  $$('#quickProfiles button').forEach(b=>{
+    const p=BUILTIN.find(x=>x.name===b.dataset.p);
+    b.classList.toggle('on',p&&isNum(ec)&&p.ec===ec&&(!epp||p.epp===epp));
+  });
+  $$('#profileGrid .profile-card').forEach(card=>{
+    const ecv=card.dataset.ec,eppv=card.dataset.epp;
+    const on=ecv!==''&&ecv!=='skip'&&isNum(ec)&&+ecv===ec&&(eppv==='skip'||eppv===''||eppv===epp);
+    card.classList.toggle('on',on);
+  });
+}
+function renderProfiles(){
+  const grid=$('#profileGrid');grid.innerHTML='';
+  BUILTIN.forEach(p=>{
+    const card=el('<div class="profile-card" data-ec="'+p.ec+'" data-epp="'+p.epp+'">'+
+      '<div class="pn">'+p.name+(p.name==='silent'?'<span class="dim" style="font-weight:400;font-size:11px">/ eco</span>':'')+'</div>'+
+      '<div class="pd">'+esc(p.desc)+'</div>'+
+      '<div class="pm"><span class="chip">EC '+p.ec+'</span><span class="chip">turbo '+(p.turbo?'on':'off')+'</span><span class="chip">'+esc(p.epp)+'</span></div>'+
+      '<div class="dim" style="font-size:11px">'+esc(p.tdp)+'</div>'+
+      '<button class="btn sm pri">Apply</button></div>');
+    card.querySelector('button').onclick=()=>applyProfile(p.name);
+    grid.appendChild(card);
+  });
+  ((S.profiles&&S.profiles.custom)||[]).forEach(p=>{
+    const bits=['EC '+p.ec,'turbo '+p.turbo,p.gov,p.epp];
+    if(p.pl1!=='skip'||p.pl2!=='skip')bits.push(p.pl1+'/'+p.pl2+' W');
+    if(p.refresh!=='skip')bits.push(p.refresh+' Hz');
+    const card=el('<div class="profile-card" data-ec="'+esc(p.ec)+'" data-epp="'+esc(p.epp)+'">'+
+      '<div class="pn">'+esc(p.name)+'<span class="chip acc" style="font-size:10px">custom</span>'+
+      '<span class="grow" style="flex:1"></span><button class="btn xs ghost" data-del title="Delete">✕</button></div>'+
+      '<div class="pm">'+bits.map(b=>'<span class="chip">'+esc(b)+'</span>').join('')+'</div>'+
+      '<div class="pd"></div><button class="btn sm pri">Apply</button></div>');
+    card.querySelector('.btn.pri').onclick=()=>applyProfile(p.name);
+    card.querySelector('[data-del]').onclick=async()=>{
+      if(await modal({title:'Delete profile “'+p.name+'”?',body:'<p>Removes the row from profiles.conf. This cannot be undone.</p>',ok:'Delete',danger:true}))
+        act('Delete profile '+p.name,'cctl editconf --am --delete '+p.name,'/api/profile-delete',{name:p.name});
+    };
+    grid.appendChild(card);
+  });
+  markActiveProfiles();
+}
+function applyProfile(name){
+  const nosafe=$('#nosafeChk').checked;
+  act('Apply profile '+name,'cctl set '+name+(nosafe?' --nosafe':''),'/api/set',{profile:name,nosafe:nosafe?'1':undefined});
+}
+function fillSelect(sel,values,current,withSkip){
+  sel.innerHTML='';
+  if(withSkip)sel.appendChild(el('<option value="skip">skip (unchanged)</option>'));
+  (values||[]).forEach(v=>sel.appendChild(el('<option value="'+esc(v)+'">'+esc(v)+'</option>')));
+  if(current&&values&&values.includes(current))sel.value=current;
+}
+
+/* ---- custom profile modal ---- */
+function openProfileModal(){
+  const opts=S.cpuOpts||{governors:[],epp:[]};
+  const root=$('#modalRoot');modalResolve=null;
+  root.innerHTML='';
+  const m=el('<div class="modal"><h2>New custom profile</h2><div class="mbody">'+
+    '<div class="fld"><label>Name</label><input id="pmName" class="mono" maxlength="31" placeholder="quietwork"></div>'+
+    '<div class="frow"><div class="fld"><label>EC code</label><select id="pmEc"><option>skip</option><option>0</option><option>1</option><option>2</option><option>3</option></select></div>'+
+    '<div class="fld"><label>Turbo</label><select id="pmTurbo"><option>skip</option><option value="1">on</option><option value="0">off</option></select></div></div>'+
+    '<div class="frow"><div class="fld"><label>Governor</label><select id="pmGov"></select></div>'+
+    '<div class="fld"><label>EPP</label><select id="pmEpp"></select></div></div>'+
+    '<div class="frow"><div class="fld"><label>PL1 watts</label><input id="pmPl1" class="mono" placeholder="skip"></div>'+
+    '<div class="fld"><label>PL2 watts</label><input id="pmPl2" class="mono" placeholder="skip"></div></div>'+
+    '<div class="fld"><label>Refresh</label><input id="pmRr" class="mono" placeholder="skip · 165 · lowest · highest"></div>'+
+    '<p class="note" style="margin-top:10px">“skip” leaves a field unchanged. Set both PL1 and PL2 or neither; PL2 &gt; PL1. PL1 ≤ 45 W (≤ 90 W with EC 2 or skip). Max 32 custom profiles.</p>'+
+    '<div id="pmMsg" class="note" style="margin-top:8px;color:var(--bad);min-height:16px"></div></div>'+
+    '<div class="mact"><button class="btn ghost" id="pmCancel">Cancel</button><button class="btn pri" id="pmSave">Create profile</button></div></div>');
+  root.appendChild(m);root.classList.add('on');
+  fillSelect(m.querySelector('#pmGov'),opts.governors,null,true);
+  fillSelect(m.querySelector('#pmEpp'),opts.epp,null,true);
+  root.onclick=e=>{if(e.target===root){root.classList.remove('on');root.innerHTML='';}};
+  m.querySelector('#pmCancel').onclick=()=>{root.classList.remove('on');root.innerHTML='';};
+  m.querySelector('#pmSave').onclick=()=>{
+    const g=id=>m.querySelector(id).value.trim();
+    const name=g('#pmName'),ec=g('#pmEc'),turbo=g('#pmTurbo'),gov=g('#pmGov'),epp=g('#pmEpp');
+    const pl1=g('#pmPl1')||'skip',pl2=g('#pmPl2')||'skip',rr=g('#pmRr')||'skip';
+    const msg=m.querySelector('#pmMsg');
+    const bad=t=>{msg.textContent=t;return false;};
+    if(!/^[A-Za-z0-9_-]{1,31}$/.test(name))return bad('Name: letters, numbers, - and _ (max 31).');
+    if(BUILTIN.some(p=>p.name===name)||name==='eco')return bad('Name clashes with a built-in profile.');
+    const numOrSkip=v=>v==='skip'||/^\d+$/.test(v);
+    if(!numOrSkip(pl1)||!numOrSkip(pl2))return bad('PL1/PL2 must be whole watts or skip.');
+    if((pl1==='skip')!==(pl2==='skip'))return bad('Set both PL1 and PL2, or neither.');
+    if(pl1!=='skip'){
+      if(+pl2<=+pl1)return bad('PL2 must be greater than PL1.');
+      if(+pl2>115)return bad('PL2 max is 115 W.');
+      if(+pl1>90)return bad('PL1 max is 90 W.');
+      if(+pl1>45&&ec!=='2'&&ec!=='skip')return bad('PL1 above 45 W needs EC code 2 (or skip).');
+    }
+    if(rr!=='skip'&&rr!=='lowest'&&rr!=='highest'&&!/^\d+$/.test(rr))return bad('Refresh: a number, lowest, highest or skip.');
+    root.classList.remove('on');root.innerHTML='';
+    act('Create profile '+name,'cctl editconf --am --create '+name+' '+[ec,turbo,gov,epp,pl1,pl2,rr].join(' '),
+      '/api/profile-create',{name,ec,turbo,gov,epp,pl1,pl2,refresh:rr});
   };
-  polylines[0].setAttribute('points', mk(a));
-  polylines[1].setAttribute('points', mk(b));
+  m.querySelector('#pmName').focus();
 }
 
-function metric(l, v, cls) {
-  return `<div class="metric"><div class="v ${cls || ''}">${v}</div><div class="l">${l}</div></div>`;
+/* ================================================================ fan curves */
+function renderCurves(){
+  const cv=S.curves;if(!cv)return;
+  const act_=cv.active===1;
+  $('#curveActive').style.display=act_?'':'none';
+  if(act_){$('#caName').textContent=cv.name||'—';$('#caPid').textContent='pid '+(cv.pid||'?');}
+  const host=$('#curveList');host.innerHTML='';
+  const names=cv.names||[];
+  if(!names.length){host.innerHTML='<div class="empty">No saved curves yet — create one.</div>';return;}
+  names.forEach(n=>{
+    const isActive=act_&&cv.name===n;
+    const row=el('<div class="lrow"><span class="nm">'+esc(n)+
+      (isActive?'<span class="chip ok" style="font-size:10px">running</span>':'')+'</span>'+
+      '<button class="btn xs" data-a="start">'+(isActive?'Restart':'Start')+'</button>'+
+      '<button class="btn xs ghost" data-a="edit" '+(isActive?'disabled title="Stop the curve before editing"':'')+'>Edit</button>'+
+      '<button class="btn xs danger" data-a="del" '+(isActive?'disabled title="Stop the curve before deleting"':'')+'>Delete</button></div>');
+    row.querySelector('[data-a=start]').onclick=()=>
+      act('Start curve '+n,'cctl fancurve start '+n,'/api/curve-start',{name:n});
+    row.querySelector('[data-a=edit]').onclick=()=>ceOpen(n);
+    row.querySelector('[data-a=del]').onclick=async()=>{
+      if(await modal({title:'Delete curve “'+n+'”?',body:'<p>The saved JSON is removed. A snapshot that embedded this curve can still restore it.</p>',ok:'Delete',danger:true}))
+        act('Delete curve '+n,'cctl fancurve del '+n+' --noconfirm','/api/curve-delete',{name:n});
+    };
+    host.appendChild(row);
+  });
 }
 
-async function pollTelemetry() {
-  try {
-    const cpu = await api('GET', '/api/cpu');
-    if (cpu.rc !== undefined) throw new Error(cpu.stderr || 'cpumon failed');
-    hist.usage.push(cpu.cpu_usage_pct || 0);
-    hist.power.push(cpu.package_power_w || 0);
-    hist.temp.push(cpu.cpu_temp_c || 0);
-    trim(hist);
-    $('cpuName').textContent = cpu.cpu_model || 'CPU';
-    $('cpuMetrics').innerHTML =
-      metric('Usage', (cpu.cpu_usage_pct ?? 0).toFixed(0) + '%') +
-      metric('Temp', (cpu.cpu_temp_c ?? 0).toFixed(0) + '°C', cpu.cpu_temp_c >= 90 ? 'errv' : '') +
-      metric('Power', (cpu.package_power_w ?? 0).toFixed(1) + ' W') +
-      metric('Fan', (cpu.cpu_fan_duty_pct ?? 0).toFixed(0) + '% · ' + (cpu.cpu_fan_rpm ?? 0) + ' rpm') +
-      metric('Turbo', cpu.turbo_enabled ? 'ON' : 'OFF', cpu.turbo_enabled ? 'okv' : '') +
-      metric('Throttle', cpu.thermal_throttling_active ? 'active' : 'idle', cpu.thermal_throttling_active ? 'warnv' : 'okv');
-    const bars = $('cpuBars');
-    bars.innerHTML = (cpu.cores || []).map(c =>
-      `<i class="${c.group === 'E' ? 'e' : ''}" style="height:${Math.min(14, Math.max(2, (c.frequency_mhz || 0) / 250))}px" title="core ${c.index} (${c.group}) ${c.frequency_mhz} MHz"></i>`
-    ).join('');
-    spark($('cpuSpark'), hist.usage, hist.power);
-  } catch (e) { banner('CPU telemetry error: ' + e.message); }
-
-  try {
-    const gpu = await api('GET', '/api/gpu');
-    if (gpu.rc !== undefined) { $('gpuCard').hidden = true; throw null; }
-    $('gpuCard').hidden = false;
-    hist.gpuUtil.push(gpu.gpu_util_pct || 0);
-    hist.gpuPower.push(gpu.power_w || 0);
-    trim(hist);
-    $('gpuName').textContent = gpu.gpu_name || 'GPU';
-    $('gpuMetrics').innerHTML =
-      metric('Util', (gpu.gpu_util_pct ?? 0).toFixed(0) + '%') +
-      metric('Temp', (gpu.temperature_c ?? 0).toFixed(0) + '°C', gpu.temperature_c >= 80 ? 'errv' : '') +
-      metric('Power', (gpu.power_w ?? 0).toFixed(0) + '/' + (gpu.power_limit_w ?? 0) + ' W') +
-      metric('VRAM', Math.round((gpu.vram_used_mib ?? 0) / 102.4) + '%') +
-      metric('Clock', (gpu.gpu_clock_mhz ?? 0) + '/' + (gpu.gpu_clock_max_mhz ?? 0) + ' MHz') +
-      metric('Fan', (gpu.gpu_fan_duty_pct ?? 0).toFixed(0) + '% · ' + (gpu.gpu_fan_rpm ?? 0) + ' rpm');
-    spark($('gpuSpark'), hist.gpuUtil, hist.gpuPower);
-  } catch (e) { if (e) banner('GPU telemetry error: ' + e.message); }
-}
-
-function trim(h) {
-  for (const k of Object.keys(h)) if (h[k].length > HIST_MAX) h[k] = h[k].slice(-HIST_MAX);
-}
-
-/* ------------------------------------------------------------ status */
-async function pollStatus() {
-  try {
-    const st = await api('GET', '/api/status');
-    if (st.rc !== undefined) throw new Error(st.stderr || 'status failed');
-    banner(null);
-    renderStatus(st);
-  } catch (e) { banner('Status error: ' + e.message); }
-}
-
-function chip(l, v, cls) {
-  return `<span class="chip${cls ? ' ' + cls : ''}">${l} <b>${v}</b></span>`;
-}
-
-function renderStatus(st) {
-  $('hostchips').innerHTML = chip('profile', st.mode) + chip('turbo', st.turbo_enabled ? 'on' : 'off', st.turbo_enabled ? 'on' : 'off');
-  $('cpuSparkHint').textContent = `usage % · package W · governor ${st.governor} · EPP ${st.epp}`;
-  $('govSel').value = st.governor; $('eppSel').value = st.epp;
-  $('pl1').value = st.pl1_w; $('pl2').value = st.pl2_w;
-  $('turboSw').checked = st.turbo_enabled;
-  $('fnSw').checked = st.fn_lock;
-  $('camSw').checked = st.webcam_enabled;
-  $('micSw').checked = st.microphone_enabled;
-  $('kbdColor').value = rgbHex(st.keyboard_color_rgb);
-  $('kbdBright').value = st.keyboard_brightness_pct;
-  $('kbdChip').innerHTML = st.keyboard_effect
-    ? `effect <b>${st.keyboard_effect}</b>` : `color <b>${st.keyboard_color_preset || 'custom'}</b>`;
-  $('gpuChips').innerHTML =
-    chip('mux', st.gpu_mux_mode + (st.gpu_mux_pending_reboot ? ' (pending reboot)' : '')) +
-    chip('dgpu', st.dgpu_power_state) +
-    chip('core clocks', st.gpu_core_clock_state) +
-    chip('mem clocks', st.gpu_memory_clock_state);
-  $('dispChips').innerHTML = st.display_refresh_hz
-    ? chip('refresh', st.display_refresh_hz + ' Hz') + chip('output', st.display_output || '?')
-    : '<span class="hint">display info unavailable</span>';
-  $('batChips').innerHTML =
-    chip('charge', (st.battery_capacity_pct ?? 0) + '%') +
-    chip('state', st.battery_status || '?') +
-    chip('mode', st.battery_charge_type || '?') +
-    (st.battery_charge_start_threshold_pct >= 0 ? chip('limits', st.battery_charge_start_threshold_pct + '–' + st.battery_charge_end_threshold_pct + '%') : '') +
-    (st.battery_health_pct != null ? chip('health', st.battery_health_pct + '%') : '');
-  if (st.battery_charge_type === 'Custom') {
-    $('batStart').value = st.battery_charge_start_threshold_pct;
-    $('batStop').value = st.battery_charge_end_threshold_pct;
+/* ---- curve editor ---- */
+const CE={open:false,editing:null,pts:[],sel:0,drag:false};
+const CE_L=46,CE_R=14,CE_T=16,CE_B=34,CE_W=600-CE_L-CE_R,CE_H=340-CE_T-CE_B;
+const cex=t=>CE_L+t/95*CE_W, cey=f=>CE_T+(1-f/100)*CE_H;
+const ceinvx=px=>clamp(Math.round((px-CE_L)/CE_W*95),0,95);
+const ceinvy=py=>clamp(Math.round((1-(py-CE_T)/CE_H)*100),0,100);
+function ceOpen(name){
+  CE.open=true;CE.editing=name||null;CE.sel=0;
+  $('#curveEditor').style.display='';
+  $('#ceTitle').textContent=name?'Edit curve — '+name:'New fan curve';
+  $('#ceName').value=name||'';$('#ceName').disabled=!!name;
+  if(name){
+    jget('/api/curve?name='+encodeURIComponent(name)).then(j=>{
+      CE.pts=(j.points||[]).map(p=>({t:+p.temp,f:(p.fan==='a'||p.fan==='auto')?'a':+p.fan}));
+      $('#ceHyst').value=j.hysteresis!=null?j.hysteresis:3;
+      $('#ceInt').value=j.interval_ms!=null?j.interval_ms:2000;
+      ceRebuild();
+    }).catch(e=>{toast('Cannot load curve',false,e.stderr||'');ceClose();});
+  }else{
+    CE.pts=[{t:45,f:25},{t:65,f:45},{t:80,f:70},{t:95,f:100}];
+    $('#ceHyst').value=3;$('#ceInt').value=2000;
+    ceRebuild();
   }
-  $('curveChip').innerHTML = st.fan_curve_active
-    ? `curve <b>${st.fan_curve_name}</b> active <button class="mini danger" id="curveStop">stop</button>`
-    : 'curve: none';
-  loadCurves();
-  loadProfiles();
+  $('#curveEditor').scrollIntoView({behavior:prefs.motion?'smooth':'auto',block:'nearest'});
 }
-
-function rgbHex(rgb) {
-  if (!Array.isArray(rgb)) return '#ff0000';
-  return '#' + rgb.map(x => String(x).toString(16).padStart(2, '0')).join('');
-}
-
-/* ------------------------------------------------------------ lists */
-async function loadProfiles() {
-  try {
-    const p = await api('GET', '/api/profiles');
-    if (p.rc !== undefined) throw new Error(p.stderr);
-    $('builtinRow').innerHTML = p.builtin.map(n =>
-      `<button data-prof="${n}">${n}</button>`).join('');
-    $('customList').innerHTML = p.custom.map(c =>
-      `<li class="item"><span class="name">${c.name}</span>` +
-      `<span class="meta">EC ${c.ec} · turbo ${c.turbo} · ${c.gov}/${c.epp} · ${c.pl1}/${c.pl2} W${c.refresh !== 'skip' ? ' · ' + c.refresh + 'Hz' : ''}</span>` +
-      `<button class="mini" data-prof="${c.name}">apply</button>` +
-      `<button class="mini" data-edit="${c.name}">edit</button>` +
-      `<button class="mini danger" data-del="${c.name}">del</button></li>`).join('');
-  } catch (e) { /* profile list not critical */ }
-}
-
-async function loadCurves() {
-  try {
-    const c = await api('GET', '/api/curves');
-    if (c.rc !== undefined) throw new Error(c.stderr);
-    $('curveList').innerHTML = c.names.map(n => {
-      const active = c.active && c.name === n;
-      return `<li class="item${active ? ' active' : ''}"><span class="name">${n}</span>` +
-        `<button class="mini" data-cstart="${n}">${active ? 'running' : 'start'}</button>` +
-        `<button class="mini" data-cedit="${n}" ${active ? 'disabled' : ''}>edit</button>` +
-        `<button class="mini danger" data-cdel="${n}" ${active ? 'disabled' : ''}>del</button></li>`;
-    }).join('') || '<div class="hint">No fan curves saved.</div>';
-  } catch (e) { /* not critical */ }
-}
-
-async function loadPresets() {
-  try {
-    const p = await api('GET', '/api/presets');
-    if (p.rc !== undefined) throw new Error(p.stderr);
-    $('presetRow').innerHTML = p.presets.map(x =>
-      `<span class="preset" data-preset="${x.name}"><span class="dot" style="background:rgb(${x.rgb.join(',')})"></span>${x.name}</span>`).join('');
-    $('effectSel').innerHTML = p.effects.map(e => `<option value="${e.name}" title="${e.desc}">${e.name}</option>`).join('');
-  } catch (e) { /* not critical */ }
-}
-
-async function loadOptions() {
-  try {
-    const o = await api('GET', '/api/settings');
-    if (o.rc !== undefined) throw new Error(o.stderr);
-    $('expSw').checked = !!o.experimental_fan;
-    $('expFan').hidden = !o.experimental_fan;
-  } catch (e) { /* not critical */ }
-}
-
-async function loadSnapshots() {
-  try {
-    const s = await api('GET', '/api/snapshots');
-    if (s.rc !== undefined) throw new Error(s.stderr);
-    $('snapList').innerHTML = s.names.map(n =>
-      `<li class="item"><span class="name">${n}</span>` +
-      `<button class="mini" data-srestore="${n}">restore</button>` +
-      `<button class="mini" data-sview="${n}">view</button>` +
-      `<button class="mini danger" data-sdel="${n}">del</button></li>`).join('') ||
-      '<div class="hint">No snapshots saved.</div>';
-  } catch (e) { /* not critical */ }
-}
-
-async function loadCpuOptions() {
-  try {
-    const o = await api('GET', '/api/cpu-options');
-    if (o.rc !== undefined) throw new Error(o.stderr);
-    fillSel('govSel', o.governors);
-    fillSel('eppSel', o.epp);
-    fillSel('pGov', [...o.governors, 'skip']);
-    fillSel('pEpp', [...o.epp, 'skip']);
-  } catch (e) { /* selects keep defaults */ }
-}
-
-function fillSel(id, vals) {
-  const cur = $(id).value;
-  $(id).innerHTML = vals.map(v => `<option>${v}</option>`).join('');
-  if (vals.includes(cur)) $(id).value = cur;
-}
-
-/* ------------------------------------------------------------ actions */
-async function run(label, cmd, args) {
-  const res = await api('POST', '/api/run', { cmd, args });
-  out(label + (args.length ? ' ' + args.join(' ') : ''), res);
-  refreshSoon();
-}
-
-function refreshSoon() { setTimeout(pollStatus, 400); setTimeout(pollTelemetry, 400); }
-
-$('builtinRow').addEventListener('click', e => {
-  const b = e.target.closest('[data-prof]'); if (!b) return;
-  run('set', 'set', [b.dataset.prof]);
-});
-$('customList').addEventListener('click', async e => {
-  const apply = e.target.closest('[data-prof]');
-  if (apply) return run('set', 'set', [apply.dataset.prof]);
-  const del = e.target.closest('[data-del]');
-  if (del) return run('editconf --am --delete', 'editconf', ['--am', '--delete', del.dataset.del]);
-  const edit = e.target.closest('[data-edit]');
-  if (edit) openProfileDialog(edit.dataset.edit);
-});
-$('turboSw').addEventListener('change', async e => {
-  const res = await api('POST', '/api/turbo', { state: e.target.checked ? 'on' : 'off' });
-  out('turbo ' + (e.target.checked ? 'on' : 'off'), res);
-  refreshSoon();
-});
-$('govSel').addEventListener('change', e => run('gov', 'gov', [e.target.value]));
-$('eppSel').addEventListener('change', e => run('epp', 'epp', [e.target.value]));
-$('applyRapl').addEventListener('click', () => {
-  const a = [];
-  a.push($('pl1').value === '' ? 'skip' : String($('pl1').value));
-  a.push($('pl2').value === '' ? 'skip' : String($('pl2').value));
-  run('rapl', 'rapl', a);
-});
-$('fanAuto').addEventListener('click', () => run('fan auto', 'fan', ['auto']));
-$('fanMax').addEventListener('click', () => run('fan max', 'fan', ['max']));
-$('expSw').addEventListener('change', async e => {
-  const res = await api('POST', '/api/options', { key: 'experimental-fan', value: e.target.checked ? 'on' : 'off' });
-  out('options experimental-fan ' + (e.target.checked ? 'on' : 'off'), res);
-  loadOptions();
-  refreshSoon();
-});
-$('fanBothSet').addEventListener('click', () => run('fan pct', 'fan', [String($('fanBoth').value), '--nosafe']));
-$('fanCpuSet').addEventListener('click', () => run('fan cpu pct', 'fan', ['cpu', String($('fanCpu').value), '--nosafe']));
-$('fanGpuSet').addEventListener('click', () => run('fan gpu pct', 'fan', ['gpu', String($('fanGpu').value), '--nosafe']));
-$('fanCpuAuto').addEventListener('click', () => run('fan cpu auto', 'fan', ['cpu', 'auto']));
-$('fanGpuAuto').addEventListener('click', () => run('fan gpu auto', 'fan', ['gpu', 'auto']));
-$('presetRow').addEventListener('click', e => {
-  const p = e.target.closest('[data-preset]'); if (!p) return;
-  run('kbc', 'kbc', [p.dataset.preset]);
-});
-$('applyColor').addEventListener('click', () => {
-  const h = $('kbdColor').value.slice(1);
-  run('kbc', 'kbc', [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]);
-});
-$('kbdBright').addEventListener('change', e => run('kbb', 'kbb', [String(e.target.value)]));
-$('effectStart').addEventListener('click', () => run('kbe', 'kbe', [$('effectSel').value]));
-$('effectStop').addEventListener('click', () => run('kbe stop', 'kbe', ['stop']));
-$('notifPlay').addEventListener('click', () => {
-  const eff = $('notifSel').value;
-  const args = [eff];
-  if (eff !== 'police') args.push($('notifColor').value, String($('notifTimes').value));
-  run('kbn', 'kbn', args);
-});
-$('fnSw').addEventListener('change', e => run('fn', 'fn', [e.target.checked ? 'lock' : 'unlock']));
-$('camSw').addEventListener('change', e => run('webcam', 'webcam', [e.target.checked ? 'on' : 'off']));
-$('micSw').addEventListener('change', e => run('mic', 'mic', [e.target.checked ? 'on' : 'off']));
-$('batApply').addEventListener('click', () => run('bat', 'bat', [String($('batStart').value), String($('batStop').value)]));
-$('batStd').addEventListener('click', () => run('bat standard', 'bat', ['standard']));
-$('muxSwitch').addEventListener('click', () => run('mux switch', 'mux', ['switch']));
-$('clkLock').addEventListener('click', () => {
-  const a = ['clock'];
-  if ($('clkMin').value) a.push(String($('clkMin').value));
-  a.push(String($('clkMax').value));
-  run('nvidia', 'nvidia', a);
-});
-$('clkReset').addEventListener('click', () => run('nvidia clock reset', 'nvidia', ['clock', 'reset']));
-$('mclkLock').addEventListener('click', () => {
-  const a = ['memclock'];
-  if ($('mclkMin').value) a.push(String($('mclkMin').value));
-  a.push(String($('mclkMax').value));
-  run('nvidia', 'nvidia', a);
-});
-$('mclkReset').addEventListener('click', () => run('nvidia memclock reset', 'nvidia', ['memclock', 'reset']));
-$('rrList').addEventListener('click', () => run('rr', 'rr', []));
-$('rrToggle').addEventListener('click', () => run('rr toggle', 'rr', ['toggle']));
-$('rrSet').addEventListener('click', () => run('rr', 'rr', [String($('rrHz').value)]));
-$('snapSave').addEventListener('click', () => {
-  const n = $('snapName').value.trim();
-  if (n) api('POST', '/api/snapshot', { action: 'save', name: n }).then(r => { out('snapshot save ' + n, r); loadSnapshots(); });
-});
-$('snapList').addEventListener('click', async e => {
-  const r = e.target.closest('[data-srestore]'), v = e.target.closest('[data-sview]'), d = e.target.closest('[data-sdel]');
-  if (r) { const res = await api('POST', '/api/snapshot', { action: 'restore', name: r.dataset.srestore }); out('snapshot restore ' + r.dataset.srestore, res); refreshSoon(); }
-  if (v) { const res = await api('POST', '/api/snapshot', { action: 'view', name: v.dataset.sview }); out('snapshot view ' + v.dataset.sview, res); }
-  if (d) { const res = await api('POST', '/api/snapshot', { action: 'delete', name: d.dataset.sdel }); out('snapshot delete ' + d.dataset.sdel, res); loadSnapshots(); }
-});
-$('curveChip').addEventListener('click', async e => {
-  if (e.target.id === 'curveStop') {
-    const res = await api('POST', '/api/curve-stop', {});
-    out('fancurve stop', res);
-    refreshSoon();
-  } else loadCurves();
-});
-
-/* ------------------------------------------------------------ dialogs */
-let curveEditing = null, profileEditing = null;
-
-function pointRow(t = '', f = '') {
-  const sel = `<select>${[25,30,40,50,60,70,80,90,100].map(x => `<option value="${x}"${String(x) === String(f) ? ' selected' : ''}>${x}%</option>`).join('')}<option value="auto"${f === 'auto' ? ' selected' : ''}>auto</option></select>`;
-  return `<tr><td><input type="number" min="0" max="95" value="${t}"></td><td>${sel}</td></tr>`;
-}
-
-function setPoints(rows) {
-  $('cPoints').innerHTML = rows.map(([t, f]) => pointRow(t, f)).join('');
-}
-
-$('addCurve').addEventListener('click', () => {
-  curveEditing = null;
-  $('curveTitle').textContent = 'New fan curve';
-  $('cName').value = ''; $('cName').disabled = false;
-  $('cHyst').value = 3; $('cMs').value = 1000;
-  setPoints([['45', '40'], ['70', '70'], ['90', 'auto']]);
-  $('dlgCurve').showModal();
-});
-$('cAdd').addEventListener('click', () => {
-  const rows = readPoints();
-  if (rows.length >= 16) return;
-  rows.push(['', '']);
-  setPoints(rows);
-});
-$('cDel').addEventListener('click', () => {
-  const rows = readPoints();
-  if (rows.length <= 2) return;
-  rows.pop();
-  setPoints(rows);
-});
-$('cClose').addEventListener('click', () => $('dlgCurve').close());
-$('cSave').addEventListener('click', async () => {
-  const name = $('cName').value.trim();
-  if (!name) return banner('Curve name required');
-  const rows = readPoints();
-  const points = rows.flatMap(([t, f]) => [String(t), String(f)]);
-  const fields = { name, hysteresis: String($('cHyst').value), interval_ms: String($('cMs').value), points };
-  if (curveEditing) {
-    const del = await api('POST', '/api/curve-delete', { name: curveEditing });
-    out('fancurve del ' + curveEditing, del);
+function ceClose(){CE.open=false;$('#curveEditor').style.display='none';}
+function ceRebuild(){ceDraw();ceRows();ceValidate();}
+function ceDraw(){
+  const svg=$('#ceSvg');
+  const defs=svg.querySelector('defs').outerHTML;
+  let h=defs;
+  h+='<rect class="zone-min" x="'+CE_L+'" y="'+cey(25)+'" width="'+CE_W+'" height="'+(cey(0)-cey(25))+'"/>';
+  h+='<rect class="zone-hot" x="'+cex(90)+'" y="'+CE_T+'" width="'+(cex(95)-cex(90))+'" height="'+CE_H+'"/>';
+  [0,20,40,60,80,95].forEach(t=>{
+    h+='<line class="grid-l" x1="'+cex(t)+'" y1="'+CE_T+'" x2="'+cex(t)+'" y2="'+(CE_T+CE_H)+'"/>';
+    h+='<text class="axis-t" x="'+cex(t)+'" y="'+(CE_T+CE_H+16)+'" text-anchor="middle">'+t+'°</text>';
+  });
+  [0,25,50,75,100].forEach(f=>{
+    h+='<line class="grid-l" x1="'+CE_L+'" y1="'+cey(f)+'" x2="'+(CE_L+CE_W)+'" y2="'+cey(f)+'"/>';
+    h+='<text class="axis-t" x="'+(CE_L-8)+'" y="'+(cey(f)+3)+'" text-anchor="end">'+f+'</text>';
+  });
+  h+='<text class="axis-t" x="'+(CE_L+6)+'" y="'+(cey(12))+'" fill="#f87171">below 25%: clamped / off</text>';
+  h+='<text class="axis-t" x="'+cex(92.5)+'" y="'+(CE_T+12)+'" text-anchor="middle" fill="#fbbf24">&gt;95°: EC auto</text>';
+  const pts=CE.pts;
+  if(pts.length){
+    const fy=p=>p.f==='a'?100:p.f;
+    let d='M'+cex(0)+' '+cey(fy(pts[0]))+' L'+cex(pts[0].t)+' '+cey(fy(pts[0]));
+    for(let i=1;i<pts.length;i++)d+=' L'+cex(pts[i].t)+' '+cey(fy(pts[i]));
+    const lastNum=pts[pts.length-1];
+    d+=' L'+cex(95)+' '+cey(fy(lastNum));
+    h+='<path class="area" d="'+d+' L'+cex(95)+' '+cey(0)+' L'+cex(0)+' '+cey(0)+' Z"/>';
+    h+='<path class="hold" d="M'+cex(0)+' '+cey(fy(pts[0]))+' L'+cex(pts[0].t)+' '+cey(fy(pts[0]))+'"/>';
+    h+='<path class="curve" d="'+d+'"/>';
+    pts.forEach((p,i)=>{
+      const y=cey(fy(p));
+      h+='<circle class="pt'+(i===CE.sel?' sel':'')+(p.f==='a'?' auto':'')+'" data-i="'+i+'" cx="'+cex(p.t)+'" cy="'+y+'" r="7"/>';
+      h+='<text class="pt-l" x="'+cex(p.t)+'" y="'+(y-13)+'" text-anchor="middle">'+p.t+'° '+(p.f==='a'?'AUTO':p.f+'%')+'</text>';
+    });
   }
-  const res = await api('POST', '/api/curve-create', fields);
-  out('fancurve create --am ' + name, res);
-  if (res.rc === 0) $('dlgCurve').close();
-  loadCurves(); refreshSoon();
-});
-$('curveList').addEventListener('click', async e => {
-  const s = e.target.closest('[data-cstart]'), d = e.target.closest('[data-cdel]'), ed = e.target.closest('[data-cedit]');
-  if (s) { const res = await api('POST', '/api/curve-start', { name: s.dataset.cstart }); out('fancurve start ' + s.dataset.cstart, res); loadCurves(); refreshSoon(); }
-  if (d) { const res = await api('POST', '/api/curve-delete', { name: d.dataset.cdel }); out('fancurve del ' + d.dataset.cdel, res); loadCurves(); refreshSoon(); }
-  if (ed) openCurveDialog(ed.dataset.cedit);
-});
-
-function readPoints() {
-  return [...$('cPoints').querySelectorAll('tr')].map(tr => [
-    tr.querySelector('input').value, tr.querySelector('select').value]);
+  svg.innerHTML=h;
 }
-
-async function openCurveDialog(name) {
-  const c = await api('GET', '/api/curve?name=' + encodeURIComponent(name));
-  if (c.rc !== undefined || c.error) return out('curve view ' + name, c);
-  curveEditing = name;
-  $('curveTitle').textContent = 'Edit fan curve: ' + name;
-  $('cName').value = name; $('cName').disabled = true;
-  $('cHyst').value = c.hysteresis; $('cMs').value = c.interval_ms;
-  setPoints(c.points.map(p => [p.temp, String(p.fan)]));
-  $('dlgCurve').showModal();
+function ceRows(){
+  const host=$('#ceRows');host.innerHTML='';
+  CE.pts.forEach((p,i)=>{
+    const last=i===CE.pts.length-1;
+    const row=el('<div class="ce-row"><span class="idx">'+(i+1)+'</span>'+
+      '<input type="number" min="0" max="95" value="'+p.t+'" data-k="t"> °C'+
+      '<input type="number" min="25" max="100" value="'+(p.f==='a'?100:p.f)+'" data-k="f" '+(p.f==='a'?'disabled':'')+'> %'+
+      (last?'<label><input type="checkbox" data-k="a" '+(p.f==='a'?'checked':'')+'> auto</label>':'')+
+      '<span style="flex:1"></span><button class="btn xs ghost" data-k="rm" '+(CE.pts.length<=2?'disabled':'')+'>✕</button></div>');
+    row.querySelector('[data-k=t]').oninput=e=>{p.t=clamp(parseInt(e.target.value||'0',10),0,95);CE.sel=i;ceDraw();ceValidate();};
+    row.querySelector('[data-k=f]').oninput=e=>{p.f=clamp(parseInt(e.target.value||'25',10),25,100);CE.sel=i;ceDraw();ceValidate();};
+    const a=row.querySelector('[data-k=a]');
+    if(a)a.onchange=e=>{p.f=e.target.checked?'a':100;ceRebuild();};
+    row.querySelector('[data-k=rm]').onclick=()=>{CE.pts.splice(i,1);CE.sel=clamp(CE.sel,0,CE.pts.length-1);ceRebuild();};
+    host.appendChild(row);
+  });
 }
-
-$('addProfile').addEventListener('click', () => {
-  profileEditing = null;
-  $('profTitle').textContent = 'New custom profile';
-  $('pName').value = ''; $('pName').disabled = false;
-  $('pEc').value = 'skip'; $('pTurbo').value = 'skip';
-  $('pPl1').value = 'skip'; $('pPl2').value = 'skip'; $('pRefresh').value = 'skip';
-  $('dlgProfile').showModal();
-});
-$('pClose').addEventListener('click', () => $('dlgProfile').close());
-$('pSave').addEventListener('click', async () => {
-  const name = $('pName').value.trim();
-  if (!name) return banner('Profile name required');
-  const fields = { name, ec: $('pEc').value, turbo: $('pTurbo').value,
-                   gov: $('pGov').value, epp: $('pEpp').value,
-                   pl1: $('pPl1').value || 'skip', pl2: $('pPl2').value || 'skip',
-                   refresh: $('pRefresh').value || 'skip' };
-  if (profileEditing) {
-    const del = await api('POST', '/api/profile-delete', { name: profileEditing });
-    out('editconf --am --delete ' + profileEditing, del);
+function ceSyncRowValues(){
+  $$('#ceRows .ce-row').forEach((row,i)=>{
+    const p=CE.pts[i];if(!p)return;
+    const t=row.querySelector('[data-k=t]'),f=row.querySelector('[data-k=f]');
+    if(document.activeElement!==t)t.value=p.t;
+    if(document.activeElement!==f)f.value=p.f==='a'?100:p.f;
+  });
+}
+function ceValidate(){
+  const msg=$('#ceMsg'),save=$('#ceSave');
+  let err='';
+  const name=$('#ceName').value.trim();
+  if(!CE.editing&&!/^[A-Za-z0-9_-]{1,31}$/.test(name))err='Name: letters, numbers, - and _ (max 31).';
+  else if(CE.pts.length<2||CE.pts.length>16)err='Use 2–16 points.';
+  else{
+    for(let i=0;i<CE.pts.length;i++){
+      const p=CE.pts[i];
+      if(!Number.isInteger(p.t)||p.t<0||p.t>95){err='Temps must be whole °C from 0 to 95.';break;}
+      if(i>0&&p.t<=CE.pts[i-1].t){err='Temps must be strictly increasing.';break;}
+      if(p.f==='a'&&i!==CE.pts.length-1){err='Only the last point may be AUTO.';break;}
+      if(p.f!=='a'&&(!Number.isInteger(p.f)||p.f<25||p.f>100)){err='Fan speeds must be 25–100%.';break;}
+    }
   }
-  const res = await api('POST', '/api/profile-create', fields);
-  out('editconf --am --create ' + name, res);
-  if (res.rc === 0) $('dlgProfile').close();
-  loadProfiles(); refreshSoon();
-});
+  const hy=+$('#ceHyst').value,iv=+$('#ceInt').value;
+  if(!err&&(!Number.isInteger(hy)||hy<0||hy>20))err='Hysteresis must be 0–20 °C.';
+  if(!err&&(!Number.isInteger(iv)||iv<250||iv>60000))err='Interval must be 250–60000 ms.';
+  msg.textContent=err;msg.style.color=err?'var(--bad)':'var(--tx3)';
+  if(!err)msg.textContent='Valid — '+CE.pts.length+' points, hysteresis '+hy+'°C, poll '+iv+' ms.';
+  save.disabled=!!err;
+  return !err;
+}
+async function ceSave(){
+  if(!ceValidate())return;
+  const name=CE.editing||$('#ceName').value.trim();
+  const params={name,hysteresis:+$('#ceHyst').value,interval_ms:+$('#ceInt').value,
+    points:CE.pts.flatMap(p=>[p.t,p.f==='a'?'a':p.f])};
+  const cmd='cctl fancurve create --am '+name+' '+CE.pts.length+' '+params.hysteresis+' '+params.interval_ms+' '+
+    CE.pts.map(p=>p.t+' '+(p.f==='a'?'a':p.f)).join(' ');
+  if(CE.editing){
+    const ok=await modal({title:'Replace curve “'+name+'”?',
+      body:'<p>The CLI has no in-place edit: the curve is deleted and recreated with the new points.</p>',ok:'Replace'});
+    if(!ok)return;
+    const del=await act('Delete curve '+name,'cctl fancurve del '+name+' --noconfirm','/api/curve-delete',{name});
+    if(del.rc!==0)return;
+  }
+  const res=await act('Save curve '+name,cmd,'/api/curve-create',params);
+  if(res.rc===0)ceClose();
+}
+(function bindCeSvg(){
+  const svg=$('#ceSvg');
+  function evPos(e){
+    const r=svg.getBoundingClientRect();
+    return [(e.clientX-r.left)*600/r.width,(e.clientY-r.top)*340/r.height];
+  }
+  svg.addEventListener('pointerdown',e=>{
+    if(!CE.open||!CE.pts.length)return;
+    const [px,py]=evPos(e);
+    let best=-1,bd=22;
+    CE.pts.forEach((p,i)=>{
+      const y=cey(p.f==='a'?100:p.f);
+      const d=Math.hypot(px-cex(p.t),py-y);
+      if(d<bd){bd=d;best=i;}
+    });
+    if(best<0)return;
+    CE.sel=best;CE.drag=true;
+    svg.setPointerCapture(e.pointerId);
+    ceDraw();ceSyncRowValues();
+    e.preventDefault();
+  });
+  svg.addEventListener('pointermove',e=>{
+    if(!CE.drag)return;
+    const [px,py]=evPos(e);
+    const i=CE.sel,p=CE.pts[i];
+    const lo=i>0?CE.pts[i-1].t+1:0, hi=i<CE.pts.length-1?CE.pts[i+1].t-1:95;
+    p.t=clamp(ceinvx(px),lo,hi);
+    if(p.f!=='a')p.f=clamp(ceinvy(py),25,100);
+    ceDraw();ceSyncRowValues();ceValidate();
+  });
+  const end=e=>{if(CE.drag){CE.drag=false;ceRows();ceValidate();}};
+  svg.addEventListener('pointerup',end);svg.addEventListener('pointercancel',end);
+})();
 
-async function openProfileDialog(name) {
-  const p = await api('GET', '/api/profiles');
-  if (p.rc !== undefined) return out('profiles', p);
-  const row = p.custom.find(x => x.name === name);
-  if (!row) return;
-  profileEditing = name;
-  $('profTitle').textContent = 'Edit custom profile: ' + name;
-  $('pName').value = name; $('pName').disabled = true;
-  $('pEc').value = row.ec; $('pTurbo').value = row.turbo;
-  fillSel('pGov', [...(p.governors || []), row.gov, 'skip']);
-  fillSel('pEpp', [...(p.epp || []), row.epp, 'skip']);
-  $('pGov').value = row.gov; $('pEpp').value = row.epp;
-  $('pPl1').value = row.pl1; $('pPl2').value = row.pl2; $('pRefresh').value = row.refresh;
-  $('dlgProfile').showModal();
+/* ================================================================ keyboard page */
+function renderPresets(){
+  const p=S.presets;if(!p)return;
+  const grid=$('#presetGrid');grid.innerHTML='';
+  (p.presets||[]).forEach(pr=>{
+    const off=pr.name==='off';
+    const hex=rgb2hex(pr.rgb[0],pr.rgb[1],pr.rgb[2]);
+    const b=el('<button class="swatch"><i style="background:'+(off?'var(--bg3)':hex)+';color:'+hex+'"></i>'+esc(pr.name)+'</button>');
+    b.onclick=()=>act('Keyboard color '+pr.name,'cctl kbc '+pr.name,'/api/run',{cmd:'kbc',args:[pr.name]});
+    grid.appendChild(b);
+  });
+  const dl=$('#colorNames');dl.innerHTML='';
+  (p.presets||[]).forEach(pr=>{if(pr.name!=='off')dl.appendChild(el('<option value="'+esc(pr.name)+'">'));});
+}
+function renderEffects(){
+  const p=S.presets;if(!p)return;
+  const grid=$('#fxGrid');grid.innerHTML='';
+  (p.effects||[]).forEach(fx=>{
+    const reactive=fx.name==='temp'||fx.name==='ram';
+    const t=el('<button class="tile" data-fx="'+esc(fx.name)+'">'+
+      '<div class="fxp fx-'+esc(fx.name)+'"></div>'+
+      '<div class="tn">'+esc(fx.name)+(reactive?'<span class="chip acc" style="font-size:9.5px;padding:1px 7px">reactive</span>':'')+'</div>'+
+      '<div class="td">'+esc(fx.desc||'')+'</div></button>');
+    t.onclick=()=>act('Effect '+fx.name,'cctl kbe '+fx.name,'/api/run',{cmd:'kbe',args:[fx.name]});
+    grid.appendChild(t);
+  });
 }
 
-/* ------------------------------------------------------------ boot */
-async function boot() {
-  const v = await api('GET', '/api/version').catch(() => null);
-  $('ver').textContent = v && v.version ? 'cctl ' + v.version : '';
-  await Promise.all([loadCpuOptions(), loadPresets(), loadOptions(), loadSnapshots(), pollStatus(), pollTelemetry()]);
-  setInterval(pollTelemetry, 2000);
-  setInterval(pollStatus, 5000);
-  setInterval(loadSnapshots, 15000);
+/* ================================================================ snapshots */
+function renderSnapshots(){
+  const host=$('#snapList');
+  const names=(S.snapshots&&S.snapshots.names)||[];
+  if(!names.length){host.innerHTML='<div class="empty">No snapshots saved.</div>';return;}
+  host.innerHTML='';
+  names.forEach(n=>{
+    const row=el('<div class="lrow"><span class="nm">'+esc(n)+'</span>'+
+      '<button class="btn xs ghost" data-a="preview">Preview</button>'+
+      '<button class="btn xs ghost" data-a="view">View</button>'+
+      '<button class="btn xs pri" data-a="restore">Restore</button>'+
+      '<button class="btn xs danger" data-a="del">Delete</button></div>');
+    row.querySelector('[data-a=preview]').onclick=()=>
+      runCmd('Preview restore '+n,['snapshot','restore',n,'--dry-run'],()=>openDrawer());
+    row.querySelector('[data-a=view]').onclick=()=>
+      act('View snapshot '+n,'cctl snapshot view '+n,'/api/snapshot',{action:'view',name:n},()=>openDrawer());
+    row.querySelector('[data-a=restore]').onclick=async()=>{
+      let nosafe=false;
+      const ok=await modal({title:'Restore “'+n+'”?',
+        body:'<p>Fans go to <b>AUTO</b> first, then all saved settings apply. The snapshot’s fan-curve state is applied <b>last</b> — it may stop or replace the running curve.</p>'+
+        '<label class="row" style="margin-top:10px;font-size:12.5px;color:var(--warn)"><input type="checkbox" id="rsNosafe" onchange="window.__rsNosafe=this.checked"> skip the initial fan-AUTO step (--nosafe)</label>',
+        ok:'Restore'});
+      nosafe=!!window.__rsNosafe;window.__rsNosafe=false;
+      if(!ok)return;
+      if(nosafe)runCmd('Restore '+n+' (nosafe)',['snapshot','restore',n,'--nosafe']);
+      else act('Restore '+n,'cctl snapshot restore '+n,'/api/snapshot',{action:'restore',name:n});
+    };
+    row.querySelector('[data-a=del]').onclick=async()=>{
+      if(await modal({title:'Delete snapshot “'+n+'”?',body:'<p>Removes the saved .conf file.</p>',ok:'Delete',danger:true}))
+        act('Delete snapshot '+n,'cctl snapshot delete '+n+' --noconfirm','/api/snapshot',{action:'delete',name:n});
+    };
+    host.appendChild(row);
+  });
 }
-boot();
+
+/* ================================================================ settings / options */
+function renderSettingsUI(){
+  const st=S.settings;if(!st)return;
+  $('#optStream').checked=!!st.streamtext;
+  $('#optDefault').value=st.default_is_status?'status':'help';
+  $('#optExp').checked=!!st.experimental_fan;
+  $('#expLocked').style.display=st.experimental_fan?'none':'';
+  $('#expPanel').style.display=st.experimental_fan?'':'none';
+}
+
+/* ================================================================ fetchers */
+async function fCpu(){S.cpu=await jget('/api/cpu');renderCpu();}
+async function fGpu(){
+  if(!prefs.gpuPoll){$('#gpuPollBtn').classList.remove('on');return;}
+  $('#gpuPollBtn').classList.add('on');
+  try{S.gpu=await jget('/api/gpu');S.gpuErr=null;}
+  catch(e){if(e.kind==='cmd'){S.gpuErr=e.stderr;S.gpu=null;}else throw e;}
+  renderGpu();
+}
+async function fStatus(){S.status=await jget('/api/status');renderStatus();}
+async function fSettings(){S.settings=await jget('/api/settings');renderSettingsUI();}
+async function fProfiles(){S.profiles=await jget('/api/profiles');renderProfiles();palDirty=true;}
+async function fCurves(){S.curves=await jget('/api/curves');renderCurves();palDirty=true;}
+async function fPresets(){S.presets=await jget('/api/presets');renderPresets();renderEffects();renderStatus();palDirty=true;}
+async function fSnaps(){S.snapshots=await jget('/api/snapshots');renderSnapshots();palDirty=true;}
+async function fCpuOpts(){
+  S.cpuOpts=await jget('/api/cpu-options');
+  fillSelect($('#govSel'),S.cpuOpts.governors,S.cpu&&S.cpu.governor,false);
+  fillSelect($('#eppSel'),S.cpuOpts.epp,S.cpu&&S.cpu.epp,false);
+}
+async function fVersion(){
+  S.version=await jget('/api/version');
+  $('#verChip').textContent='v'+S.version.version;
+  $('#aboutTxt').innerHTML='cctl-gui '+esc(S.version.version)+'<br>fork: '+esc(S.version.fork)+' · port '+S.version.port+
+    '<br><a href="https://github.com/bhusann/cctl" target="_blank" rel="noopener">github.com/bhusann/cctl</a>';
+}
+
+/* ================================================================ polling */
+function connOk(){document.body.classList.remove('offline');$('#connDot').className='ok';$('#connTxt').textContent='live';}
+function connBad(){document.body.classList.add('offline');$('#connDot').className='bad';$('#connTxt').textContent='offline';}
+function startLoop(fn,baseFn){
+  let d=baseFn();
+  (async function tick(){
+    let wait=d;
+    if(!document.hidden){
+      try{await fn();d=baseFn();connOk();}
+      catch(e){
+        if(e&&e.kind==='cmd'){wait=Math.max(baseFn(),10000);connOk();}
+        else{connBad();d=Math.min(d*1.6,15000);wait=d;}
+      }
+    }
+    setTimeout(tick,document.hidden?1500:wait);
+  })();
+}
+
+/* ================================================================ palette */
+let palDirty=true,palItems=[],palSel=0,palCache=[];
+const RUN_WHITELIST=['status','cpumon','gpumon','set','editconf','kbc','kbb','kbe','kbn','fn','fan','fancurve','fanc','mux','webcam','mic','bat','rr','scale','turbo','gov','epp','rapl','nvidia','snapshot','snap','options'];
+function argOk(s){return s.length>0&&s.length<=64&&/^[A-Za-z0-9_.#-]+$/.test(s);}
+function buildPal(){
+  if(!palDirty)return;palDirty=false;palCache=[];
+  const add=(g,l,c,fn)=>palCache.push({g,l,c,fn});
+  ['overview','thermal','power','keyboard','system','snapshots'].forEach(p=>
+    add('go','Open '+p,'',()=>{location.hash='#/'+p;}));
+  add('fan','Fans → auto','cctl fan auto',()=>runCmd('Fans auto',['fan','auto']));
+  add('fan','Fans → max','cctl fan max',()=>runCmd('Fans max',['fan','max']));
+  add('cpu','Turbo on','cctl turbo on',()=>act('Turbo on','cctl turbo on','/api/turbo',{state:'on'}));
+  add('cpu','Turbo off','cctl turbo off',()=>act('Turbo off','cctl turbo off','/api/turbo',{state:'off'}));
+  add('sys','Webcam on','cctl webcam on',()=>runCmd('Webcam on',['webcam','on']));
+  add('sys','Webcam off','cctl webcam off',()=>runCmd('Webcam off',['webcam','off']));
+  add('sys','Mic on','cctl mic on',()=>runCmd('Mic on',['mic','on']));
+  add('sys','Mic off','cctl mic off',()=>runCmd('Mic off',['mic','off']));
+  add('sys','Battery → standard','cctl bat standard',()=>runCmd('Battery standard',['bat','standard']));
+  add('sys','Toggle refresh rate','cctl rr toggle',()=>runCmd('Toggle refresh',['rr','toggle']));
+  BUILTIN.forEach(p=>add('profile','Apply '+p.name,'cctl set '+p.name,()=>applyProfile(p.name)));
+  ((S.profiles&&S.profiles.custom)||[]).forEach(p=>add('profile','Apply '+p.name,'cctl set '+p.name,()=>applyProfile(p.name)));
+  ((S.curves&&S.curves.names)||[]).forEach(n=>add('curve','Start curve '+n,'cctl fancurve start '+n,()=>act('Start curve '+n,'cctl fancurve start '+n,'/api/curve-start',{name:n})));
+  add('curve','Stop fan curve','cctl fancurve stop',()=>act('Stop curve','cctl fancurve stop','/api/curve-stop',{}));
+  ((S.presets&&S.presets.effects)||[]).forEach(f=>add('kbd','Effect '+f.name,'cctl kbe '+f.name,()=>runCmd('Effect '+f.name,['kbe',f.name])));
+  add('kbd','Stop keyboard effect','cctl kbe stop',()=>runCmd('Stop effect',['kbe','stop']));
+  ((S.presets&&S.presets.presets)||[]).forEach(p=>add('kbd','Color '+p.name,'cctl kbc '+p.name,()=>runCmd('Color '+p.name,['kbc',p.name])));
+  ((S.snapshots&&S.snapshots.names)||[]).forEach(n=>add('snap','Restore '+n,'cctl snapshot restore '+n,()=>act('Restore '+n,'cctl snapshot restore '+n,'/api/snapshot',{action:'restore',name:n})));
+}
+function fuzzy(label,q){
+  label=label.toLowerCase();q=q.toLowerCase();
+  let li=0,score=0,streak=0;
+  for(const ch of q){
+    const idx=label.indexOf(ch,li);
+    if(idx<0)return -1;
+    streak=idx===li?streak+1:0;
+    score+=10+streak*4-(idx-li);
+    li=idx+1;
+  }
+  return score;
+}
+function palRender(){
+  buildPal();
+  const q=$('#palInput').value.trim();
+  const list=$('#palList');list.innerHTML='';
+  if(q.startsWith('>')){
+    const raw=q.slice(1).trim();
+    const toks=raw.split(/\s+/).filter(Boolean);
+    let ok=toks.length>0&&RUN_WHITELIST.includes(toks[0])&&toks.length<=13&&toks.slice(1).every(argOk);
+    palItems=[{g:'run',l:raw?('cctl '+raw):'type a cctl command…',c:ok?'':'invalid / not whitelisted',
+      fn:ok?()=>runCmd('Run '+toks[0],toks):null}];
+    palSel=0;
+  }else{
+    palItems=palCache.map(it=>({it,s:q?fuzzy(it.g+' '+it.l,q):0}))
+      .filter(x=>x.s>=0).sort((a,b)=>b.s-a.s).slice(0,12).map(x=>x.it);
+    palSel=clamp(palSel,0,Math.max(0,palItems.length-1));
+  }
+  palItems.forEach((it,i)=>{
+    const n=el('<div class="palitem'+(i===palSel?' sel':'')+'"><span class="pg">'+esc(it.g)+'</span><span class="pl">'+esc(it.l)+'</span><span class="pc">'+esc(it.c||'')+'</span></div>');
+    n.onmouseenter=()=>{palSel=i;palHighlight();};
+    n.onclick=()=>{if(it.fn){palClose();it.fn();}};
+    list.appendChild(n);
+  });
+  if(!palItems.length)list.innerHTML='<div class="empty">No matches.</div>';
+}
+function palHighlight(){$$('#palList .palitem').forEach((n,i)=>n.classList.toggle('sel',i===palSel));}
+function palOpen(){$('#palette').classList.add('on');$('#palInput').value='';palSel=0;palRender();$('#palInput').focus();}
+function palClose(){$('#palette').classList.remove('on');}
+
+/* ================================================================ routing */
+function route(){
+  let p=(location.hash||'#/overview').replace('#/','');
+  if(!$('#page-'+p))p='overview';
+  prefs.page=p;savePrefs();
+  $$('.page').forEach(s=>s.classList.toggle('on',s.id==='page-'+p));
+  $$('.nav-btn').forEach(b=>b.classList.toggle('on',b.dataset.page===p));
+  if(p==='snapshots')fSnaps().catch(()=>{});
+  if(p==='thermal')fCurves().catch(()=>{});
+  if(p==='power')fProfiles().catch(()=>{});
+  if(p==='keyboard')fPresets().catch(()=>{});
+  if(p==='system')fStatus().catch(()=>{});
+}
+
+/* ================================================================ events */
+function bindEvents(){
+  $$('.nav-btn').forEach(b=>b.onclick=()=>{location.hash='#/'+b.dataset.page;});
+  $('#vitals').onclick=()=>{location.hash='#/overview';};
+  window.addEventListener('hashchange',route);
+  /* header */
+  $('#drawerBtn').onclick=()=>$('#drawer').classList.contains('on')?closeDrawer():openDrawer();
+  $('#drawerClose').onclick=closeDrawer;
+  $('#logClear').onclick=()=>{logEntries.length=0;renderLog();};
+  $('#paletteBtn').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+  $('#paletteBtn').onclick=palOpen;
+  $('#drawerBtn').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 7 5 5-5 5M12 19h7"/></svg>';
+  $('#gpuPollBtn').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>';
+  $('#gpuPollBtn').onclick=()=>{prefs.gpuPoll=!prefs.gpuPoll;savePrefs();syncSettingsPop();
+    toast(prefs.gpuPoll?'NVIDIA polling resumed':'NVIDIA polling paused — dGPU may now sleep to D3cold',true);
+    if(prefs.gpuPoll)fGpu().catch(()=>{});};
+  $('#settingsBtn').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>';
+  $('#settingsBtn').onclick=e=>{e.stopPropagation();$('#settingsPop').classList.toggle('on');};
+  document.addEventListener('click',e=>{
+    if(!e.target.closest('#settingsPop')&&!e.target.closest('#settingsBtn'))$('#settingsPop').classList.remove('on');
+  });
+  $('#setPoll').onchange=e=>{prefs.poll=+e.target.value;savePrefs();};
+  $('#setGpu').onchange=e=>{prefs.gpuPoll=e.target.checked;savePrefs();if(prefs.gpuPoll)fGpu().catch(()=>{});};
+  $('#setMotion').onchange=e=>{prefs.motion=e.target.checked;savePrefs();applyMotion();};
+  $('#setAccent').onchange=e=>{prefs.accentSync=e.target.checked;savePrefs();applyAccent(null);renderStatus();};
+  /* keyboard shortcuts */
+  document.addEventListener('keydown',e=>{
+    if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();palOpen();return;}
+    if(e.key==='Escape'){
+      if($('#palette').classList.contains('on'))palClose();
+      else if($('#modalRoot').classList.contains('on'))closeModal(false);
+      else if($('#settingsPop').classList.contains('on'))$('#settingsPop').classList.remove('on');
+      else closeDrawer();
+      return;
+    }
+    if($('#palette').classList.contains('on')){
+      if(e.key==='ArrowDown'){e.preventDefault();palSel=clamp(palSel+1,0,palItems.length-1);palHighlight();}
+      else if(e.key==='ArrowUp'){e.preventDefault();palSel=clamp(palSel-1,0,palItems.length-1);palHighlight();}
+      else if(e.key==='Enter'){e.preventDefault();const it=palItems[palSel];if(it&&it.fn){palClose();it.fn();}}
+    }
+  });
+  $('#palInput').oninput=()=>{palSel=0;palRender();};
+  $('#palette').onclick=e=>{if(e.target.id==='palette')palClose();};
+  /* thermal */
+  $('#fanAutoBtn').onclick=()=>runCmd('Fans auto',['fan','auto']);
+  $('#fanMaxBtn').onclick=()=>runCmd('Fans max',['fan','max']);
+  $('#expEnableBtn').onclick=async()=>{
+    if(await modal({title:'Enable experimental fan controls?',
+      body:'<p>Manual duty <b>ignores temperature</b> and can overheat the laptop. Use it only for short experiments; a fan curve is the safe way to control speed.</p>',ok:'Enable'}))
+      act('Enable experimental fan','cctl options experimental-fan on','/api/options',{key:'experimental-fan',value:'on'});
+  };
+  $('#expDisableBtn').onclick=()=>act('Disable experimental fan','cctl options experimental-fan off','/api/options',{key:'experimental-fan',value:'off'});
+  const bindRange=(rid,vid,suf)=>{const r=$(rid);r.oninput=()=>{$(vid).textContent=r.value+suf;};};
+  bindRange('#fanBothRange','#fanBothVal','%');bindRange('#fanCpuRange','#fanCpuVal','%');bindRange('#fanGpuRange','#fanGpuVal','%');
+  $('#fanBothApply').onclick=()=>{const v=$('#fanBothRange').value;runCmd('Both fans '+v+'%',['fan',v,'--nosafe']);};
+  $('#fanCpuApply').onclick=()=>{const v=$('#fanCpuRange').value;runCmd('CPU fan '+v+'%',['fan','cpu',v,'--nosafe']);};
+  $('#fanGpuApply').onclick=()=>{const v=$('#fanGpuRange').value;runCmd('GPU fan '+v+'%',['fan','gpu',v,'--nosafe']);};
+  $('#fanCpuAuto').onclick=()=>runCmd('CPU fan auto',['fan','cpu','auto']);
+  $('#fanGpuAuto').onclick=()=>runCmd('GPU fan auto',['fan','gpu','auto']);
+  $('#fanSilentBtn').onclick=()=>runCmd('Silent fan mode',['fan','silent']);
+  $('#curveStopBtn').onclick=()=>act('Stop curve','cctl fancurve stop','/api/curve-stop',{});
+  $('#newCurveBtn').onclick=()=>ceOpen(null);
+  $('#ceCancel').onclick=ceClose;
+  $('#ceSave').onclick=ceSave;
+  $('#ceAdd').onclick=()=>{
+    if(CE.pts.length>=16)return;
+    let gi=0,gap=-1;
+    for(let i=1;i<CE.pts.length;i++){const g=CE.pts[i].t-CE.pts[i-1].t;if(g>gap){gap=g;gi=i;}}
+    const a=CE.pts[gi-1],b=CE.pts[gi];
+    const fv=p=>p.f==='a'?100:p.f;
+    CE.pts.splice(gi,0,{t:Math.round((a.t+b.t)/2),f:clamp(Math.round((fv(a)+fv(b))/2),25,100)});
+    CE.sel=gi;ceRebuild();
+  };
+  $('#ceName').oninput=ceValidate;$('#ceHyst').oninput=ceValidate;$('#ceInt').oninput=ceValidate;
+  /* power */
+  $('#newProfileBtn').onclick=openProfileModal;
+  $('#turboSwitch').onchange=e=>{
+    const st=e.target.checked?'on':'off';
+    act('Turbo '+st,'cctl turbo '+st,'/api/turbo',{state:st,nosafe:$('#nosafeChk').checked?'1':undefined},
+      res=>{if(res.rc!==0&&S.cpu)$('#turboSwitch').checked=S.cpu.turbo_enabled===true;});
+  };
+  $('#govApply').onclick=()=>{const v=$('#govSel').value;if(v)runCmd('Governor '+v,['gov',v]);};
+  $('#eppApply').onclick=()=>{const v=$('#eppSel').value;if(v)runCmd('EPP '+v,['epp',v]);};
+  const plSync=()=>{
+    raplTouched=true;
+    let p1=+$('#pl1Range').value,p2=+$('#pl2Range').value;
+    if(p2<=p1){p2=Math.min(p1+1,115);$('#pl2Range').value=p2;}
+    $('#pl1Val').textContent=p1+' W';$('#pl2Val').textContent=p2+' W';
+    const ec=S.cpu&&S.cpu.ec_profile_code;
+    $('#pl1Warn').style.color=isNum(ec)&&ec!==2&&p1>45?'var(--bad)':'';
+  };
+  $('#pl1Range').oninput=plSync;$('#pl2Range').oninput=plSync;
+  $('#raplApply').onclick=()=>{
+    const p1=+$('#pl1Range').value,p2=+$('#pl2Range').value;
+    runCmd('RAPL '+p1+'/'+p2+' W',['rapl',String(p1),String(p2)],()=>{raplTouched=false;});
+  };
+  const qp=$('#quickProfiles');
+  BUILTIN.forEach(p=>{
+    const b=el('<button data-p="'+p.name+'">'+p.name+'</button>');
+    b.onclick=()=>applyProfile(p.name);qp.appendChild(b);
+  });
+  /* keyboard */
+  $('#customColor').oninput=e=>{$('#customHex').value=e.target.value;};
+  $('#customHex').oninput=e=>{if(/^#[0-9a-fA-F]{6}$/.test(e.target.value))$('#customColor').value=e.target.value;};
+  $('#colorApply').onclick=()=>{
+    const h=$('#customHex').value.trim();
+    if(!/^#[0-9a-fA-F]{6}$/.test(h)){toast('Hex must be #rrggbb',false);return;}
+    runCmd('Color '+h,['kbc',h.toLowerCase()]);
+  };
+  $('#briRange').oninput=e=>{$('#briVal').textContent=e.target.value+'%';};
+  $('#briRange').onchange=e=>runCmd('Brightness '+e.target.value+'%',['kbb',e.target.value]);
+  $('#fxStopBtn').onclick=()=>runCmd('Stop effect',['kbe','stop']);
+  $('#notifType').onchange=e=>{$('#notifC2Wrap').style.display=e.target.value==='police'?'':'none';};
+  $('#notifPlay').onclick=()=>{
+    const ty=$('#notifType').value,c1=$('#notifC1').value.trim(),c2=$('#notifC2').value.trim(),tm=$('#notifTimes').value||'1';
+    const colOk=c=>/^[A-Za-z0-9_.#-]+$/.test(c)&&c!=='off'&&c.toLowerCase()!=='#000000';
+    if(!colOk(c1)||(ty==='police'&&!colOk(c2))){toast('Use a preset name or #hex (not off/black)',false);return;}
+    if(+tm<1||+tm>20){toast('Repeats must be 1–20',false);return;}
+    const args=ty==='police'?['police',c1,c2,tm]:[ty,c1,tm];
+    runCmd('Notify '+ty,['kbn'].concat(args));
+  };
+  $('#fnSwitch').onchange=e=>{const v=e.target.checked?'lock':'unlock';runCmd('Fn '+v,['fn',v]);};
+  /* system */
+  const batSync=()=>{
+    batTouched=true;
+    let s=+$('#batStart').value,e=+$('#batStop').value;
+    if(e<=s){e=Math.min(s+1,100);$('#batStop').value=e;}
+    $('#batStartVal').textContent=s+'%';$('#batStopVal').textContent=e+'%';
+  };
+  $('#batStart').oninput=batSync;$('#batStop').oninput=batSync;
+  $('#batApply').onclick=()=>{
+    const s=$('#batStart').value,e=$('#batStop').value;
+    runCmd('Battery '+s+'→'+e+'%',['bat',s,e],()=>{batTouched=false;});
+  };
+  $('#batStd').onclick=()=>runCmd('Battery standard',['bat','standard']);
+  $$('.seg button[data-dev]').forEach(b=>b.onclick=()=>runCmd(b.dataset.dev+' '+b.dataset.v,[b.dataset.dev,b.dataset.v]));
+  $('#muxBtn').onclick=()=>modal({title:'Switch GPU MUX',
+    body:'<p>The switch is written to UEFI NVRAM and applies <b>after a reboot</b>. cctl asks for an interactive <span class="mono">[y/N]</span> confirmation, which the GUI server cannot answer (child stdin is /dev/null).</p>'+
+    '<p>Run it in a terminal:</p><div class="cmdcopy"><code>cctl mux switch</code><button class="btn xs" data-copy="cctl mux switch">Copy</button></div>'+
+    '<p class="note" style="margin-top:10px">In dGPU mode X11 starts at 40 Hz — afterwards run <span class="mono">cctl rr 165</span>. Refused below 10% battery without AC.</p>',
+    ok:'Done',cancel:'Close'});
+  $('#nvCoreLock').onclick=()=>{const v=$('#nvCoreMax').value;if(!v){toast('Enter a max MHz',false);return;}runCmd('Lock core '+v+' MHz',['nvidia','clock',v]);};
+  $('#nvCoreReset').onclick=()=>runCmd('Reset core clock',['nvidia','clock','reset']);
+  $('#nvMemLock').onclick=()=>{const v=$('#nvMemMax').value;if(!v){toast('Enter a max MHz',false);return;}runCmd('Lock mem '+v+' MHz',['nvidia','memclock',v]);};
+  $('#nvMemReset').onclick=()=>runCmd('Reset mem clock',['nvidia','memclock','reset']);
+  $('#rrList').onclick=()=>runCmd('List displays',['rr'],()=>openDrawer());
+  $('#rrToggle').onclick=()=>runCmd('Toggle refresh',['rr','toggle']);
+  $('#rrSet').onclick=()=>{
+    const hz=$('#rrHz').value,t=$('#rrTarget').value;
+    if(!hz){toast('Enter a rate',false);return;}
+    runCmd('Set '+hz+' Hz (#'+t+')',t==='2'?['rr',hz,'--2']:['rr',hz]);
+  };
+  $('#scaleSet').onclick=()=>{
+    const v=$('#scaleInput').value.trim();
+    if(!/^(\d+(\.\d+)?|\d+x\d+)$/.test(v)){toast('Use a factor (0.75) or WxH (1920x1080)',false);return;}
+    runCmd('Scale '+v,['scale',v]);
+  };
+  $('#scaleOff').onclick=()=>runCmd('Scale off',['scale','off']);
+  $('#optStream').onchange=e=>act('Streamtext '+(e.target.checked?'on':'off'),'cctl options streamtext …','/api/options',{key:'streamtext',value:e.target.checked?'on':'off'});
+  $('#optDefault').onchange=e=>act('Default action '+e.target.value,'cctl options default '+e.target.value,'/api/options',{key:'default_action',value:e.target.value});
+  $('#optExp').onchange=e=>act('Experimental fan '+(e.target.checked?'on':'off'),'cctl options experimental-fan …','/api/options',{key:'experimental-fan',value:e.target.checked?'on':'off'});
+  /* snapshots */
+  $('#snapSave').onclick=()=>{
+    const n=$('#snapName').value.trim();
+    if(!/^[A-Za-z0-9_-]{1,64}$/.test(n)){toast('Name: letters, numbers, - and _ (max 64)',false);return;}
+    act('Save snapshot '+n,'cctl snapshot save '+n,'/api/snapshot',{action:'save',name:n},res=>{if(res.rc===0)$('#snapName').value='';});
+  };
+  $('#snapRefresh').onclick=()=>fSnaps().catch(()=>{});
+}
+function syncSettingsPop(){
+  $('#setPoll').value=String(prefs.poll);
+  $('#setGpu').checked=prefs.gpuPoll;
+  $('#setMotion').checked=prefs.motion;
+  $('#setAccent').checked=prefs.accentSync;
+  $('#gpuPollBtn').classList.toggle('on',prefs.gpuPoll);
+}
+
+/* ================================================================ init */
+function init(){
+  applyMotion();syncSettingsPop();bindEvents();
+  if(!location.hash)location.hash='#/'+(prefs.page||'overview');
+  route();
+  fVersion().catch(()=>{});
+  fSettings().catch(()=>{});
+  fCpuOpts().catch(()=>{});
+  fProfiles().catch(()=>{});
+  fCurves().catch(()=>{});
+  fPresets().catch(()=>{});
+  startLoop(fCpu,()=>prefs.poll);
+  startLoop(fGpu,()=>prefs.poll+900);
+  startLoop(fStatus,()=>12000);
+  requestAnimationFrame(t=>{_lastT=t;requestAnimationFrame(frame);});
+}
+init();
 </script>
 </body>
 </html>
