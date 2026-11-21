@@ -248,4 +248,4 @@ cctl options experimental-fan <on|off>  # Enable or disable experimental fan con
 
 - **`streamtext`**: When `on`, cctl shows command output as it appears, character-by-character or line-by-line depending on the command. Set it to `off` to print output immediately.
 - **`default`**: By default (`help`), typing bare `cctl` prints the full help menu. Setting this to `status` makes typing bare `cctl` execute `cctl status` directly. The full help menu can always still be accessed via `cctl --help` or `cctl help`.
-- **`experimental-fan`**: Defaults to `off`, which hides and disables the experimental fan commands. Set it to `on` to show the help section and enable those commands. The regular `cctl fan auto` and `cctl fan max` commands remain available either way.
+- **`experimental-fan`**: Defaults to `off`, which hides and disables the experimental fan commands. Set it to `on` to show the help section and enable those commands. Turning it `off` first restores both fans to EC automatic control (unless a fan curve is running, in which case the curve keeps control). The regular `cctl fan auto` and `cctl fan max` commands remain available either way.

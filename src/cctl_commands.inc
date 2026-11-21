@@ -201,9 +201,30 @@ static int cmd_options(int argc, char **argv)
     }
 
     if (strcmp(opt_name, "experimental-fan") == 0) {
-        if (strcmp(opt_val, "on") != 0 && strcmp(opt_val, "off") != 0)
+        int enable;
+        if (strcmp(opt_val, "on") == 0)
+            enable = 1;
+        else if (strcmp(opt_val, "off") == 0)
+            enable = 0;
+        else
             return fail("Usage: cctl options experimental-fan <on|off>");
-        settings.experimental_fan_enabled = (strcmp(opt_val, "on") == 0);
+
+        /* Leaving experimental mode must not strand the fans on a fixed
+         * manual duty. A running fan curve owns the fans, so leave it be. */
+        if (!enable) {
+            struct fancurve_state curve;
+            if (fc_is_running(&curve)) {
+                cctl_stream_printf("Fan curve '%s' is running; leaving fan control to the curve.\n",
+                                   curve.name);
+            } else {
+                cctl_stream_printf("Restoring both fans to AUTO before disabling experimental fan controls...\n");
+                if (fan_auto_all() != 0)
+                    return fail("Could not restore both fans to AUTO; experimental fan controls remain enabled");
+                cctl_stream_printf("Both fans are back on EC automatic control.\n");
+            }
+        }
+
+        settings.experimental_fan_enabled = enable;
         if (cctl_settings_write(&settings) != 0)
             return fail("Could not save settings to %s", CCTL_SETTINGS_FILE);
         cctl_stream_printf("Experimental fan controls %s and %s in help.\n",

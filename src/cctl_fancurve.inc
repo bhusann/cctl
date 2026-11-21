@@ -2146,41 +2146,70 @@ static int fc_start_profile(const struct fancurve_profile *prof)
 
 /* ----------------------------------------------------------- commands */
 
-#define FC_RULES_TEXT \
-    "## Fan curve profile\n" \
+#define FC_RULES_INTERACTIVE \
     "## Replace each \"--\" with a number, keeping the quotes.\n" \
     "## Example: { \"temp\": \"45\", \"fan\": \"60\" }\n" \
     "## Auto example (final point only): { \"temp\": \"88\", \"fan\": \"a\" }\n" \
     "## The final point starts with fan set to \"a\"; change it if desired.\n" \
     "## Leave \"name\" unchanged; it must match the file name.\n" \
-    "## temp = temperature in Celsius (0-95), increasing from top to bottom\n" \
-    "## fan = fan speed in percent (25-100), or \"a\" for EC auto on the final point\n" \
-    "## At/above the final \"a\" point, both fans go to EC auto; the curve\n" \
-    "## resumes below (that temperature - hysteresis).\n" \
-    "## hysteresis = temperature deadband in Celsius (0-20)\n" \
-    "## interval_ms = polling interval in milliseconds (250-60000)\n" \
-    "## Keep 2-16 points; add or remove point lines as needed.\n" \
-    "## Agent mode: cctl fancurve create --am <name> <points> <hysteresis> <ms> <temp1> <fan1> ...\n"
+    "## temp: 0-95 Celsius, must increase from top to bottom.\n" \
+    "## fan: 25-100 percent, or \"a\" (EC auto) on the LAST point only.\n" \
+    "## hysteresis: degrees below a threshold before stepping down (0-20).\n" \
+    "## interval_ms: polling interval in milliseconds (250-60000).\n" \
+    "## Keep 2-16 points; add or remove point lines as needed.\n"
+
+#define FC_RULES_AGENT \
+    "## Syntax:\n" \
+    "##   cctl fancurve create --am <name> <count> <hysteresis> <ms> <t1> <f1> <t2> <f2> ...\n" \
+    "##\n" \
+    "## Arguments:\n" \
+    "##   name       - curve name (letters, digits, dash, underscore)\n" \
+    "##   count      - number of temp/fan points that follow (2-16)\n" \
+    "##   hysteresis - degrees below a threshold before stepping down (0-20)\n" \
+    "##   ms         - polling interval in milliseconds (250-60000)\n" \
+    "##   t1 f1 ...  - exactly <count> pairs of: temperature(0-95) fan(25-100 or \"a\")\n" \
+    "##\n" \
+    "## Rules:\n" \
+    "##   - Temperatures must be in strictly increasing order.\n" \
+    "##   - Fan values are percentages from 25 to 100.\n" \
+    "##   - Only the LAST point may use \"a\" (EC automatic control).\n" \
+    "##     At or above that temperature, both fans return to EC auto;\n" \
+    "##     the curve resumes when temp drops below (that temp - hysteresis).\n" \
+    "##\n" \
+    "## Example (3 points, hysteresis 3, poll every 2000ms):\n" \
+    "##   cctl fancurve create --am quiet 3 3 2000 45 25 60 45 75 a\n" \
+    "##   Point 1: at 45C -> fan 25%\n" \
+    "##   Point 2: at 60C -> fan 45%\n" \
+    "##   Point 3: at 75C -> fans return to EC auto\n"
+
+#define FC_RULES_TEXT \
+    "## Fan curve profile\n" \
+    FC_RULES_INTERACTIVE
 
 static char *fc_make_template(const char *name, int npoints)
 {
     if (!fancurve_name_new_valid(name)) return NULL;
     /* fancurve_name_new_valid() guarantees the name needs no JSON escaping. */
-    size_t cap = 1536 + (size_t)npoints * 80;
+    size_t cap = 2048 + (size_t)npoints * 80;
     char *buf = malloc(cap);
     if (!buf) return NULL;
 
-    size_t off = 0;
-    int n = snprintf(buf, cap,
-                     FC_RULES_TEXT
+    /* Write rules header as plain text (no format processing). */
+    static const char hdr[] = FC_RULES_TEXT;
+    size_t hdr_len = sizeof(hdr) - 1;
+    if (hdr_len >= cap) { free(buf); return NULL; }
+    memcpy(buf, hdr, hdr_len);
+    size_t off = hdr_len;
+
+    int n = snprintf(buf + off, cap - off,
                      "{\n"
                      "  \"name\": \"%s\",\n"
                      "  \"hysteresis\": %d,\n"
                      "  \"interval_ms\": %d,\n"
                      "  \"points\": [\n",
                      name, FANCURVE_DEFAULT_HYSTERESIS, FANCURVE_DEFAULT_INTERVAL);
-    if (n < 0 || (size_t)n >= cap) { free(buf); return NULL; }
-    off = (size_t)n;
+    if (n < 0 || (size_t)n >= cap - off) { free(buf); return NULL; }
+    off += (size_t)n;
 
     for (int i = 0; i < npoints; i++) {
         n = snprintf(buf + off, cap - off,
@@ -2420,7 +2449,7 @@ static int fc_cmd_create_agent(int argc, char **argv)
     }
 
     if (npos == 0) {
-        fputs(FC_RULES_TEXT, stdout);
+        fputs("## Fan curve profile\n" FC_RULES_AGENT, stdout);
         fflush(stdout);
         return 0;
     }

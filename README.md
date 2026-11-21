@@ -70,6 +70,9 @@ Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis
    cctl status                # view all current settings
    ```
 
+> [!NOTE]
+> A community graphical frontend fork is available at [NightEXP34/cctl-gui](https://github.com/NightEXP34/cctl-gui).
+
 ## Updating cctl
 
 1. Download the latest `cctl` binary from the [official Releases page](https://github.com/bhusann/cctl/releases).
