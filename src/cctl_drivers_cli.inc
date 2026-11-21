@@ -614,7 +614,7 @@ static const struct command commands[] = {
     { "snapshot",       0, cmd_snapshot,         SEC_SYSTEM,    "<action> [name] [--mask fields]",  "Save, restore, view, or delete snapshots (alias: snap)", NULL },
     { "options",        0, cmd_options,          SEC_SYSTEM,    "[setting [value]]",                "Show or change cctl-specific settings", NULL },
 #ifdef CCTL_GUI
-    { "gui",            0, cmd_gui,              SEC_SYSTEM,    "[--port PORT]",                    "Serve the browser control panel on http://127.0.0.1:8723", NULL },
+    { "gui",            0, cmd_gui,              SEC_SYSTEM,    "[--port PORT] [--no-restore]",     "Serve the browser control panel on http://127.0.0.1:8723 (replays last config unless --no-restore)", NULL },
 #endif
 };
 

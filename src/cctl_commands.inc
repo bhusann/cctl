@@ -626,6 +626,13 @@ static int editconf_agent_delete(int argc, char **argv)
     int rc = editconf_agent_write(combined);
     free(combined);
     if (rc != 0) return rc;
+
+    /* Drop the boot-restore pointer if this profile was the last applied. */
+    struct cctl_settings del_st;
+    cctl_settings_read(&del_st);
+    if (del_st.last_profile[0] && strcmp(del_st.last_profile, target.name) == 0)
+        cctl_last_record("profile", NULL);
+
     cctl_stream_printf("Deleted custom profile '%s'.\n", argv[4]);
     return 0;
 }
@@ -830,6 +837,7 @@ static int cmd_set_impl(int argc, char **argv)
 
     ec_release_ports();
     if (rc == 0) {
+        cctl_last_record("profile", p->name);
         kbe_profile_pulse(profile);
         if (strcmp(profile, "max") == 0) {
             int prev = g_stream_mode;
@@ -1041,7 +1049,14 @@ static int cmd_fan(int argc, char **argv)
     }
 
     ec_release_ports();
-    if (rc == 0) print_done();
+    if (rc == 0) {
+        if (strcmp(mode, "auto") == 0 || strcmp(mode, "max") == 0 ||
+            strcmp(mode, "silent") == 0)
+            cctl_last_record("fan", mode);
+        if (plain_auto)
+            cctl_last_record("curve", NULL);
+        print_done();
+    }
     return rc;
 }
 
@@ -1089,7 +1104,10 @@ static int cmd_turbo(int argc, char **argv)
 
     int rc = set_turbo(enabled);
     ec_release_ports();
-    if (rc == 0) print_done();
+    if (rc == 0) {
+        cctl_last_record("turbo", enabled ? "on" : "off");
+        print_done();
+    }
     return rc;
 }
 
@@ -1295,19 +1313,30 @@ static int cmd_kbc(int argc, char **argv)
     }
 
     require_root(argc, argv);
+    /* A static color replaces whatever effect was running; the boot replay
+     * must restore this color, not an effect that no longer applies. */
     kbe_stop(1);
+    cctl_last_record("kbe", NULL);
     /* If 3 numeric args → RGB mode */
     if (argc >= 5) {
         int r, g, b;
         if (safe_atoi(argv[2], &r) == 0 && safe_atoi(argv[3], &g) == 0 && safe_atoi(argv[4], &b) == 0) {
             int rc = kbd_set_color(r, g, b);
-            if (rc == 0) print_done();
+            if (rc == 0) {
+                char rgb[24];
+                snprintf(rgb, sizeof(rgb), "%d %d %d", r, g, b);
+                cctl_last_record("kbc", rgb);
+                print_done();
+            }
             return rc;
         }
     }
     /* Single arg → preset */
     int rc = kbd_set_preset(argv[2]);
-    if (rc == 0) print_done();
+    if (rc == 0) {
+        cctl_last_record("kbc", argv[2]);
+        print_done();
+    }
     return rc;
 }
 
@@ -1330,8 +1359,14 @@ static int cmd_kbb(int argc, char **argv)
 
     require_root(argc, argv);
     kbe_stop(1);
+    cctl_last_record("kbe", NULL);
     int rc = kbd_set_brightness(pct);
-    if (rc == 0) print_done();
+    if (rc == 0) {
+        char pct_str[8];
+        snprintf(pct_str, sizeof(pct_str), "%d", pct);
+        cctl_last_record("kbb", pct_str);
+        print_done();
+    }
     return rc;
 }
 
@@ -1380,7 +1415,10 @@ static int cmd_kbe(int argc, char **argv)
 
     const char *sub = argv[2];
     if (strcmp(sub, "stop") == 0 || strcmp(sub, "off") == 0) {
-        return kbe_stop(0);
+        int rc = kbe_stop(0);
+        if (rc == 0)
+            cctl_last_record("kbe", NULL);
+        return rc;
     }
 
     const struct kbe_effect_def *fx = kbe_find_effect(sub);
@@ -1394,7 +1432,10 @@ static int cmd_kbe(int argc, char **argv)
         return 1;
     }
 
-    return kbe_start(fx->name);
+    int rc = kbe_start(fx->name);
+    if (rc == 0)
+        cctl_last_record("kbe", fx->name);
+    return rc;
 }
 
 static void kbn_print_usage(void)

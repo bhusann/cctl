@@ -1,257 +1,248 @@
 <p align="center">
-  <a href="https://github.com/bhusann/cctl/releases/latest"><img src="https://img.shields.io/github/v/release/bhusann/cctl?label=release&color=7C5CFF&logo=github" alt="Latest release"></a>
-  <a href="https://github.com/bhusann/cctl/releases"><img src="https://img.shields.io/github/downloads/bhusann/cctl/total?label=downloads&color=22D3EE" alt="Total downloads"></a>
+  <img src="docs/cctl-icon.svg" width="112" alt="cctl icon">
 </p>
+
+<h1 align="center">cctl-gui — Linux Control Center for Colorful Laptops</h1>
 
 <p align="center">
-  <img src="docs/cctl-icon.svg" width="112" alt="CCTL icon">
+  Power profiles, fans, keyboard RGB, battery limits, display, GPU MUX, NVIDIA clocks —<br>
+  driven from a browser panel or the terminal, by one small C binary.
 </p>
 
-<h1 align="center">CCTL — Linux Control Center for Colorful Laptops</h1>
-
-CCTL (ColorControl) is a lightweight command-line control center for Colorful
-Evol P15 laptops built on Clevo/TUXEDO chassis. It provides direct control over
-EC power profiles, CPU and GPU fans, keyboard RGB colors and effects, battery
-charge modes and thresholds, display refresh rate and scaling, GPU MUX
-switching, NVIDIA clocks, webcam, and microphone. Live CPU and GPU monitors are
-included, and the DKMS drivers that back these features can be managed from the
-same tool.
-
-CCTL is written in C, runs without a GUI, and needs no always-on service —
-keyboard effects and custom fan curves use a small background worker only
-while they are active.
+`cctl-gui` is a fork of [bhusann/cctl](https://github.com/bhusann/cctl) that adds
+`cctl gui`: a browser control panel served from the same binary at
+`http://127.0.0.1:8723/`. Everything the original CLI can do still works exactly
+as before — the GUI is just another way to drive it.
 
 ---
 
-## This fork: cctl-gui (browser control panel)
+## What you can control
 
-This fork of [bhusann/cctl](https://github.com/bhusann/cctl) adds one
-command: `cctl gui`. It serves a browser control panel on
-`http://127.0.0.1:8723/` from the same binary — no extra dependencies.
+| Area | Controls |
+|---|---|
+| Power | Built-in profiles (`set`), custom profiles (`editconf`), CPU turbo, governor, EPP, RAPL PL1/PL2 |
+| Fans | Auto / max / silent modes, custom temperature→speed curves (`fancurve`), experimental manual duty |
+| Keyboard | Single-zone RGB colors and presets, brightness, animated effects, notification flashes, Fn lock |
+| Battery | Charge start/stop thresholds, charge mode, health readout |
+| Display | Internal refresh rate, screen scaling |
+| Graphics | GPU MUX (hybrid ↔ dedicated, applied at next boot), NVIDIA core/memory clock locks |
+| Privacy | Webcam and internal microphone hardware switches |
+| Telemetry | Live CPU/GPU monitors (`cpumon`, `gpumon`): usage, temperature, power, fans, per-core clocks, VRAM |
+| Config | Snapshots (`snap save/restore`) and boot restore of the last applied config |
 
-```sh
-make
-./cctl gui            # or ./cctl gui --port 9000
-```
+## Two ways to drive it
 
-The panel shows live CPU/GPU telemetry (polled via `cpumon`/`gpumon --json`)
-and drives every control through real cctl commands executed as child
-processes, so EC safety rules (fan-auto on EC 2/3, curve ownership, snapshot
-restore semantics) stay exactly as the CLI enforces them. Non-interactive
-helpers are used for editors: `fancurve create --am` for fan curves and
-`editconf --am --create/--delete` for custom profiles.
-
-Differences from upstream:
-* The default build compiles in NVIDIA GPU management (`-DCCTL_NVIDIA`) and
-  the GUI (`-DCCTL_GUI`); the upstream `experimental` target is merged into
-  the default build.
-* `cctl gui` runs unprivileged: each API request forks a child that elevates
-  through the installed cctl's passwordless sudoers rule. Run `sudo cctl gui`
-  once the fork binary is installed, or use `/usr/local/bin/cctl` children
-  (default when the server is unprivileged).
-* The web UI is embedded at build time (`gui/web/index.html` →
-  `src/cctl_gui_html.inc` via `tools/gen_gui_html.py`), keeping the
-  single-binary philosophy.
-* POST requests require an `X-CCTL` header, so random web pages cannot
-  change settings by POSTing to localhost.
-
-See [docs/gui.md](docs/gui.md) for the endpoint map. The original CLI is
-untouched; `upstream` points at bhusann/cctl for rebases.
-
----
-
-## Hardware Compatibility
-
-Specifically designed for the **Colorful Evol P15** series (Clevo/TUXEDO chassis).
-
-### Tested Hardware
-| Laptop | CPU | GPU | Keyboard |
-|---|---|---|---|
-| Colorful Evol P15 | Intel Core i7-13620H | RTX 4060 Mobile 100W | Single-zone RGB |
-| Colorful Evol P15 | Intel Core i5-12500H | RTX 4050 Mobile 100W | Single-zone RGB |
-
-### Supported Configurations
-* **Series:** Colorful Evol P15 series
-* **GPUs:** NVIDIA GeForce RTX 40 Series Mobile
-* **CPUs:** Intel CPUs
-* **Keyboard:** Single-zone RGB keyboard (tested)
-
-> **Note:** Built specifically for Colorful Evol P15 series laptops. Other laptop models or other Clevo/TUXEDO variants may have different EC register layouts, fan byte orders, or EC profile codes — use at your own risk.
-
----
-
-## Quick Start
-
-1. Install the latest release in one command (downloads the latest binary and runs the installer):
-
-   ```bash
-   curl -fsSL https://github.com/bhusann/cctl/releases/latest/download/cctl -o /tmp/cctl && chmod +x /tmp/cctl && sudo /tmp/cctl install
-   ```
-
-2. Or download the pre-built `cctl` binary from the **[Releases page](https://github.com/bhusann/cctl/releases)** and install it manually:
-
-   ```bash
-   chmod +x ./cctl && sudo ./cctl install
-   ```
-
-3. Install kernel drivers via DKMS (required for fans, keyboard backlight, battery):
-
-   ```bash
-   cctl drivers-manage
-   ```
-
-4. Ready to use immediately (privileged commands auto-elevate seamlessly, no manual sudo or aliases needed):
-
-   ```bash
-   cctl set balanced          # apply a power profile (auto-elevates via sudo)
-   cctl fan auto              # set fans to automatic (auto-elevates via sudo)
-   cctl fancurve start quiet  # run a saved custom fan curve (after creating one)
-   cctl status                # view all current settings
-   ```
-
-## Updating cctl
-
-1. Download the latest `cctl` binary from the [official Releases page](https://github.com/bhusann/cctl/releases).
-2. In the folder where you downloaded it, run:
-
-   ```bash
-   chmod +x ./cctl
-   sudo ./cctl install
-   ```
-
-3. When asked to upgrade or reinstall cctl, type `y` to confirm. The installer updates the installed binary and sudo rule. It then asks whether passwordless sudo should apply to the current user only (default, `1`) or all users (`2`).
-
----
-
-## Screenshots
-
-**`cctl` — full command reference**
-
-![cctl help](docs/screenshots/help.png)
-
-**`cctl status` — all current settings at a glance**
-
-![cctl status](docs/screenshots/status.png)
-
-**`cctl cpumon` — live CPU, memory, fan, and power readings**
-
-![cctl CPU monitor](docs/screenshots/cpumon.png)
-
-**`cctl gpumon` — live NVIDIA GPU readings**
-
-![cctl GPU monitor](docs/screenshots/gpumon.png)
-
-**`cctl kbe` — keyboard backlight effects**
-
-![cctl keyboard effects](docs/screenshots/kbe-effects.png)
-
-**`cctl kbc` — keyboard color presets**
-
-![cctl keyboard color presets](docs/screenshots/kbc-presets.png)
-
----
-
-## Power Profiles
-
-`set <profile> [--nosafe]` applies preset (EC defaults + table values below).
-Built-in profiles are quick-use presets, not official or universal
-recommendations. Choose what suits your workload, or save a preferred
-combination as a [custom profile](#custom-profiles).
-
-```
-Profile    EC code Turbo  Governor     EPP                 EC default TDP      Refresh
-────────── ─────── ────── ──────────── ─────────────────── ─────────────────── ───────
-max        2       ON     powersave    performance         90/115W + GPU 100W  --
-cpuperf    3       ON     powersave    performance         45/115W             --
-balanced   3       ON     powersave    balance_performance 45/115W             --
-powersave  1       OFF    powersave    balance_power       15/30W              lowest
-silent/eco 0       OFF    powersave    power               15/30W              --
-```
-
-> [!NOTE]
-> The built-in `powersave` profile and `silent/eco` leave fan control unchanged. `powersave` also selects the lowest supported internal display refresh rate under X11 (e.g. 40 Hz) to maximize battery runtime. You can adjust the refresh rate anytime using `cctl rr`.
-
-> [!CAUTION]
-> Silent fan mode and manual fan duty may keep fans quiet or fixed regardless of
-> CPU temperature, even under heavy load. To protect the hardware, applying EC
-> profile code `2` or `3`, or enabling Turbo while EC code `2` or `3` is
-> active, sets fans to **AUTO** by default.
-> `--nosafe` skips that automatic change and keeps the current fan setting.
-> Use manual fan duty only for experimental purposes.
-
-### EC Profiles and Governor/EPP Load Test Results
-
-Full-load measurements and comparisons are documented in the [EC profile test results](docs/ec-profile-test-results.md).
-
-### Custom Profiles
-
-Create extra power presets with `cctl editconf`, then apply one with
-`cctl set <name>`. The [Custom Profiles guide](docs/custom-profiles.md) shows
-how to choose profile settings and includes examples and safety limits.
-
----
-
-## Commands
-
-Command names:
-- Profiles and setup: `set`, `editconf`, `install`, `uninstall`, `drivers-manage`
-- Keyboard and fans: `kbc`, `kbb`, `kbe`, `kbn`, `fn`, `fan`, `fancurve` (alias `fanc`)
-- GPU and privacy: `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic`
-- Battery and system info: `bat`, `status`, `--version`
-- Monitors: `cpumon`, `gpumon`
-- Display: `rr`, `scale`
-- CPU controls: `turbo`, `gov`, `epp`, `rapl`
-- Snapshots: `snap` (alias `snapshot`; bare `snap` lists saved snapshots), actions `save`/`s`, `restore`/`r`, `view`/`v`, `delete`/`del`
-- Application settings: `options`
-- Help & Agent Skill: `--help`, `--am`
-
-Full usage, options, and hardware quirk notes: [commands.md](docs/commands.md).
-
----
-
-## Persistence and Services
-
-Most `cctl` commands apply a setting and exit; cctl has no tray app or general
-startup service. `cctl fancurve start <name>` is an exception: it starts a
-detached worker that runs the curve until stopped or the system shuts down.
-When a compatible login manager provides sleep notifications, the worker
-returns fan control to the laptop before sleep and resumes the curve after wake.
-If the wake notification is missed, it can resume curve control when a monitored
-temperature rises above 85 °C. See the [Fan Curves guide](docs/commands.md#fan-curves)
-for details.
-
-To restore saved settings at startup, save them with `cctl snap save <name>` and
-configure your service manager (for example, systemd or runit) to run
-`cctl snap restore <name>`. Snapshots include battery charge mode and the active
-fan-curve settings and temperature/fan points, and restore that configuration
-last. Manual fan speeds are not saved. Curves do not start automatically at
-boot unless your startup setup restores a snapshot containing one.
-
-> **Caution:** cctl writes the EC directly. Don't run TCC (`tccd`), NBFC, or
-> another Clevo fan daemon at the same time — they will fight over fan speed and
-> profile state. If TCC is installed, stop it first:
-> `sudo systemctl stop tccd` (re-enable later with `sudo systemctl enable --now tccd`).
-
----
-
-## Build
+**Browser panel** — `cctl gui` serves the control center on
+`http://127.0.0.1:8723/`, no extra dependencies. The page is embedded at build
+time from `gui/web/index.html`, so there is still a single binary. Every action
+in the panel is a real cctl command executed as a child process, so EC safety
+rules (fan-AUTO on EC code 2/3, curve ownership, snapshot semantics) stay
+exactly as the CLI enforces them.
 
 ```bash
-make                # Standard build (profiles, fans, display, battery, nvidia clock/power)
-make install        # Build and install through cctl's installer
+cctl gui              # or: cctl gui --port 9000
 ```
 
-The Makefile respects `CC`, `CFLAGS`, and `LDFLAGS`. Hardening flags are always applied. Pass `STRIP=0` to keep debug symbols.
+**CLI** — the original cctl commands, unchanged, and the whole point of the
+original design: no GUI, no always-on service. Keyboard effects and fan curves
+run a small detached worker only while they are active.
+
+```bash
+cctl set balanced     # apply a power profile
+cctl fan auto         # fans to automatic control
+cctl kbe ram          # keyboard color follows RAM usage
+cctl cpumon           # live CPU monitor
+cctl status           # all current settings
+```
+
+Privileged commands auto-elevate through the passwordless sudoers rule created
+by `cctl install` — no manual `sudo` or shell aliases needed.
 
 ---
 
-## Kernel Drivers
+## Browser panel
 
-The Clevo/TUXEDO driver stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) is required for fan control, keyboard backlight, battery thresholds, and EC profile codes. The installer handles DKMS registration, build, and modprobe config.
+Seven views, keyboard shortcuts `1`–`7` to switch, `Ctrl K` for a command
+palette (type any command, profile, color or effect and run it), a backtick
+opens the command log (every action is logged with its real `cctl` command line
+and exit code), and a dark/light theme toggle. The accent hue follows the
+active power profile.
 
-**Driver sources live only in the mirror repo:** https://github.com/bhusann/tuxedo-drivers-cctl-mirror — a readable `drivers/` folder plus the pre-packed `drivers.tar.gz`. Every GitHub **release** of cctl also attaches that *identical* tarball.
+![Dashboard](docs/screenshots/gui-dashboard.png)
+*Dashboard — live profile dial, CPU/GPU telemetry charts, quick toggles.*
 
-Install or uninstall directly with the script (it lives in the mirror repo):
+![Performance](docs/screenshots/gui-performance.png)
+*Performance — turbo, governor, EPP, PL1/PL2 power limits, custom profiles.*
+
+![Cooling](docs/screenshots/gui-cooling.png)
+*Cooling — live fan RPM/duty rings and custom fan curves with a graph editor.*
+
+![Keyboard](docs/screenshots/gui-keyboard.png)
+*Keyboard — color presets, brightness, effects (here the `ram` effect, which colors the keyboard by RAM usage).*
+
+![Power & display](docs/screenshots/gui-power.png)
+*Power & display — battery charge thresholds, refresh rate, privacy switches.*
+
+![Graphics](docs/screenshots/gui-graphics.png)
+*Graphics — GPU MUX switching and NVIDIA clock locks.*
+
+![Snapshots](docs/screenshots/gui-snapshots.png)
+*Snapshots — save and restore complete configurations.*
+
+Notes:
+* POST requests require an `X-CCTL` header, so random web pages cannot change
+  your settings by POSTing to localhost.
+* Run the server unprivileged and it elevates per-request through the installed
+  binary's sudoers rule; run the systemd service as root and it needs none.
+* Endpoint map: [docs/gui.md](docs/gui.md).
+
+## Terminal
+
+![cctl status](docs/screenshots/status.png)
+*`cctl status` — all current settings at a glance.*
+
+![cctl cpumon](docs/screenshots/cpumon.png)
+*`cctl cpumon` — live CPU, memory, fan, and power readings.*
+
+![cctl gpumon](docs/screenshots/gpumon.png)
+*`cctl gpumon` — live NVIDIA GPU readings.*
+
+Full command reference: `cctl --help`, [docs/commands.md](docs/commands.md),
+or the embedded agent skill (`cctl --am`).
+
+---
+
+## Install
+
+From this repository (includes the browser GUI and NVIDIA support by default):
+
+```bash
+git clone https://github.com/NightEXP34/cctl-gui
+cd cctl-gui
+./install.sh        # builds, installs to /usr/local/bin, sets up sudoers + boot service
+```
+
+Or build manually (needs gcc, pkg-config, and dbus development files):
+
+```bash
+make
+sudo ./cctl install
+```
+
+Install the kernel drivers (required for fans, keyboard, battery, EC profiles):
+
+```bash
+cctl drivers-manage
+```
+
+Upstream [releases](https://github.com/bhusann/cctl/releases) ship the
+CLI-only binary without the GUI panel:
+
+```bash
+curl -fsSL https://github.com/bhusann/cctl/releases/latest/download/cctl -o /tmp/cctl \
+  && chmod +x /tmp/cctl && sudo /tmp/cctl install
+```
+
+To serve the panel at boot and restore your last session on every boot:
+
+```bash
+sudo cp systemd/cctl-gui.service /etc/systemd/system/
+sudo systemctl enable --now cctl-gui.service
+```
+
+---
+
+## Persistence
+
+The panel keeps a last-config record in `/var/lib/cctl/settings`. Every
+successful `set`, `turbo`, `fan <auto|max|silent>`, `kbc`, `kbb`, `kbe`,
+`fancurve start|stop` records what it applied, and `cctl gui` replays that
+record at startup — profile, turbo, fan mode, fan curve, keyboard
+color/brightness, and the keyboard effect last (the effect wins over color,
+since it owns the keyboard). `--no-restore` skips the replay. Manual fan duty
+(`fan cpu|gpu <pct>`) is not recorded, matching snapshots. The replay is logged
+to the journal: `journalctl -u cctl-gui`.
+
+Snapshots (`cctl snap save <name>` / `cctl snap restore <name>`) capture
+profile, fans, keyboard, battery limits and the active fan curve; restore the
+active curve last. Manual fan speeds are not saved.
+
+A running fan-curve worker returns fan control to the laptop before suspend and
+resumes the curve after wake (via logind when available; it also resumes when a
+monitored temperature rises above 85 °C).
+
+---
+
+## CLI reference
+
+### Power profiles
+
+`set <profile> [--nosafe]` applies EC code + governor/EPP + EC-default TDP:
+
+| Profile | EC code | Turbo | Governor | EPP | EC default TDP | Refresh |
+|---|---|---|---|---|---|---|
+| max | 2 | ON | powersave | performance | 90/115 W + GPU 100 W | — |
+| cpuperf | 3 | ON | powersave | performance | 45/115 W | — |
+| balanced | 3 | ON | powersave | balance_performance | 45/115 W | — |
+| powersave | 1 | OFF | powersave | balance_power | 15/30 W | lowest |
+| silent/eco | 0 | OFF | powersave | power | 15/30 W | — |
+
+Built-in profiles are quick-use presets, not universal recommendations; save
+your own with `cctl editconf` (see the
+[custom profiles guide](docs/custom-profiles.md)). Full-load measurements:
+[EC profile test results](docs/ec-profile-test-results.md).
+
+### Commands
+
+| Group | Commands |
+|---|---|
+| Profiles & setup | `set`, `editconf`, `install`, `uninstall`, `drivers-manage` |
+| Keyboard & fans | `kbc`, `kbb`, `kbe`, `kbn`, `fn`, `fan`, `fancurve` (alias `fanc`) |
+| GPU & privacy | `mux`, `nvidia clock`, `nvidia memclock`, `webcam`, `mic` |
+| Battery & info | `bat`, `status`, `--version` |
+| Monitors | `cpumon`, `gpumon` |
+| Display | `rr`, `scale` |
+| CPU controls | `turbo`, `gov`, `epp`, `rapl` |
+| Snapshots | `snap` / `snapshot` (`save`, `restore`, `view`, `delete`) |
+| Panel & options | `gui`, `options` (streamed output, bare `cctl` default) |
+| Help & skill | `--help`, `--am` |
+
+### Safety rules
+
+* Applying EC profile code `2` or `3`, or enabling Turbo while EC code `2`/`3`
+  is active, sets fans to **AUTO** by default — silent fan modes and manual
+  duty can keep fans quiet under load. `--nosafe` skips that automatic change.
+* Manual fan duty below 25% needs admin mode and is experimental: fixed duty
+  ignores temperature and may cause overheating.
+* Do not run TCC (`tccd`), NBFC, or another Clevo fan daemon alongside cctl —
+  they fight over fan speed and profile state (`sudo systemctl stop tccd`).
+
+---
+
+## Hardware compatibility
+
+Built for the **Colorful Evol P15** series (Clevo/TUXEDO chassis).
+
+| Laptop | CPU | GPU | Keyboard |
+|---|---|---|---|
+| Colorful Evol P15 | Intel Core i7-13620H | RTX 4060 Mobile 100 W | Single-zone RGB |
+| Colorful Evol P15 | Intel Core i5-12500H | RTX 4050 Mobile 100 W | Single-zone RGB |
+
+Other Clevo/TUXEDO variants may have different EC register layouts, fan byte
+orders, or profile codes — use at your own risk.
+
+---
+
+## Kernel drivers
+
+The Clevo/TUXEDO stack (`clevo_acpi`, `tuxedo_keyboard`, `tuxedo_io`) backs fan
+control, keyboard backlight, battery thresholds, and EC profiles. `cctl install`
+handles DKMS registration; `cctl drivers-manage` installs or removes them.
+
+Driver sources live only in the mirror repo
+[bhusann/tuxedo-drivers-cctl-mirror](https://github.com/bhusann/tuxedo-drivers-cctl-mirror)
+(readable `drivers/` folder plus the pre-packed `drivers.tar.gz`, attached to
+every cctl release). They can also be installed without cctl:
 
 ```bash
 git clone https://github.com/bhusann/tuxedo-drivers-cctl-mirror
@@ -260,79 +251,75 @@ sudo tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --uninstall
 tuxedo-drivers-cctl-mirror/drivers/driverinstall.sh --status   # no root needed
 ```
 
-### Supported Distros
-
-Auto-installs `dkms` + kernel headers if missing, with confirmation prompt:
-
-| Package Manager | Distros | Tested |
-|---|---|---|
-| `pacman` | Arch, Manjaro, EndeavourOS, CachyOS, Garuda | ✅ Arch, CachyOS |
-| `apt` | Debian, Ubuntu, Mint, Pop!_OS, Zorin | — |
-| `dnf` | Fedora (standard Workstation/Spins), RHEL, Rocky, Alma | — |
-| `zypper` | openSUSE Tumbleweed/Leap | — |
-| `xbps` | Void Linux | — |
-| `emerge` | Gentoo | — |
-| `eopkg` | Solus | — |
-
-> **Immutable / Atomic OS note:** Atomic and immutable editions of Fedora (Silverblue, Kinoite, Atomic Desktops, Bazzite, etc. using `rpm-ostree`) are **not supported** because the root filesystem is read-only and DKMS modules cannot persist across image updates. Only standard, non-atomic Fedora (Workstation, KDE Spin, etc. using regular `dnf`) is supported. On unrecognized distros, the installer points to the driver source in the mirror repo for manual installation.
+Supported package managers (auto-installs `dkms` + kernel headers if missing):
+`pacman` (Arch, Manjaro, EndeavourOS, CachyOS — tested on Arch and CachyOS),
+`apt`, `dnf`, `zypper`, `xbps`, `emerge`, `eopkg`. Atomic/immutable Fedora
+editions (Silverblue, Bazzite, …) are not supported: DKMS modules cannot
+persist on a read-only root.
 
 ---
 
-## Uninstallation
+## Updating and uninstalling
 
-Drivers first, then the cctl binary — in that order, so cctl is still around for the clean driver removal.
+**Update:** rebuild and run `sudo ./cctl install` (confirm with `y`; choose
+sudo scope: current user only, default, or all users).
 
-### Automated Uninstallation (Recommended)
-
-1. **Kernel drivers** — `sudo cctl drivers-manage` and select the uninstall option (it cleanly unloads the modules and deregisters DKMS):
+**Uninstall:** drivers first, then cctl, so cctl is still available for clean
+driver removal:
 
 ```bash
 sudo cctl drivers-manage   # select the uninstall option
+sudo cctl uninstall        # type "yes" — removes binary, sudoers rule, profiles, /var/lib/cctl data
 ```
 
-2. **cctl and its data** — run the uninstall command:
+Manual cleanup: [docs/manual_uninstall.md](docs/manual_uninstall.md).
+
+---
+
+## Build
 
 ```bash
-sudo cctl uninstall
+make                # standard build: GUI + NVIDIA compiled in (-DCCTL_GUI -DCCTL_NVIDIA)
+make install        # build and install through cctl's installer
+make clean
 ```
 
-Type `yes` in full to confirm. This removes the cctl binary, sudoers rule and
-backup, custom profiles, and saved cctl data under `/var/lib/cctl`. If cctl
-detects loaded TUXEDO/Clevo modules, it recommends removing them first with
-`cctl drivers-manage`; you can confirm to remove cctl while leaving the drivers
-installed. It is recommended to uninstall the drivers first, before uninstalling
-the cctl binary.
+`CC`, `CFLAGS`, and `LDFLAGS` are respected (appended); hardening flags are
+always applied. `STRIP=0` keeps debug symbols. The web UI and icon are embedded
+at build time by `tools/gen_gui_html.py` from `gui/web/index.html` and
+`docs/cctl-icon.svg`; the agent skill is embedded from `SKILL.md`.
 
-### Manual Uninstallation
-
-For manual driver and cctl cleanup, follow the [manual uninstallation guide](docs/manual_uninstall.md).
+`upstream` points at bhusann/cctl for rebases; the CLI itself is untouched
+apart from the additions above.
 
 ---
 
-## Developer Notes
+## Documentation
 
-- [Developer notes](docs/developer-notes.md)
+| Doc | Contents |
+|---|---|
+| [docs/gui.md](docs/gui.md) | HTTP endpoint map and startup replay |
+| [docs/commands.md](docs/commands.md) | Full CLI usage, options, fan-curve details |
+| [docs/custom-profiles.md](docs/custom-profiles.md) | Custom profile fields and examples |
+| [docs/ec-profile-test-results.md](docs/ec-profile-test-results.md) | EC profile load-test measurements |
+| [docs/developer-notes.md](docs/developer-notes.md) | Internals |
+| [docs/manual_uninstall.md](docs/manual_uninstall.md) | Manual removal steps |
+| [SKILL.md](SKILL.md) | Agent skill (`cctl --am`) |
 
 ---
 
-## License
+## License and credits
 
-`cctl` own code is licensed under the MIT License — see [LICENSE](LICENSE).
+`cctl` code is MIT — see [LICENSE](LICENSE). Copyright (c) 2026 bhusann; fork
+changes are MIT as well.
 
-The driver code (in the [mirror repo](https://github.com/bhusann/tuxedo-drivers-cctl-mirror)'s `drivers/` folder) is **not** MIT. It is derived from the TUXEDO Linux driver project and remains under **GPL-2.0-or-later** — see [drivers/LICENSE](https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/drivers/LICENSE) and [THIRD-PARTY-NOTICES](docs/THIRD-PARTY-NOTICES).
+Kernel driver code is **GPL-2.0-or-later**, derived from the
+[TUXEDO Linux drivers](https://github.com/tuxedocomputers/tuxedo-drivers)
+project (copyright TUXEDO Computers GmbH and contributors) — see the mirror
+repo's `drivers/LICENSE` and [docs/THIRD-PARTY-NOTICES](docs/THIRD-PARTY-NOTICES).
 
-## Credits
+GPU MUX reverse-engineering findings referenced from
+[arbitrary-string/clevo-control-panel](https://github.com/arbitrary-string/clevo-control-panel).
 
-> [!IMPORTANT]
-> Created with AI assistance under human direction, and thoroughly tested and
-> evaluated by a human.
-
-`cctl` uses driver code from the TUXEDO Linux driver project:
-
-https://github.com/tuxedocomputers/tuxedo-drivers
-
-The driver code is licensed under GPL-2.0-or-later. Copyright belongs to the respective original authors (TUXEDO Computers GmbH and contributors).
-
-GPU MUX reverse-engineered findings are referred from this repo:
-
-https://github.com/arbitrary-string/clevo-control-panel
+> Upstream credit: the original `cctl` was created with AI assistance under
+> human direction, and thoroughly tested and evaluated by a human.

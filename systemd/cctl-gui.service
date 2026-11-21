@@ -1,0 +1,16 @@
+# cctl browser control panel — serves http://127.0.0.1:8723 at boot.
+# Runs as root so EC/sysfs access needs no sudo prompts, and replays the
+# last applied config (profile, turbo, fan mode, fan curve, keyboard
+# color/brightness, keyboard effect) on startup. Add --no-restore to
+# ExecStart to disable.
+[Unit]
+Description=cctl browser control panel
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/cctl gui
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

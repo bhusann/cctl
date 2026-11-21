@@ -912,6 +912,17 @@ struct cctl_settings {
     int streamtext_enabled;
     int default_is_status;
     int experimental_fan_enabled;
+    /* Last hardware config applied (profile, turbo, fan mode, fan curve,
+     * keyboard color/brightness). `cctl gui` replays it at startup so a
+     * boot service restores the previous session instead of firmware
+     * defaults. Empty string / -1 means "never recorded". */
+    char last_profile[32];
+    char last_turbo[4];    /* "on" | "off" */
+    char last_fan[16];     /* "auto" | "max" | "silent" */
+    char last_curve[32];
+    char last_kbc[24];     /* preset name, or "R G B" */
+    int last_kbb;          /* brightness percent, -1 unset */
+    char last_kbe[24];     /* keyboard effect name, replayed last (wins over kbc/kbb) */
 };
 
 static void cctl_settings_init(struct cctl_settings *settings)
@@ -919,6 +930,30 @@ static void cctl_settings_init(struct cctl_settings *settings)
     settings->streamtext_enabled = 1;
     settings->default_is_status = 0;
     settings->experimental_fan_enabled = 0;
+    settings->last_profile[0] = '\0';
+    settings->last_turbo[0] = '\0';
+    settings->last_fan[0] = '\0';
+    settings->last_curve[0] = '\0';
+    settings->last_kbc[0] = '\0';
+    settings->last_kbb = -1;
+    settings->last_kbe[0] = '\0';
+}
+
+/* Value whitelist for last-config fields: letters, digits, '.', '-', '_',
+ * and spaces (keyboard RGB is "R G B"). Rejects control chars and any
+ * delimiter that could inject lines into the settings file. */
+static int cctl_last_value_ok(const char *v, size_t max_len)
+{
+    size_t n = 0;
+    for (const char *p = v; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (!(c == ' ' || c == '.' || c == '-' || c == '_' ||
+              (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z')))
+            return 0;
+        if (++n > max_len) return 0;
+    }
+    return n > 0;
 }
 
 static int cctl_settings_read(struct cctl_settings *settings)
@@ -952,6 +987,47 @@ static int cctl_settings_read(struct cctl_settings *settings)
             settings->experimental_fan_enabled = 1;
         else if (strcmp(line, "experimental-fan=off") == 0)
             settings->experimental_fan_enabled = 0;
+        else if (strncmp(line, "last_profile=", 13) == 0 &&
+                 cctl_last_value_ok(line + 13, sizeof(settings->last_profile) - 1)) {
+            size_t n = strlen(line + 13);
+            memcpy(settings->last_profile, line + 13, n);
+            settings->last_profile[n] = '\0';
+        }
+        else if (strcmp(line, "last_turbo=on") == 0)
+            snprintf(settings->last_turbo, sizeof(settings->last_turbo), "on");
+        else if (strcmp(line, "last_turbo=off") == 0)
+            snprintf(settings->last_turbo, sizeof(settings->last_turbo), "off");
+        else if (strncmp(line, "last_fan=", 9) == 0 &&
+                 (strcmp(line + 9, "auto") == 0 || strcmp(line + 9, "max") == 0 ||
+                  strcmp(line + 9, "silent") == 0)) {
+            size_t n = strlen(line + 9);
+            memcpy(settings->last_fan, line + 9, n);
+            settings->last_fan[n] = '\0';
+        }
+        else if (strncmp(line, "last_curve=", 11) == 0 &&
+                 cctl_last_value_ok(line + 11, sizeof(settings->last_curve) - 1)) {
+            size_t n = strlen(line + 11);
+            memcpy(settings->last_curve, line + 11, n);
+            settings->last_curve[n] = '\0';
+        }
+        else if (strncmp(line, "last_kbc=", 9) == 0 &&
+                 cctl_last_value_ok(line + 9, sizeof(settings->last_kbc) - 1)) {
+            size_t n = strlen(line + 9);
+            memcpy(settings->last_kbc, line + 9, n);
+            settings->last_kbc[n] = '\0';
+        }
+        else if (strncmp(line, "last_kbb=", 9) == 0) {
+            char *end = NULL;
+            long v = strtol(line + 9, &end, 10);
+            if (end && *end == '\0' && v >= 0 && v <= 100)
+                settings->last_kbb = (int)v;
+        }
+        else if (strncmp(line, "last_kbe=", 9) == 0 &&
+                 cctl_last_value_ok(line + 9, sizeof(settings->last_kbe) - 1)) {
+            size_t n = strlen(line + 9);
+            memcpy(settings->last_kbe, line + 9, n);
+            settings->last_kbe[n] = '\0';
+        }
     }
     fclose(fp);
     return 0;
@@ -983,10 +1059,33 @@ static int cctl_settings_write(const struct cctl_settings *settings)
     const char *st_val = settings->streamtext_enabled ? "on" : "off";
     const char *def_val = settings->default_is_status ? "status" : "help";
     const char *experimental_fan_val = settings->experimental_fan_enabled ? "on" : "off";
-    char buf[160];
+    char buf[320];
     int len = snprintf(buf, sizeof(buf),
                        "streamtext=%s\ndefault=%s\nexperimental-fan=%s\n",
                        st_val, def_val, experimental_fan_val);
+    if (len > 0 && len < (int)sizeof(buf)) {
+        if (settings->last_profile[0])
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                            "last_profile=%s\n", settings->last_profile);
+        if (settings->last_turbo[0])
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                            "last_turbo=%s\n", settings->last_turbo);
+        if (settings->last_fan[0])
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                            "last_fan=%s\n", settings->last_fan);
+        if (settings->last_curve[0])
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                            "last_curve=%s\n", settings->last_curve);
+        if (settings->last_kbc[0])
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                            "last_kbc=%s\n", settings->last_kbc);
+        if (settings->last_kbb >= 0)
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                            "last_kbb=%d\n", settings->last_kbb);
+        if (settings->last_kbe[0])
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                            "last_kbe=%s\n", settings->last_kbe);
+    }
     size_t offset = 0;
     while (len > 0 && offset < (size_t)len) {
         ssize_t written = write(fd, buf + offset, (size_t)len - offset);
@@ -1009,6 +1108,49 @@ static int cctl_settings_write(const struct cctl_settings *settings)
         return -1;
     }
     return 0;
+}
+
+/* Record one last-config field after a hardware command applied it.
+ * Callers are root by that point (require_root), so the root-owned
+ * settings file is writable. Best-effort: persistence must never fail
+ * the command it annotates. NULL value clears the field; an invalid
+ * value leaves it untouched. */
+static void cctl_last_record(const char *kind, const char *value)
+{
+    struct cctl_settings st;
+    cctl_settings_read(&st);
+
+    char *dst = NULL;
+    size_t sz = 0;
+    if (strcmp(kind, "profile") == 0) { dst = st.last_profile; sz = sizeof(st.last_profile); }
+    else if (strcmp(kind, "turbo") == 0) { dst = st.last_turbo; sz = sizeof(st.last_turbo); }
+    else if (strcmp(kind, "fan") == 0) { dst = st.last_fan; sz = sizeof(st.last_fan); }
+    else if (strcmp(kind, "curve") == 0) { dst = st.last_curve; sz = sizeof(st.last_curve); }
+    else if (strcmp(kind, "kbc") == 0) { dst = st.last_kbc; sz = sizeof(st.last_kbc); }
+    else if (strcmp(kind, "kbe") == 0) { dst = st.last_kbe; sz = sizeof(st.last_kbe); }
+
+    if (dst) {
+        if (!value) {
+            dst[0] = '\0';
+        } else if (cctl_last_value_ok(value, sz - 1)) {
+            snprintf(dst, sz, "%s", value);
+        } else {
+            return;
+        }
+    } else if (strcmp(kind, "kbb") == 0) {
+        if (!value) {
+            st.last_kbb = -1;
+        } else {
+            char *end = NULL;
+            long v = strtol(value, &end, 10);
+            if (!end || *end != '\0' || v < 0 || v > 100) return;
+            st.last_kbb = (int)v;
+        }
+    } else {
+        return;
+    }
+
+    (void)cctl_settings_write(&st);
 }
 
 static int mode_record_nvidia_clock(int memory_clock, int is_set, int min, int max)

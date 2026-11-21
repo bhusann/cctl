@@ -40,6 +40,13 @@ sudo depmod -a
 
 ## Remove cctl
 
+If you installed the boot autostart service, remove it first:
+
+```bash
+sudo systemctl disable --now cctl-gui.service
+sudo rm -f /etc/systemd/system/cctl-gui.service
+```
+
 Remove the installed binary, sudo rule and its backup or temporary file, your
 optional custom profile, and cctl's saved settings:
 

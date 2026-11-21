@@ -1,8 +1,21 @@
 # cctl-gui — HTTP endpoint map
 
-`cctl gui [--port PORT]` serves the embedded UI (`GET /`) on
+`cctl gui [--port PORT] [--no-restore]` serves the embedded UI (`GET /`) on
 127.0.0.1 only. All state-changing requests are `POST` and must carry an
 `X-CCTL` header; bodies are `application/x-www-form-urlencoded`.
+
+## Startup replay
+
+Before serving, the server replays the hardware config last applied by any
+cctl command — recorded in `/var/lib/cctl/settings` by `set`, `turbo`,
+`fan <auto|max|silent>`, `kbc`, `kbb`, `kbe <effect>|kbe stop`, and
+`fancurve start|stop` — in that order: profile, turbo, fan mode, fan curve,
+keyboard color, keyboard brightness, keyboard effect (the effect wins over
+color/brightness because it owns the keyboard). Each step runs through the
+same child path as the POST endpoints,
+is logged to stdout, and is skipped on failure. `--no-restore` skips the
+replay. The systemd unit `systemd/cctl-gui.service` runs the server as root
+at boot, so the replay doubles as boot restore.
 
 ## GET (JSON)
 
@@ -11,7 +24,7 @@
 | `/api/status` | child `cctl status --json` |
 | `/api/cpu` | child `cctl cpumon --json` (one-shot) |
 | `/api/gpu` | child `cctl gpumon --json` (one-shot) |
-| `/api/settings` | `/var/lib/cctl/settings` (streamtext, default action, experimental fan) |
+| `/api/settings` | `/var/lib/cctl/settings` (streamtext, default action, experimental fan, last-config record: `last_profile`, `last_turbo`, `last_fan`, `last_curve`, `last_kbc`, `last_kbb`, `last_kbe`) |
 | `/api/cpu-options` | sysfs `policy0/scaling_available_governors` + `energy_performance_available_preferences` |
 | `/api/profiles` | built-in list + parsed `/var/lib/cctl/profiles.conf` |
 | `/api/curves` | active curve state + saved curve names |

@@ -2374,7 +2374,10 @@ static int fc_cmd_start(int argc, char **argv)
 
     require_root(argc, argv);
 
-    return fc_start_profile(&prof);
+    int rc = fc_start_profile(&prof);
+    if (rc == 0)
+        cctl_last_record("curve", name);
+    return rc;
 }
 
 static int fc_cmd_stop(int argc, char **argv)
@@ -2382,7 +2385,10 @@ static int fc_cmd_stop(int argc, char **argv)
     if (argc != 3)
         return fail("Usage: cctl fancurve stop");
     require_root(argc, argv);
-    return fc_stop_worker(0, 1) == 0 ? 0 : 1;
+    int rc = fc_stop_worker(0, 1) == 0 ? 0 : 1;
+    if (rc == 0)
+        cctl_last_record("curve", NULL);
+    return rc;
 }
 
 static void fc_print_shell_quoted(const char *s)
@@ -2782,6 +2788,12 @@ static int fc_cmd_del(int argc, char **argv)
 
     if (unlink(path) != 0)
         return fail("cannot delete '%s': %s", name, strerror(errno));
+
+    /* Drop the boot-restore pointer so a deleted curve is not replayed. */
+    struct cctl_settings del_st;
+    cctl_settings_read(&del_st);
+    if (del_st.last_curve[0] && strcmp(del_st.last_curve, name) == 0)
+        cctl_last_record("curve", NULL);
 
     cctl_stream_printf("Deleted fan curve '%s'.\n", name);
     return 0;

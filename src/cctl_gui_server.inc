@@ -493,8 +493,16 @@ static void gui_options_json(struct gui_buf *b)
 {
     struct cctl_settings st;
     cctl_settings_read(&st);
-    gui_buf_appendf(b, "{\"streamtext\":%d,\"default_is_status\":%d,\"experimental_fan\":%d}",
+    gui_buf_appendf(b, "{\"streamtext\":%d,\"default_is_status\":%d,\"experimental_fan\":%d",
                     st.streamtext_enabled, st.default_is_status, st.experimental_fan_enabled);
+    if (st.last_profile[0]) { gui_buf_append(b, ",\"last_profile\":", strlen(",\"last_profile\":")); gui_json_string(b, st.last_profile); }
+    if (st.last_turbo[0])   { gui_buf_append(b, ",\"last_turbo\":", strlen(",\"last_turbo\":"));     gui_json_string(b, st.last_turbo); }
+    if (st.last_fan[0])     { gui_buf_append(b, ",\"last_fan\":", strlen(",\"last_fan\":"));         gui_json_string(b, st.last_fan); }
+    if (st.last_curve[0])   { gui_buf_append(b, ",\"last_curve\":", strlen(",\"last_curve\":"));     gui_json_string(b, st.last_curve); }
+    if (st.last_kbc[0])     { gui_buf_append(b, ",\"last_kbc\":", strlen(",\"last_kbc\":"));         gui_json_string(b, st.last_kbc); }
+    if (st.last_kbb >= 0)   gui_buf_appendf(b, ",\"last_kbb\":%d", st.last_kbb);
+    if (st.last_kbe[0])     { gui_buf_append(b, ",\"last_kbe\":", strlen(",\"last_kbe\":"));         gui_json_string(b, st.last_kbe); }
+    gui_buf_append(b, "}", 1);
 }
 
 static int gui_sysfs_read_list(const char *path, char *out, size_t out_sz)
@@ -1131,22 +1139,110 @@ static void *gui_conn_thread(void *arg)
     return NULL;
 }
 
+/* ------------------------------------------------------------ startup restore */
+
+/* One replay step through the same child path the API endpoints use.
+ * Failures are logged to the server's stdout (journal for the boot service)
+ * and skipped — a stale recorded item must not stop the server. */
+static void gui_restore_run(char **argv, const char *what)
+{
+    struct gui_buf out, err;
+    gui_buf_init(&out);
+    gui_buf_init(&err);
+    int rc = 0;
+    if (gui_child(argv, &out, &err, &rc) < 0)
+        rc = -1;
+    if (rc == 0) {
+        cctl_stream_printf("cctl-gui: restored %s\n", what);
+    } else {
+        cctl_stream_printf("cctl-gui: restore %s failed (rc %d)%s%s\n",
+                           what, rc, err.p ? ": " : "", err.p ? err.p : "");
+    }
+    free(out.p);
+    free(err.p);
+}
+
+/* Replay the hardware config last applied by any cctl command (recorded in
+ * /var/lib/cctl/settings) so a boot-started server restores the previous
+ * session instead of firmware defaults. Order matters: the profile applies
+ * its fan safety first, the recorded fan mode next, the fan curve last
+ * because it owns fan control; keyboard color/brightness are independent,
+ * and a recorded effect is replayed after them because it owns the keyboard. */
+static void gui_restore_last_config(void)
+{
+    struct cctl_settings st;
+    cctl_settings_read(&st);
+    if (!st.last_profile[0] && !st.last_turbo[0] && !st.last_fan[0] &&
+        !st.last_curve[0] && !st.last_kbc[0] && st.last_kbb < 0 &&
+        !st.last_kbe[0])
+        return;
+
+    if (st.last_profile[0]) {
+        char *av[] = { "set", st.last_profile, NULL };
+        gui_restore_run(av, "profile");
+    }
+    if (st.last_turbo[0]) {
+        char *av[] = { "turbo", st.last_turbo, NULL };
+        gui_restore_run(av, "turbo");
+    }
+    if (st.last_fan[0]) {
+        char *av[] = { "fan", st.last_fan, NULL };
+        gui_restore_run(av, "fan mode");
+    }
+    if (st.last_curve[0]) {
+        char *av[] = { "fancurve", "start", st.last_curve, NULL };
+        gui_restore_run(av, "fan curve");
+    }
+    if (st.last_kbc[0]) {
+        int r = -1, g = -1, b = -1;
+        char rgbcopy[24];
+        snprintf(rgbcopy, sizeof(rgbcopy), "%s", st.last_kbc);
+        if (sscanf(rgbcopy, "%d %d %d", &r, &g, &b) == 3) {
+            char sr[8], sg[8], sb[8];
+            snprintf(sr, sizeof(sr), "%d", r);
+            snprintf(sg, sizeof(sg), "%d", g);
+            snprintf(sb, sizeof(sb), "%d", b);
+            char *av[] = { "kbc", sr, sg, sb, NULL };
+            gui_restore_run(av, "keyboard color");
+        } else {
+            char *av[] = { "kbc", st.last_kbc, NULL };
+            gui_restore_run(av, "keyboard color");
+        }
+    }
+    if (st.last_kbb >= 0) {
+        int kbb = st.last_kbb > 100 ? 100 : st.last_kbb;
+        char pct[4];
+        snprintf(pct, sizeof(pct), "%d", kbb);
+        char *av[] = { "kbb", pct, NULL };
+        gui_restore_run(av, "keyboard brightness");
+    }
+    if (st.last_kbe[0]) {
+        char *av[] = { "kbe", st.last_kbe, NULL };
+        gui_restore_run(av, "keyboard effect");
+    }
+}
+
 static int cmd_gui(int argc, char **argv)
 {
     int port = GUI_DEFAULT_PORT;
+    int no_restore = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0) {
-            if (i + 1 >= argc) return fail("Usage: cctl gui [--port PORT]");
+            if (i + 1 >= argc) return fail("Usage: cctl gui [--port PORT] [--no-restore]");
             int v = atoi(argv[++i]);
             if (v < 1 || v > 65535) return fail("Port must be between 1 and 65535");
             port = v;
+        } else if (strcmp(argv[i], "--no-restore") == 0) {
+            no_restore = 1;
         } else if (strcmp(argv[i], "--json") == 0) {
             /* accepted no-op: server logs go to stdout regardless */
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            cctl_stream_printf("cctl gui [--port PORT]\n  Browser control panel on http://127.0.0.1:%d\n", port);
+            cctl_stream_printf("cctl gui [--port PORT] [--no-restore]\n  Browser control panel on http://127.0.0.1:%d\n"
+                               "  Replays the last hardware config (profile, turbo, fan mode,\n"
+                               "  fan curve, keyboard color/brightness/effect) at startup unless --no-restore.\n", port);
             return 0;
         } else {
-            return fail("Unknown option '%s'; usage: cctl gui [--port PORT]", argv[i]);
+            return fail("Unknown option '%s'; usage: cctl gui [--port PORT] [--no-restore]", argv[i]);
         }
     }
 
@@ -1160,6 +1256,9 @@ static int cmd_gui(int argc, char **argv)
         if (access(installed, X_OK) == 0)
             gui_copy_str(g_gui_child_path, sizeof(g_gui_child_path), installed);
     }
+
+    if (!no_restore)
+        gui_restore_last_config();
 
     int lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) return fail("socket: %s", strerror(errno));
