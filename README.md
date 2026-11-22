@@ -257,6 +257,12 @@ Supported package managers (auto-installs `dkms` + kernel headers if missing):
 editions (Silverblue, Bazzite, …) are not supported: DKMS modules cannot
 persist on a read-only root.
 
+> **Secure Boot caution:** These kernel modules are installed unsigned. If Secure Boot is enabled, they may fail to load and the laptop may not boot normally. Disable Secure Boot for normal booting, or refer to your OS distribution's wiki for signing the modules and enabling Secure Boot again, if you wish.
+
+Manual DKMS registration and in-place compilation are documented in [MANUAL_INSTALL.md](https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/MANUAL_INSTALL.md).
+
+> **Immutable / Atomic OS note:** Atomic and immutable editions such as Fedora Silverblue/Kinoite/Atomic Desktops/Bazzite (`rpm-ostree`) and openSUSE MicroOS/Aeon (`transactional-update`) are **not supported**, because the root filesystem is read-only and DKMS modules cannot persist across image updates. On unrecognized distros, the installer points to the driver source in the [mirror repo](https://github.com/bhusann/tuxedo-drivers-cctl-mirror) for manual installation.
+
 ---
 
 ## Updating and uninstalling

@@ -54,7 +54,7 @@ cctl fan auto       # Return both fans to EC automatic control
 cctl fan max        # Request full fan speed
 ```
 
-Manual fixed-duty fan control is experimental and hidden until `cctl options experimental-fan on`. It ignores temperature and can overheat; use it only on explicit request and stop any active curve first. After opting in:
+Manual fixed-duty fan control is experimental and hidden until `cctl options experimental-fan on`. It ignores temperature and can overheat; use it only on explicit request and stop any active curve first. Turning it off restores both fans to EC auto first (unless a fan curve is running). After opting in:
 
 ```sh
 cctl fan silent [--nosafe]          # Quiet mode; applies silent/eco unless --nosafe

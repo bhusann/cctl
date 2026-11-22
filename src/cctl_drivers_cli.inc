@@ -14,15 +14,15 @@
  * ======================================================================== */
 
 #define DRIVERS_TARBALL     "drivers.tar.gz"
-#define DRIVERS_MIRROR_RAW  "https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/d28cc60fab001821c27a80985a2116d5562c8474bf1dd4c7c307c4e993be44e6/drivers.tar.gz"
-#define DRIVERS_MIRROR_REPO "https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/d28cc60fab001821c27a80985a2116d5562c8474bf1dd4c7c307c4e993be44e6/drivers.tar.gz"
+#define DRIVERS_MIRROR_RAW  "https://raw.githubusercontent.com/bhusann/tuxedo-drivers-cctl-mirror/main/b21a1ea9c6f932240d7321b8d644a6e885e0b8aa3e406115bb878800021b5baf/drivers.tar.gz"
+#define DRIVERS_MIRROR_REPO "https://github.com/bhusann/tuxedo-drivers-cctl-mirror/blob/main/b21a1ea9c6f932240d7321b8d644a6e885e0b8aa3e406115bb878800021b5baf/drivers.tar.gz"
 /* SHA256 of drivers.tar.gz from the mirror repo, baked in at build time so
  * cctl only ever installs exactly these driver sources — a re-tarred or
  * swapped file with any other name/content is rejected. When the MIRROR's
  * drivers/ tree changes: re-tar deterministically, update THIS constant,
  * release a new cctl binary. (The driver sources
  * themselves live only in the mirror repo, not in this checkout.) */
-#define DRIVERS_SHA256      "d28cc60fab001821c27a80985a2116d5562c8474bf1dd4c7c307c4e993be44e6"
+#define DRIVERS_SHA256      "b21a1ea9c6f932240d7321b8d644a6e885e0b8aa3e406115bb878800021b5baf"
 
 /* Persistent driver cache: survives reboots so reinstall/uninstall works
  * offline with no tarball beside the binary and no typed path. /var/lib

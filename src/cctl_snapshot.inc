@@ -899,9 +899,29 @@ static void cctl_snapshot_preview_restore(const char *name,
             snprintf(stop, sizeof(stop), "unavailable");
         cctl_stream_printf("  %-22s start %s, stop %s\n", "Battery thresholds", start, stop);
     } else SNAPSHOT_PREVIEW("Battery thresholds", "skip (not saved)");
-    SNAPSHOT_PREVIEW("Refresh rate", strcmp(st->display_rate, "skip") == 0 ? "skip (not saved)" : st->display_rate);
-    if (st->display_scale_known < 0) SNAPSHOT_PREVIEW("Display scale", "skip (not saved)");
-    else SNAPSHOT_PREVIEW("Display scale", st->display_scale_set ? st->display_scale : "native (reset)");
+    int have_display = has_display_support();
+    char display_value[64];
+    if (strcmp(st->display_rate, "skip") == 0) {
+        SNAPSHOT_PREVIEW("Refresh rate", "skip (not saved)");
+    } else if (have_display) {
+        SNAPSHOT_PREVIEW("Refresh rate", st->display_rate);
+    } else {
+        snprintf(display_value, sizeof(display_value), "%s (skipped: no display)",
+                 st->display_rate);
+        SNAPSHOT_PREVIEW("Refresh rate", display_value);
+    }
+    if (st->display_scale_known < 0) {
+        SNAPSHOT_PREVIEW("Display scale", "skip (not saved)");
+    } else if (!have_display) {
+        if (st->display_scale_set)
+            snprintf(display_value, sizeof(display_value), "%s (skipped: no display)",
+                     st->display_scale);
+        else
+            snprintf(display_value, sizeof(display_value), "native reset (skipped: no display)");
+        SNAPSHOT_PREVIEW("Display scale", display_value);
+    } else {
+        SNAPSHOT_PREVIEW("Display scale", st->display_scale_set ? st->display_scale : "native (reset)");
+    }
     if (st->fancurve_state == SNAPSHOT_FANCURVE_SKIP)
         SNAPSHOT_PREVIEW("Fan curve", "skip (not saved)");
     else if (st->fancurve_state == SNAPSHOT_FANCURVE_NONE)
