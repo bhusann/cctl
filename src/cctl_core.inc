@@ -1256,7 +1256,7 @@ static int battery_pct(void)
 }
 
 /* Toggle the MUX to the opposite mode.  Returns 0 on success, 1 on error. */
-static int mux_switch(void)
+static int mux_switch(int noconfirm)
 {
     /* Preflight: NVRAM var must exist */
     if (access(MUX_VAR_PATH, F_OK) != 0) {
@@ -1296,15 +1296,17 @@ static int mux_switch(void)
     int target = (current == MUX_VAL_MSHYBRID) ? MUX_VAL_DGPU : MUX_VAL_MSHYBRID;
 
     /* Confirmation prompt */
-    cctl_stream_printf("Switch GPU MUX mode from %s%s%s to %s%s%s? [y/N] ",
-           mux_mode_color(current), mux_mode_str(current), C_RST,
-           mux_mode_color(target), mux_mode_str(target), C_RST);
-    fflush(stdout);
+    if (!noconfirm) {
+        cctl_stream_printf("Switch GPU MUX mode from %s%s%s to %s%s%s? [y/N] ",
+               mux_mode_color(current), mux_mode_str(current), C_RST,
+               mux_mode_color(target), mux_mode_str(target), C_RST);
+        fflush(stdout);
 
-    char ans[32] = {0};
-    if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
-        cctl_stream_printf("Aborted.\n");
-        return 0;
+        char ans[32] = {0};
+        if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
+            cctl_stream_printf("Aborted.\n");
+            return 0;
+        }
     }
 
     /* Clear immutability (kernel re-marks every var immutable on each boot) */

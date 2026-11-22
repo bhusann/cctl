@@ -187,7 +187,7 @@ static int cctl_snapshot_validate_path(const char *path, int *exists)
         if (errno == ENOENT) { *exists = 0; return 0; }
         return -1;
     }
-    if (!S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0077) != 0) {
+    if (!S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 0022) != 0) {
         errno = EPERM;
         return -1;
     }
@@ -212,18 +212,57 @@ static int cctl_snapshot_ensure_dirs(void)
 {
     const char *paths[] = { "/var/lib/cctl", CCTL_SNAPSHOT_DIR };
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-        if (mkdir(paths[i], i == 0 ? 0755 : 0700) != 0 && errno != EEXIST)
+        int created = (mkdir(paths[i], 0755) == 0);
+        if (!created && errno != EEXIST)
             return -1;
         struct stat st;
         if (lstat(paths[i], &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != 0 ||
-            (i == 0 && (st.st_mode & 0022) != 0)) {
+            (st.st_mode & 0022) != 0) {
             errno = EPERM;
             return -1;
         }
-        if (i == 1 && chmod(paths[i], 0700) != 0)
+        /* New directories must be traversable and readable; existing modes
+         * are only normalized by the snapshot listing/help migration path. */
+        if (created && chmod(paths[i], 0755) != 0)
             return -1;
     }
     return 0;
+}
+
+/* Upgrade snapshots written by versions that stored them as 0600. Only the
+ * bare snapshot listing calls this; other commands leave modes alone. */
+static void cctl_snapshot_make_files_readable(void)
+{
+    (void)chmod(CCTL_SNAPSHOT_DIR, 0755);
+    DIR *dir = opendir(CCTL_SNAPSHOT_DIR);
+    if (!dir) return;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        size_t len = strlen(entry->d_name);
+        if (len < 6 || len > CCTL_SNAPSHOT_NAME_MAX + 5 ||
+            strcmp(entry->d_name + len - 5, ".conf") != 0)
+            continue;
+        char name[CCTL_SNAPSHOT_NAME_MAX + 1];
+        size_t name_len = len - 5;
+        memcpy(name, entry->d_name, name_len);
+        name[name_len] = '\0';
+        if (!cctl_snapshot_name_valid(name)) continue;
+
+        char path[256];
+        int written = snprintf(path, sizeof(path), "%s/%s", CCTL_SNAPSHOT_DIR,
+                               entry->d_name);
+        if (written < 0 || (size_t)written >= sizeof(path)) continue;
+
+        int fd = open(path, O_RDONLY | O_NOFOLLOW);
+        if (fd < 0) continue;
+        struct stat st;
+        if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == 0 &&
+            (st.st_mode & 0022) == 0 && (st.st_mode & 0777) != 0644)
+            (void)fchmod(fd, 0644);
+        close(fd);
+    }
+    closedir(dir);
 }
 
 static int cctl_snapshot_add_name(const char *name, char ***names,
@@ -555,6 +594,7 @@ static int cctl_snapshot_write_file(const char *name, const struct cctl_snapshot
 
     if (!failed && fflush(fp) != 0) failed = 1;
     if (!failed && fsync(fd) != 0) failed = 1;
+    if (!failed && fchmod(fd, 0644) != 0) failed = 1;
     int saved_errno = errno;
     if (fclose(fp) != 0) { failed = 1; saved_errno = errno; }
     if (failed) {
@@ -766,7 +806,7 @@ static int cctl_snapshot_read_file(const char *name, struct cctl_snapshot_data *
     if (fd < 0) return -1;
     struct stat stbuf;
     if (fstat(fd, &stbuf) != 0 || !S_ISREG(stbuf.st_mode) || stbuf.st_uid != 0 ||
-        (stbuf.st_mode & 0077) != 0) {
+        (stbuf.st_mode & 0022) != 0) {
         close(fd);
         errno = EPERM;
         return -1;
@@ -1676,6 +1716,8 @@ static int cmd_snapshot(int argc, char **argv)
 {
     if (argc < 3) {
         require_root(argc, argv);
+        (void)cctl_snapshot_ensure_dirs();
+        cctl_snapshot_make_files_readable();
         return cctl_snapshot_list();
     }
 

@@ -502,13 +502,21 @@ static int cmd_mux(int argc, char **argv)
 {
     if (argc >= 3) {
         if (strcmp(argv[2], "switch") == 0) {
-            if (argc > 3)
-                return fail("Unexpected extra argument '%s'", argv[3]);
+            int noconfirm = 0;
+            for (int i = 3; i < argc; i++) {
+                if (strcmp(argv[i], "--noconfirm") == 0) {
+                    if (noconfirm)
+                        return fail("--noconfirm was specified more than once");
+                    noconfirm = 1;
+                } else {
+                    return fail("Unexpected extra argument '%s'", argv[i]);
+                }
+            }
             require_root(argc, argv);
-            return mux_switch();
+            return mux_switch(noconfirm);
         }
         cctl_stream_fprintf(stderr, "Error: Unknown mux subcommand '%s'\n", argv[2]);
-        cctl_stream_fprintf(stderr, "Usage: cctl mux  |  cctl mux switch\n");
+        cctl_stream_fprintf(stderr, "Usage: cctl mux  |  cctl mux switch [--noconfirm]\n");
         return 1;
     }
 
@@ -570,7 +578,7 @@ static const struct command commands[] = {
     { "fan",            0, cmd_fan,             SEC_EXPERIMENTAL, "cpu|gpu auto",                      "Restore individual fan to auto", NULL },
 
     /* GPU MUX */
-    { "mux",            0, cmd_mux,             SEC_MUX,       "[switch]",                        "Switch MUX mode (no arg: shows current mode)", NULL },
+    { "mux",            0, cmd_mux,             SEC_MUX,       "switch [--noconfirm]",            "Switch MUX mode (no arg: shows current mode)", NULL },
 
     /* Privacy */
     { "webcam",         1, cmd_webcam,          SEC_PRIVACY,   "[on|off]",                        "Toggle/set webcam", NULL },

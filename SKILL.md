@@ -193,7 +193,7 @@ numbers, `-`, and `_`, up to 64 characters.
 
 - `cctl rr` lists displays; `cctl rr <rate>` changes the primary display rate. `cctl rr toggle` switches between available rates; `cctl rr <rate> --2` targets display #2. Rates are matched to the closest supported value. `cctl scale <factor|WxH>` scales the internal panel; `cctl scale off` restores native 1:1. These commands require native X11; they may be unavailable under Wayland.
 - Never run `cctl rr` and `cctl scale` in parallel. Both reconfigure the same X11 output mode, and concurrent invocations race: one change can be silently lost while the other still prints `Done`. Run them strictly one after the other, and verify the final mode (rate and scale) with `cctl status` or `cctl rr` afterwards.
-- `cctl mux` shows the GPU MUX mode. `cctl mux switch` stages the other mode in firmware and requires a reboot; it does not switch immediately. If the user requests a switch, explain that reboot is required and follow cctl's confirmation prompt. Do not reboot unless the user asks.
+- `cctl mux` shows the GPU MUX mode. `cctl mux switch` stages the other mode in firmware and requires a reboot; it does not switch immediately. If the user requests a switch, explain that reboot is required and follow cctl's confirmation prompt. Pass `--noconfirm` only when the user explicitly asks to skip the prompt. Do not reboot unless the user asks.
 - `cctl bat` shows battery charge mode, thresholds, and available values. `cctl bat <start> <stop>` selects Custom mode and sets thresholds; `cctl bat standard` returns to the standard charge mode. Standard mode ignores the Custom thresholds, so charge limiting is disabled and the battery charges normally to full.
 - To check webcam, microphone, or Fn Lock status, use `cctl status`. `cctl webcam` and `cctl mic` without an argument toggle the device, and `cctl fn` without an argument toggles Fn Lock. Use `cctl webcam on|off`, `cctl mic on|off`, or `cctl fn lock|unlock` to set the state explicitly; otherwise the bare command reverses the current state.
 - NVIDIA clock commands and `cctl gpumon` are available only when supported by the installed cctl build and hardware. NVIDIA-enabled builds may also provide `nvidia on|off|load|loadgame|unload|status`; check `cctl --help`.
@@ -216,7 +216,7 @@ Persistent cctl data lives under `/var/lib/cctl`:
 - `profiles.conf`: custom profiles; manage with `cctl editconf`.
 - `settings`: saved `cctl options` values.
 - `fancurves/*.json`: saved curves; inspect with `cctl fancurve`.
-- `snapshots/<name>.conf`: named snapshots. The directory is root-only (0700); use `cctl snap view <name>`.
+- `snapshots/<name>.conf`: named snapshots. Root-owned and world-readable (0644) so users can inspect them with `cat`; only root can create, change, or delete them. `cctl snap view <name>` also shows one.
 - `drivers.tar.gz`: verified driver cache for `drivers-manage`.
 
 Runtime state under `/run` is cleared on reboot:

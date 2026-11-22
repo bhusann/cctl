@@ -129,7 +129,10 @@ Switches between **MSHybrid** (iGPU + dGPU) and **dGPU** (NVIDIA GPU only). A re
 ```bash
 cctl mux                        # Show current MUX mode (MSHybrid / dGPU) & pending status
 cctl mux switch                 # Toggle MUX mode (stages in UEFI NVRAM, reboot to apply)
+cctl mux switch --noconfirm     # Toggle without the y/N confirmation prompt
 ```
+
+`--noconfirm` skips only the interactive prompt; the battery/AC preflight checks still apply.
 
 > **X11 hardware quirk:** In **dGPU** mode, the internal display starts at **40 Hz on every boot**, whether dGPU mode was selected in BIOS or with `cctl mux switch`. Run `cctl rr 165` to use the full 165 Hz refresh rate. To apply it automatically, add `cctl rr 165` to your desktop environment's autostart/startup applications. *(X11 sessions only; the autostart method depends on your desktop environment.)*
 
@@ -172,6 +175,9 @@ Use `--mask` to omit fields while saving or skip them while restoring. Separate
 field names with commas. For example: `cctl snap s mypcwork --mask epp,pl1,turbo`.
 Snapshot names can contain letters, numbers, hyphens, and underscores, but no
 spaces or other symbols. `snap` is a shorter alias for `snapshot`.
+Snapshots are stored as root-owned, world-readable files (`/var/lib/cctl/snapshots/<name>.conf`,
+mode `0644`), so you can inspect them directly with `cat`; only root can create,
+change, or delete them.
 `snap delete` asks for confirmation before removing a snapshot; add
 `--noconfirm` to skip the prompt (for example, `cctl snap del mypcwork --noconfirm`).
 Add `--dry-run` to `snap restore` to preview the settings and skipped
