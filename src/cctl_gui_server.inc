@@ -549,8 +549,8 @@ static void gui_cpu_options_json(struct gui_buf *b)
 static void gui_profiles_json(struct gui_buf *b)
 {
     gui_buf_append(b, "{\"builtin\":", strlen("{\"builtin\":"));
-    gui_buf_append(b, "[\"max\",\"cpuperf\",\"balanced\",\"powersave\",\"silent\",\"eco\"]",
-                   strlen("[\"max\",\"cpuperf\",\"balanced\",\"powersave\",\"silent\",\"eco\"]"));
+    gui_buf_append(b, "[\"max\",\"cpuperf\",\"balanced\",\"powersave\",\"silent\"]",
+                   strlen("[\"max\",\"cpuperf\",\"balanced\",\"powersave\",\"silent\"]"));
     gui_buf_append(b, ",\"custom\":[", strlen(",\"custom\":["));
 
     FILE *fp = fopen("/var/lib/cctl/profiles.conf", "r");

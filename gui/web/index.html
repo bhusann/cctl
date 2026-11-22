@@ -440,14 +440,14 @@ const VIEWS=[
 ];
 /* Built-in profile look & copy. Unknown names fall back to a neutral style. */
 const PROFILES={
- eco:{h:150,desc:'Maximum efficiency. Turbo off, 15/30 W EC limits.',spec:['Turbo off','powersave','EPP power']},
- silent:{h:188,desc:'Lowest noise.',spec:[]},
+ silent:{h:175,desc:'Lowest noise and maximum efficiency. Turbo off, 15/30 W EC limits.',spec:['Turbo off','powersave','EPP power']},
  powersave:{h:205,desc:'Cool and frugal. Turbo off, 15/30 W EC limits.',spec:['Turbo off','powersave','EPP balance_power']},
  balanced:{h:235,desc:'Everyday default. Turbo on, 45/115 W EC limits, GPU 70 W.',spec:['Turbo on','powersave','EPP balance_performance']},
  cpuperf:{h:275,desc:'CPU first. Turbo on, 45/115 W EC limits, GPU 70 W.',spec:['Turbo on','performance','EPP performance']},
  max:{h:8,desc:'Everything unlocked. 90/115 W CPU, 100 W GPU.',spec:['Turbo on','performance','EPP performance']}
 };
-const PROFILE_ORDER=['eco','silent','powersave','balanced','cpuperf','max'];
+PROFILES.eco=PROFILES.silent;
+const PROFILE_ORDER=['silent','powersave','balanced','cpuperf','max'];
 const CUSTOM_HUE=38;
 const TOGGLES={
  turbo:{label:'Turbo boost',icon:'zap',field:'turbo_enabled',set:on=>{const f={state:on?'on':'off'};if(store.get('nosafe','0')==='1')f.nosafe='1';return post('Turbo '+(on?'on':'off'),'/api/turbo',f,'turbo '+(on?'on':'off')+(f.nosafe?' --nosafe':''))}},
@@ -747,15 +747,17 @@ V.snapshots=()=>`
    ============================================================ */
 function setHue(h){document.documentElement.style.setProperty('--h',h)}
 function allProfileNames(){return [...(S.profiles.builtin||[]),...((S.profiles.custom||[]).map(c=>c.name))]}
-function profNames(){const b=S.profiles.builtin||[];const o=PROFILE_ORDER.filter(n=>b.includes(n));b.forEach(n=>{if(!o.includes(n))o.push(n)});return o}
+function profNames(){const b=S.profiles.builtin||[];const o=PROFILE_ORDER.filter(n=>b.includes(n));b.forEach(n=>{if(!o.includes(n)&&n!=='eco')o.push(n)});return o}
 function activeProfile(){
-  if(S.pend) return S.pend;
-  const m=((S.status&&S.status.mode)||'').toLowerCase();let best=null;
+  if(S.pend) return S.pend==='eco'?'silent':S.pend;
+  let m=((S.status&&S.status.mode)||'').toLowerCase();
+  if(m==='eco'||m.startsWith('eco ')) m='silent';
+  let best=null;
   for(const n of allProfileNames()){const k=n.toLowerCase();
     if(m===k||/^[\s(:\-]/.test(m.slice(k.length))&&m.startsWith(k)){if(!best||k.length>best.length)best=n}}
   return best;
 }
-const profMeta=n=>PROFILES[n]||{h:CUSTOM_HUE,desc:'Custom profile.',spec:[]};
+const profMeta=n=>(n==='eco'?PROFILES.silent:PROFILES[n])||{h:CUSTOM_HUE,desc:'Custom profile.',spec:[]};
 
 function updProfile(){
   const dial=$('#dial');if(!dial) return;
@@ -769,13 +771,15 @@ function updProfile(){
   setHue(m?m.h:235);
   $('#pfName').textContent=act||(S.status&&S.status.mode)||'—';
   $('#pfDesc').textContent=m?m.desc:'Profile not recognised.';
-  $('#pfRaw').textContent=(S.status&&S.status.mode&&S.status.mode.toLowerCase()!==act)?S.status.mode:'';
+  const rawMode=((S.status&&S.status.mode)||'').toLowerCase();
+  $('#pfRaw').textContent=(rawMode&&rawMode!==act&&rawMode!=='eco')?S.status.mode:'';
   $('#pfSpec').innerHTML=(m?m.spec:[]).map(s=>`<span class="chip">${esc(s)}</span>`).join('');
   const cu=S.profiles.custom||[],box=$('#pfCustom');box.hidden=!cu.length;
   if(cu.length) box.innerHTML='<span class="eyebrow" style="margin-right:6px">Custom</span>'+cu.map(c=>`<button class="btn sm${c.name===act?' primary':''}" data-act="profile" data-name="${esc(c.name)}">${esc(c.name)}</button>`).join('');
   updCustom();
 }
 async function applyProfile(n){
+  if(n==='eco') n='silent';
   S.pend=n;updProfile();
   const a=[n];if(store.get('nosafe','0')==='1')a.push('--nosafe');
   const r=await run('Profile → '+n+(a.length>1?' (nosafe)':''),'set',a);
@@ -952,7 +956,8 @@ function updCurves(){
   const c=S.curves,sig=JSON.stringify([c,Object.keys(S.curveData)]);if(host._sig===sig) return;host._sig=sig;
   const thumb=d=>{
     if(!d||!d.points) return '<svg class="thumb" viewBox="0 0 80 36"></svg>';
-    const P=d.points.map(p=>[+p.temp,p.fan==='auto'?100:+p.fan]);const lo=Math.min(20,...P.map(p=>p[0])),hi=95;
+    const isAuto=v=>v==='auto'||v==='a';
+    const P=d.points.map(p=>[+p.temp,isAuto(p.fan)?100:+p.fan]);const lo=Math.min(20,...P.map(p=>p[0])),hi=95;
     return `<svg class="thumb" viewBox="0 0 80 36"><polyline points="${P.map(p=>`${(4+(p[0]-lo)/(hi-lo)*72).toFixed(1)},${(32-(clamp(p[1],20,100)-20)/80*28).toFixed(1)}`).join(' ')}"/></svg>`;
   };
   host.innerHTML=c.names.map(n=>{const on=c.active&&c.name===n,d=S.curveData[n];
@@ -1088,7 +1093,8 @@ function ceOpen(name,data){
   $('#ceTitle').textContent=name?'Edit fan curve · '+name:'New fan curve';
   $('#ceName').value=name||'';$('#ceName').disabled=!!name;
   $('#ceHyst').value=data?data.hysteresis:3;$('#ceMs').value=data?data.interval_ms:1000;
-  CE.pts=data?data.points.map(p=>({t:+p.temp,f:p.fan==='auto'?'auto':+p.fan})):[{t:45,f:40},{t:70,f:70},{t:90,f:'auto'}];
+  const isAuto=v=>v==='auto'||v==='a';
+  CE.pts=data?data.points.map(p=>({t:+p.temp,f:isAuto(p.fan)?'auto':+p.fan})):[{t:45,f:40},{t:70,f:70},{t:90,f:'auto'}];
   ceNormalize();CE.xmin=Math.max(0,Math.min(20,Math.floor(Math.min(...CE.pts.map(p=>p.t))/10)*10));
   $('#ceRows')._n=-1;drawCe();$('#dlgCurve').showModal();
 }
@@ -1264,7 +1270,10 @@ const PAL={items:[],q:'',i:0};
 function buildActions(){
   const A=[],add=(g,l,i,run,k)=>A.push({g,l,i,run,k});
   VIEWS.forEach((v,n)=>add('Go to',v.title,v.icon,()=>nav(v.id),String(n+1)));
-  allProfileNames().forEach(n=>add('Profile','Profile: '+n,'zap',()=>applyProfile(n)));
+  allProfileNames().forEach(n=>{
+    add('Profile','Profile: '+n,'zap',()=>applyProfile(n));
+    if(n==='silent') add('Profile','Profile: eco (alias for silent)','zap',()=>applyProfile('silent'));
+  });
   Object.entries(TOGGLES).forEach(([k,t])=>{const on=S.status&&S.status[t.field];add('Quick',(on?'Turn off ':'Turn on ')+t.label,t.icon,()=>setToggle(k,!on))});
   add('Cooling','Fans: auto','fan',()=>run('Fans → auto','fan',['auto']));add('Cooling','Fans: max','fan',()=>run('Fans → max','fan',['max']));
   if(S.settings.experimental_fan) add('Cooling','Fans: silent','fan',()=>run('Fans → silent','fan',['silent']));
